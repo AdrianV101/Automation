@@ -45,7 +45,7 @@ user_context.py
 
 # Plan files (kept locally, not published)
 docs/plans/
-docs/superpowers/plans/
+docs/superpowers/
 
 # Databases
 *.db
