@@ -1,0 +1,41 @@
+[project]
+name = "audio-ingest"
+version = "0.1.0"
+description = "Audio ingestion pipeline daemon - Plaud transcripts to PKM"
+requires-python = ">=3.11"
+dependencies = [
+    "agent-infra",
+    "telegram-interface",
+    "pkm",
+    "email-ingest",
+    "httpx>=0.27",
+    "anthropic>=0.40",
+    "python-dotenv>=1.0",
+    "aiosqlite>=0.19.0",
+    "claude-agent-sdk>=0.1.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0",
+    "pytest-asyncio>=0.24",
+    "respx>=0.22",
+]
+[build-system]
+requires = ["setuptools>=75.0"]
+build-backend = "setuptools.build_meta"
+
+[tool.uv.sources]
+agent-infra = { path = "../libs/agent-infra", editable = true }
+telegram-interface = { path = "../libs/telegram-interface", editable = true }
+pkm = { path = "../libs/pkm", editable = true }
+email-ingest = { path = "../libs/email-ingest", editable = true }
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+markers = [
+    "integration: tests that call real external APIs (deselect with '-m not integration')",
+]

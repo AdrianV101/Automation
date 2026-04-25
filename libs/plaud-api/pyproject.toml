@@ -1,0 +1,27 @@
+[project]
+name = "plaud-api"
+version = "0.1.0"
+description = "Reverse-engineered Plaud Note API client (REST + WebSocket)"
+requires-python = ">=3.11"
+dependencies = [
+    "httpx>=0.27",
+    "websockets>=12.0",
+    "aiosqlite>=0.19.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0",
+    "pytest-asyncio>=0.24",
+    "respx>=0.22",
+]
+
+[build-system]
+requires = ["setuptools>=75.0"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"

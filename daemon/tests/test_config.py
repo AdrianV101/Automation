@@ -1,0 +1,83 @@
+import os
+from pathlib import Path
+from unittest.mock import patch
+
+import pytest
+
+from audio_ingest.config import DaemonConfig
+
+# Patch load_dotenv to prevent .env file from polluting test environment
+_no_dotenv = patch("audio_ingest.config.load_dotenv")
+
+
+def _base_env() -> dict:
+    """Minimal valid env vars for DaemonConfig.from_env()."""
+    return {
+        "TELEGRAM_BOT_TOKEN": "bot123",
+        "TELEGRAM_CHAT_ID": "456",
+        "PKM_VAULT_PATH": "/tmp/pkm",
+    }
+
+
+class TestDaemonConfig:
+    """Test that DaemonConfig loads flat fields correctly."""
+
+    def test_telegram_fields(self):
+        env = _base_env()
+        with _no_dotenv, patch.dict(os.environ, env, clear=True):
+            config = DaemonConfig.from_env(env_file=None)
+        assert config.telegram_bot_token == "bot123"
+        assert config.telegram_chat_id == "456"
+
+    def test_config_is_frozen(self):
+        env = _base_env()
+        with _no_dotenv, patch.dict(os.environ, env, clear=True):
+            config = DaemonConfig.from_env(env_file=None)
+        with pytest.raises(AttributeError):
+            config.telegram_bot_token = "new"  # type: ignore[misc]
+        with pytest.raises(AttributeError):
+            config.email_ingest_enabled = True  # type: ignore[misc]
+
+    def test_pkm_vault_path(self):
+        env = _base_env()
+        with _no_dotenv, patch.dict(os.environ, env, clear=True):
+            config = DaemonConfig.from_env(env_file=None)
+        assert config.pkm_vault_path == Path("/tmp/pkm")
+
+
+class TestConfigFromEnv:
+    def test_missing_required_var_raises_with_name(self):
+        env = {"TELEGRAM_BOT_TOKEN": "bot123"}
+        with _no_dotenv, patch.dict(os.environ, env, clear=True):
+            with pytest.raises(ValueError, match="TELEGRAM_CHAT_ID"):
+                DaemonConfig.from_env(env_file=None)
+
+    def test_invalid_int_env_var_includes_var_name(self):
+        env = {**_base_env(), "IMAP_PORT": "not_a_number"}
+        with _no_dotenv, patch.dict(os.environ, env, clear=True):
+            with pytest.raises(ValueError, match="IMAP_PORT"):
+                DaemonConfig.from_env(env_file=None)
+
+
+def test_email_ingest_defaults(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "t")
+    monkeypatch.setenv("TELEGRAM_CHAT_ID", "c")
+    monkeypatch.setenv("PKM_VAULT_PATH", "/tmp/vault")
+    cfg = DaemonConfig.from_env()
+    assert cfg.email_ingest_enabled is False
+    assert cfg.imap_host == "127.0.0.1"
+    assert cfg.imap_port == 1143
+    assert cfg.vault_attachments_subdir == "99-Attachments/plaud"
+
+
+def test_email_ingest_enabled_from_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "t")
+    monkeypatch.setenv("TELEGRAM_CHAT_ID", "c")
+    monkeypatch.setenv("PKM_VAULT_PATH", "/tmp/vault")
+    monkeypatch.setenv("EMAIL_INGEST_ENABLED", "true")
+    monkeypatch.setenv("IMAP_USER", "imap-test@example.com")
+    monkeypatch.setenv("IMAP_PASSWORD", "test-password")
+    cfg = DaemonConfig.from_env()
+    assert cfg.email_ingest_enabled is True
+    assert cfg.imap_user == "imap-test@example.com"
+    assert cfg.imap_password == "test-password"

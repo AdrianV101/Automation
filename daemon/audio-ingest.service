@@ -1,0 +1,19 @@
+[Unit]
+Description=Audio Ingestion Pipeline Daemon
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+# Replace <your-user> with the local account that should own the daemon process.
+User=<your-user>
+WorkingDirectory=/path/to/automation/daemon
+ExecStart=/path/to/automation/daemon/.venv/bin/python -m audio_ingest
+EnvironmentFile=/path/to/automation/daemon/.env
+Restart=on-failure
+RestartSec=10
+MemoryMax=8G
+ManagedOOMMemoryPressure=kill
+
+[Install]
+WantedBy=multi-user.target

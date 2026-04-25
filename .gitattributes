@@ -1,0 +1,18 @@
+# Default: detect text vs binary, normalize line endings.
+* text=auto
+
+# Source files: always LF on disk in the repo.
+*.py text eol=lf
+*.sh text eol=lf
+*.md text eol=lf
+*.yaml text eol=lf
+*.yml text eol=lf
+*.toml text eol=lf
+*.json text eol=lf
+*.cfg text eol=lf
+*.ini text eol=lf
+*.service text eol=lf
+
+# .eml fixtures: keep byte-exact (CRLF/LF mixed-mode is significant for
+# MIME parsing tests). Mark as binary so git never rewrites line endings.
+*.eml binary

@@ -1,0 +1,35 @@
+{
+  "recording_id": "rec_abc123",
+  "created_at": "2026-02-01T14:30:00Z",
+  "duration": 1920,
+  "title": "Weekly Sync",
+  "transcript": {
+    "segments": [
+      {
+        "start_time": 0.0,
+        "end_time": 4.5,
+        "speaker_label": "Speaker 1",
+        "text": "Let's talk about the waitlist page for the project."
+      },
+      {
+        "start_time": 4.5,
+        "end_time": 9.2,
+        "speaker_label": "Speaker 2",
+        "text": "Sure, I was thinking we could use the same design as the landing page."
+      },
+      {
+        "start_time": 9.2,
+        "end_time": 15.8,
+        "speaker_label": "Speaker 1",
+        "text": "That makes sense. We have 500 signups on the waitlist now."
+      },
+      {
+        "start_time": 15.8,
+        "end_time": 22.1,
+        "speaker_label": "Speaker 2",
+        "text": "Nice. Once the page is live I want to push marketing harder."
+      }
+    ]
+  },
+  "extra_field": "should be preserved in raw_metadata"
+}

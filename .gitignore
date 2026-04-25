@@ -1,0 +1,77 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+dist/
+build/
+.venv/
+venv/
+env/
+*.egg
+
+# Node
+node_modules/
+.wrangler/
+
+# Environment
+.env
+.env.*
+!.env.example
+.dev.vars
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Audio pipeline runtime data
+daemon/audio_downloads/
+
+# Dependency lock
+daemon/uv.lock
+
+# Worktrees
+.worktrees/
+.claude/
+
+# Personal config (gitignored, use .example versions)
+CLAUDE.md
+user_context.py
+
+# Plan files (kept locally, not published)
+docs/plans/
+docs/superpowers/plans/
+
+# Databases
+*.db
+*.sqlite
+*.sqlite3
+
+# Audio artifacts
+*.wav
+*.ogg
+*.mp3
+*.m4a
+*.flac
+*.opus
+
+# ML model artifacts
+*.npy
+*.pt
+*.pth
+*.bin
+*.safetensors
+*.onnx
+
+# Secret material
+*.key
+*.pem
+*.crt
+*.p12
+credentials*
+service-account*.json

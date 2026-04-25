@@ -1,0 +1,100 @@
+from __future__ import annotations
+
+import logging
+import os
+from dataclasses import dataclass
+from pathlib import Path
+
+from dotenv import load_dotenv
+from telegram_interface import BotConfig
+
+log = logging.getLogger(__name__)
+
+# Backward-compat alias: notifications.py / extraction.py used TelegramConfig,
+# which had the same fields (bot_token, chat_id) as BotConfig.
+TelegramConfig = BotConfig
+
+_LOOPBACK_HOSTS = frozenset({"127.0.0.1", "::1", "localhost"})
+
+
+@dataclass(frozen=True)
+class DaemonConfig:
+    # Telegram
+    telegram_bot_token: str = ""
+    telegram_chat_id: str = ""
+    # PKM
+    pkm_vault_path: Path = Path(".")
+    # Email ingestion (Proton Bridge → IMAP IDLE)
+    email_ingest_enabled: bool = False
+    imap_host: str = "127.0.0.1"
+    imap_port: int = 1143
+    imap_user: str = ""
+    imap_password: str = ""
+    email_ingest_state_db_path: Path = Path("./email_ingest_state.db")
+    vault_attachments_subdir: str = "99-Attachments/plaud"
+    # Proton Mail Bridge on localhost requires STARTTLS upgrade and uses a
+    # self-signed cert; defaults match that canonical deployment.
+    imap_use_starttls: bool = True
+    imap_ssl_verify: bool = False
+    # DKIM verification trusts Authentication-Results headers written by this
+    # authserv-id (the MTA's identifier). Matches Proton Mail Bridge's default.
+    dkim_trusted_authserv_id: str = "mail.protonmail.ch"
+    dkim_required_domain: str = "plaud.ai"
+
+    @classmethod
+    def from_env(cls, env_file: str | Path | None = None) -> DaemonConfig:
+        if env_file:
+            load_dotenv(env_file)
+        else:
+            load_dotenv()
+
+        def require(key: str) -> str:
+            val = os.environ.get(key)
+            if not val:
+                raise ValueError(f"Missing required env var: {key}")
+            return val
+
+        def typed_env(key: str, default: str, type_fn: type) -> int | float:
+            raw = os.environ.get(key, default)
+            try:
+                return type_fn(raw)
+            except (ValueError, TypeError) as e:
+                raise ValueError(
+                    f"Invalid value for {key}={raw!r}: {e}"
+                ) from e
+
+        email_ingest_enabled = os.environ.get("EMAIL_INGEST_ENABLED", "false").lower() == "true"
+        imap_host = os.environ.get("IMAP_HOST", "127.0.0.1")
+        imap_ssl_verify = os.environ.get("IMAP_SSL_VERIFY", "false").lower() == "true"
+
+        # The insecure default (ssl_verify=False) is only safe because traffic
+        # stays on loopback. Reject remote hosts unless the operator
+        # explicitly opts into cert verification.
+        if not imap_ssl_verify and imap_host not in _LOOPBACK_HOSTS:
+            raise ValueError(
+                f"IMAP_SSL_VERIFY=false is only permitted for loopback hosts, "
+                f"got IMAP_HOST={imap_host!r}. Set IMAP_SSL_VERIFY=true.",
+            )
+
+        return cls(
+            telegram_bot_token=require("TELEGRAM_BOT_TOKEN"),
+            telegram_chat_id=require("TELEGRAM_CHAT_ID"),
+            pkm_vault_path=Path(require("PKM_VAULT_PATH")),
+            email_ingest_enabled=email_ingest_enabled,
+            imap_host=imap_host,
+            imap_port=typed_env("IMAP_PORT", "1143", int),
+            imap_user=os.environ.get("IMAP_USER", ""),
+            imap_password=os.environ.get("IMAP_PASSWORD", ""),
+            email_ingest_state_db_path=Path(
+                os.environ.get("EMAIL_INGEST_STATE_DB_PATH", "./email_ingest_state.db"),
+            ),
+            vault_attachments_subdir=os.environ.get(
+                "VAULT_ATTACHMENTS_SUBDIR", "99-Attachments/plaud",
+            ),
+            imap_use_starttls=os.environ.get("IMAP_USE_STARTTLS", "true").lower() == "true",
+            imap_ssl_verify=imap_ssl_verify,
+            dkim_trusted_authserv_id=os.environ.get(
+                "DKIM_TRUSTED_AUTHSERV_ID", "mail.protonmail.ch",
+            ),
+            dkim_required_domain=os.environ.get("DKIM_REQUIRED_DOMAIN", "plaud.ai"),
+        )

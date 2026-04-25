@@ -1,0 +1,262 @@
+from __future__ import annotations
+
+import asyncio
+import logging
+from typing import Protocol
+
+from email_ingest import (
+    BridgeConfig,
+    EmailIngestStateDB,
+    EmailIngestStatusTracker,
+    ImapIdleListener,
+    parse_email,
+    verify_dkim,
+)
+
+from .config import DaemonConfig
+from .command_config import DAEMON_COMMANDS
+from .models import RecordingJob, StatusTracker
+from .notifications import format_file_list
+from .pipeline import process_recording
+from .plaud_email_adapter import MalformedPlaudEmailError, recording_job_from_email
+from agent_infra import SessionManager
+from telegram_interface import (
+    BotConfig, TelegramInterface, ThreadStore,
+    check_topics_enabled, create_forum_topic, reopen_forum_topic, send_message,
+)
+
+log = logging.getLogger(__name__)
+
+
+class ProcessRecording(Protocol):
+    async def __call__(
+        self,
+        job: RecordingJob,
+        config: DaemonConfig,
+        *,
+        status: StatusTracker | None = None,
+    ) -> None: ...
+
+
+async def run_daemon(config: DaemonConfig) -> None:
+    log.info("Daemon started")
+
+    if not config.email_ingest_enabled:
+        log.error(
+            "Email ingestion not enabled. Set EMAIL_INGEST_ENABLED=true. Exiting.",
+        )
+        return
+
+    await _run_email_ingest_path(config)
+
+
+async def handle_incoming_email(
+    uid: int,
+    raw: bytes,
+    *,
+    email_db: EmailIngestStateDB,
+    config: DaemonConfig,
+    bot: BotConfig,
+    pipeline_thread: int | None,
+    process_recording_fn: ProcessRecording = process_recording,
+) -> None:
+    parsed = parse_email(raw)
+    message_id = parsed.message_id
+
+    if not message_id:
+        log.warning("Email at UID %d has no Message-ID — skipping", uid)
+        return
+
+    if await email_db.is_processed(message_id):
+        log.debug("Already processed %s — skipping", message_id)
+        return
+
+    # Insert the event row before any processing so unexpected failures
+    # (DKIM edge cases, DB errors, programmer bugs) leave a durable trace
+    # instead of silently losing the UID.
+    await email_db.insert_event(
+        message_id=message_id, uid=uid,
+        subject=parsed.headers.get("Subject"),
+    )
+
+    try:
+        await _process_parsed_email(
+            parsed, message_id,
+            email_db=email_db, config=config, bot=bot,
+            pipeline_thread=pipeline_thread,
+            process_recording_fn=process_recording_fn,
+        )
+    except Exception as exc:
+        # Catch-all so the row never gets stuck in 'received'. Narrow-typed
+        # branches (DKIM fail, MalformedPlaudEmailError) are handled inside
+        # _process_parsed_email; anything that reaches here is unexpected.
+        log.exception("Unexpected error handling email %s", message_id)
+        try:
+            await email_db.update_status(
+                message_id, "failed", error=f"unexpected: {exc}",
+            )
+        except Exception:
+            log.exception("Failed to mark %s failed after crash", message_id)
+
+
+async def _process_parsed_email(
+    parsed,
+    message_id: str,
+    *,
+    email_db: EmailIngestStateDB,
+    config: DaemonConfig,
+    bot: BotConfig,
+    pipeline_thread: int | None,
+    process_recording_fn: ProcessRecording,
+) -> None:
+    dkim = verify_dkim(
+        parsed,
+        required_domain=config.dkim_required_domain,
+        trusted_authserv_id=config.dkim_trusted_authserv_id,
+    )
+    if not dkim.passed:
+        log.warning(
+            "DKIM fail for %s (domain=%s, reason=%s) — rejecting",
+            message_id, dkim.signing_domain, dkim.reason,
+        )
+        await email_db.update_status(
+            message_id, "failed", error=f"dkim_fail: {dkim.reason}",
+        )
+        await _notify_pipeline(
+            bot, pipeline_thread,
+            "⚠️ DKIM verification failed\n\n"
+            f"Subject: {parsed.headers.get('Subject', '')}\n"
+            f"Message-ID: {message_id}\n"
+            f"Signing domain: {dkim.signing_domain}\n"
+            f"Reason: {dkim.reason}",
+            message_id,
+        )
+        return
+
+    try:
+        job = recording_job_from_email(
+            parsed,
+            vault_path=config.pkm_vault_path,
+            attachments_subdir=config.vault_attachments_subdir,
+        )
+    except MalformedPlaudEmailError as exc:
+        log.error("Malformed Plaud email %s: %s", message_id, exc)
+        await email_db.update_status(message_id, "failed", error=str(exc))
+        await _notify_pipeline(
+            bot, pipeline_thread,
+            "⚠️ Plaud email parse failed\n\n"
+            f"Subject: {parsed.headers.get('Subject', '')}\n"
+            f"Message-ID: {message_id}\nError: {exc}",
+            message_id,
+        )
+        return
+
+    if job is None:
+        log.debug("Not-for-us email %s — dropping", message_id)
+        await email_db.update_status(message_id, "dropped", error="not-for-us")
+        return
+
+    tracker = EmailIngestStatusTracker(email_db, message_id)
+    await process_recording_fn(job, config, status=tracker)
+
+
+async def _notify_pipeline(
+    bot: BotConfig, pipeline_thread: int | None, text: str, message_id: str,
+) -> None:
+    try:
+        await send_message(text, bot, thread_id=pipeline_thread)
+    except Exception:
+        log.exception("Failed to send Telegram error for %s", message_id)
+
+
+async def _run_email_ingest_path(config: DaemonConfig) -> None:
+    email_db = EmailIngestStateDB(config.email_ingest_state_db_path)
+    await email_db.init_db()
+    thread_store = ThreadStore(config.email_ingest_state_db_path)
+    await thread_store.init_db()
+    session_mgr = SessionManager(
+        session_store=thread_store, pkm_vault_path=config.pkm_vault_path,
+    )
+
+    bot = BotConfig(
+        bot_token=config.telegram_bot_token, chat_id=config.telegram_chat_id,
+    )
+
+    tii = TelegramInterface(
+        bot_config=bot,
+        commands=DAEMON_COMMANDS,
+        session_manager=session_mgr,
+        thread_store=thread_store,
+        status_provider=None,  # no status backend for email ingest yet
+        file_formatter=format_file_list,
+    )
+
+    topics_ok = await check_topics_enabled(bot)
+    if not topics_ok:
+        log.warning(
+            "Telegram topics not enabled on chat %s.",
+            config.telegram_chat_id,
+        )
+
+    pipeline_thread = await _setup_pipeline_topic_email(email_db, bot)
+
+    async def on_new_email(uid: int, raw: bytes, headers: dict[str, str]) -> None:
+        await handle_incoming_email(
+            uid, raw,
+            email_db=email_db, config=config, bot=bot,
+            pipeline_thread=pipeline_thread,
+        )
+
+    async def on_persistent_failure() -> None:
+        await send_message(
+            "⚠️ Email Bridge Disconnected\n\n"
+            "Unable to connect to IMAP bridge for 3 consecutive attempts.\n"
+            "Will keep retrying. Check Proton Mail Bridge status on the VPS.",
+            bot, thread_id=pipeline_thread,
+        )
+
+    bridge_cfg = BridgeConfig(
+        host=config.imap_host, port=config.imap_port,
+        user=config.imap_user, password=config.imap_password,
+        use_starttls=config.imap_use_starttls,
+        ssl_verify=config.imap_ssl_verify,
+    )
+    listener = ImapIdleListener(
+        bridge_cfg, email_db,
+        on_new_email=on_new_email,
+        on_persistent_failure=on_persistent_failure,
+    )
+
+    try:
+        async with asyncio.TaskGroup() as tg:
+            tg.create_task(listener.run())
+            tg.create_task(tii.run_poller())
+    finally:
+        await session_mgr.close_all()
+
+
+async def _setup_pipeline_topic_email(
+    email_db: EmailIngestStateDB, bot: BotConfig,
+) -> int | None:
+    pipeline_thread: int | None = None
+    stored_thread = await email_db.get_setting("pipeline_thread_id")
+    if stored_thread:
+        try:
+            tid = int(stored_thread)
+        except (ValueError, TypeError):
+            log.warning("Stored pipeline_thread_id %r is not valid, ignoring", stored_thread)
+            tid = None
+        if tid is not None and await reopen_forum_topic(tid, bot):
+            pipeline_thread = tid
+            log.info("Reusing existing Pipeline topic (thread_id=%d)", tid)
+        elif tid is not None:
+            log.warning("Stored Pipeline topic %d no longer valid, creating new one", tid)
+    if pipeline_thread is None:
+        try:
+            pipeline_thread = await create_forum_topic("Pipeline", bot)
+            if pipeline_thread is not None:
+                await email_db.set_setting("pipeline_thread_id", str(pipeline_thread))
+                log.info("Created new Pipeline topic (thread_id=%d)", pipeline_thread)
+        except Exception:
+            log.exception("Failed to create Pipeline forum topic, using general channel")
+    return pipeline_thread

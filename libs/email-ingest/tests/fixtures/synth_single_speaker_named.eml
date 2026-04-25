@@ -1,0 +1,59 @@
+Content-Type: multipart/mixed; boundary="===============0224361374952993167=="
+MIME-Version: 1.0
+Subject: [Plaud-AutoFlow] Synthetic test email
+From: "PLAUD.AI" <no-reply@plaud.ai>
+To: user@example.com
+Date: Tue, 21 Apr 2026 07:41:23 +0000
+Message-Id: <synth-9027478911215164323@example.com>
+Mime-Version: 1.0
+X-Synth-Note: Transcript with named single speaker
+Authentication-Results: mail.protonmail.ch;
+ dkim=pass (Good 2048 bit rsa-sha256 signature) header.d=plaud.ai
+ header.a=rsa-sha256
+Authentication-Results: mail.protonmail.ch;
+ dmarc=pass (p=none dis=none) header.from=plaud.ai
+Authentication-Results: mail.protonmail.ch; spf=pass smtp.mailfrom=plaud.ai
+Authentication-Results: mail.protonmail.ch;
+ dkim=pass (2048-bit key) header.d=plaud.ai header.i=@plaud.ai
+
+--===============0224361374952993167==
+Content-Type: text/html; charset="utf-8"
+MIME-Version: 1.0
+Content-Transfer-Encoding: base64
+
+PGh0bWw+PGJvZHk+PGgxPlN5bnRoZXRpYyBQbGF1ZCB0ZXN0IGVtYWlsPC9oMT48cD5UaGlzIHRl
+eHQgcmVwbGFjZXMgdGhlIG9yaWdpbmFsIHJlYWwtd29ybGQgbWVldGluZyB0cmFuc2NyaXB0IGFu
+ZCBpcyBpbmNsdWRlZCBvbmx5IHNvIHRlc3RzIGNhbiBwYXJzZSBhIG5vbi1lbXB0eSBtdWx0aXBh
+cnQgc3RydWN0dXJlLjwvcD48L2JvZHk+PC9odG1sPg==
+
+--===============0224361374952993167==
+Content-Type: text/plain; charset="utf-8"
+MIME-Version: 1.0
+Content-Transfer-Encoding: base64
+Content-Disposition: attachment; filename="transcript.txt"
+
+U3BlYWtlcl8xIDAwOjAwOjAwCkhlbGxvLCB0aGlzIGlzIGEgdGVzdC4K
+
+--===============0224361374952993167==
+Content-Type: text/plain; charset="utf-8"
+MIME-Version: 1.0
+Content-Transfer-Encoding: base64
+Content-Disposition: attachment; filename="summary-Reasoning Summary.txt"
+
+VGhpcyBpcyBhIHN5bnRoZXRpYyBzdW1tYXJ5IHVzZWQgb25seSBmb3IgdGVzdHMuIEl0IHJlcGxh
+Y2VzIHRoZSBvcmlnaW5hbCByZWFsLXdvcmxkIG1lZXRpbmcgY29udGVudC4=
+
+--===============0224361374952993167==
+Content-Type: image/jpeg
+MIME-Version: 1.0
+Content-Transfer-Encoding: base64
+Content-Disposition: attachment; filename="image_synth123abc.jpg"
+
+/9j/4AAQSkZJRgABAQAAAQABAAD/2wBDAAgGBgcGBQgHBwcJCQgKDBQNDAsLDBkSEw8UHRofHh0a
+HBwgJC4nICIsIxwcKDcpLDAxNDQ0Hyc5PTgyPC4zNDL/wAALCAABAAEBAREA/8QAHwAAAQUBAQEB
+AQEAAAAAAAAAAAECAwQFBgcICQoL/8QAtRAAAgEDAwIEAwUFBAQAAAF9AQIDAAQRBRIhMUEGE1Fh
+ByJxFDKBkaEII0KxwRVS0fAkM2JyggkKFhcYGRolJicoKSo0NTY3ODk6Q0RFRkdISUpTVFVWV1hZ
+WmNkZWZnaGlqc3R1dnd4eXqDhIWGh4iJipKTlJWWl5iZmqKjpKWmp6ipqrKztLW2t7i5usLDxMXG
+x8jJytLT1NXW19jZ2uHi4+Tl5ufo6erx8vP09fb3+Pn6/9oACAEBAAA/APvQ/9k=
+
+--===============0224361374952993167==--
