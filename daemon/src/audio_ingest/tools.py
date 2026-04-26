@@ -51,3 +51,10 @@ TOOLS_EXTRACTION = _VAULT_READ + _VAULT_WRITE + _VAULT_ADMIN + _CODEBASE_READ
 TOOLS_ASK = _VAULT_READ + _CODEBASE_READ + _WEB
 TOOLS_COMMAND = _VAULT_READ + _VAULT_WRITE + _CODEBASE_READ + _WEB
 TOOLS_TASK = _VAULT_READ + _VAULT_WRITE + _CODEBASE_READ + _WEB
+
+# Capture is strictly append-only: read-side + vault_append + vault_add_links.
+# No vault_write, no vault_edit, no vault_update_frontmatter, no admin.
+TOOLS_CAPTURE = _VAULT_READ + [
+    "mcp__obsidian-pkm__vault_append",
+    "mcp__obsidian-pkm__vault_add_links",
+]

@@ -8,6 +8,7 @@ from typing import TYPE_CHECKING
 from pkm import write_raw_transcript
 from telegram_interface import BotConfig, create_forum_topic
 
+from .capture import agent_capture_session
 from .config import DaemonConfig
 from .extraction import agent_extract_and_route
 from .models import RecordingJob
@@ -82,6 +83,25 @@ async def process_recording(
             await send_routing_summary(routing_result, bot, thread_id=rec_thread_id)
         except Exception:
             log.exception("Failed to send Telegram summary for %s", job.id)
+
+        if (
+            config.enable_session_capture
+            and routing_result is not None
+            and routing_result.success
+            and routing_result.files_written
+        ):
+            try:
+                await agent_capture_session(
+                    routing_result,
+                    transcript_path,
+                    config.pkm_vault_path,
+                    tg=bot,
+                    thread_id=rec_thread_id,
+                )
+            except Exception:
+                log.exception(
+                    "Session capture failed for %s, extraction unaffected", job.id,
+                )
 
         log.info("Completed processing %s", job.filename)
 
