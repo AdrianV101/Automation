@@ -105,10 +105,10 @@ Given a voice recording transcript, you must:
 A transcript can hit this agent twice in one batch of recordings (Plaud retry,
 manual re-process, replay). Before extracting:
 
-- A. Call `vault_activity(limit: 1)` to get the current activity-log session id.
-- B. Call `vault_activity(session: <that id>, limit: 50)` to see what was already
-  written in this batch. Skip any item already covered (same path or clearly the
-  same note) -- do not re-create or re-append.
+- Stage 0.A. Call `vault_activity(limit: 1)` to get the current activity-log session id.
+- Stage 0.B. Call `vault_activity(session: <that id>, limit: 50)` to see what was already
+  written in this batch. Skip any item already covered (same path or same target
+  note title) -- do not re-create or re-append.
 
 The activity log is process-local, so this only catches duplicates within the
 current batch. Cross-batch dedup is the per-item `vault_semantic_search` gate.
