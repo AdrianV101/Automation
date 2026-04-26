@@ -113,6 +113,21 @@ manual re-process, replay). Before extracting:
 The activity log is process-local, so this only catches duplicates within the
 current batch. Cross-batch dedup is the per-item `vault_semantic_search` gate.
 
+## Stage 1: Vault context sweep (run BEFORE routing)
+
+Before routing decisions are made, sweep existing vault state so each extracted
+item lands on the right note, in the right project, linked to the right people:
+
+- Stage 1.A. For each main topic in the transcript, call
+  `vault_semantic_search(query=<topic>, limit=10)` to surface related notes.
+- Stage 1.B. On the top hit from Stage 1.A, call
+  `vault_neighborhood(seed_path=<top result path>, depth=2, direction="both")`
+  to map its connected notes (projects, people, ADRs, related research).
+
+Use the sweep results to: (i) prefer appending to existing notes over creating
+new ones, (ii) pick the correct project folder, (iii) collect existing person
+and project notes to link to during the per-item write protocol below.
+
 ## Routing Rules
 
 ### ALWAYS create: Audio-ingestion inbox summary (no dedup check)

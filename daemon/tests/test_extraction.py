@@ -345,3 +345,19 @@ class TestSystemPromptContents:
             phrase in lowered
             for phrase in ("already covered", "already routed", "already written")
         ), "expected same-batch dedup phrasing (already covered/routed/written)"
+
+    def test_prompt_runs_pre_write_vault_sweep(self) -> None:
+        """Stage 1 vault sweep must sit between Stage 0 and the Routing Rules."""
+        assert "vault_neighborhood" in SYSTEM_PROMPT
+        assert "Stage 1" in SYSTEM_PROMPT
+        assert SYSTEM_PROMPT.find("Stage 1") < SYSTEM_PROMPT.find("## Routing Rules"), (
+            "Stage 1 (vault context sweep) must appear before the Routing Rules section"
+        )
+        assert SYSTEM_PROMPT.find("Stage 0") < SYSTEM_PROMPT.find("Stage 1"), (
+            "Stage 1 must come after Stage 0 so the agent reads dedup first, then the sweep"
+        )
+        lowered = SYSTEM_PROMPT.lower()
+        assert any(
+            phrase in lowered
+            for phrase in ("before routing", "existing vault state", "existing notes")
+        ), "expected Stage 1 phrasing (before routing / existing vault state / existing notes)"
