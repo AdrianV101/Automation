@@ -1,3 +1,4 @@
+import re
 from pathlib import Path
 from unittest.mock import AsyncMock, patch
 
@@ -5,10 +6,12 @@ import pytest
 
 from audio_ingest.extraction import (
     AgentRoutingResult,
+    SYSTEM_PROMPT,
     _build_user_prompt,
     _find_summary_path,
     agent_extract_and_route,
 )
+from audio_ingest.tools import TOOLS_EXTRACTION
 from agent_infra import AgentLoopResult
 from pkm import TranscriptData, TranscriptSegment
 
@@ -284,3 +287,49 @@ def test_prompt_omits_plaud_block_when_no_summaries() -> None:
         source_metadata=None,
     )
     assert "Plaud has already produced" not in prompt
+
+
+class TestSystemPromptContents:
+    """Guard the SYSTEM_PROMPT against drift away from the pkm-write workflow."""
+
+    def test_prompt_invokes_dedup_before_write(self) -> None:
+        """Dedup gate must be in the prompt with a 0.8 similarity threshold."""
+        assert "vault_semantic_search" in SYSTEM_PROMPT
+        assert "0.8" in SYSTEM_PROMPT
+
+    def test_prompt_uses_suggest_and_add_links(self) -> None:
+        """The link-discovery + link-insertion pair must be referenced."""
+        assert "vault_suggest_links" in SYSTEM_PROMPT
+        assert "vault_add_links" in SYSTEM_PROMPT
+
+    def test_prompt_lists_content_type_template_table(self) -> None:
+        """All structured-note templates must appear so the agent can pick them."""
+        for template in [
+            "research-note",
+            "adr",
+            "task",
+            "troubleshooting-log",
+            "meeting-notes",
+            "permanent-note",
+        ]:
+            assert template in SYSTEM_PROMPT, f"missing template {template} in SYSTEM_PROMPT"
+
+    def test_inbox_summary_skips_dedup(self) -> None:
+        """Audio-ingestion inbox note must always be created, bypassing dedup."""
+        assert "ALWAYS create" in SYSTEM_PROMPT
+        assert "audio-ingestion" in SYSTEM_PROMPT
+        # Make sure the inbox path appears so a regression that drops the carve-out fails.
+        assert "00-Inbox/audio-ingestion/" in SYSTEM_PROMPT
+
+    def test_prompt_only_references_allowlisted_tools(self) -> None:
+        """Every vault_* tool referenced in the prompt must be in TOOLS_EXTRACTION."""
+        referenced = set(re.findall(r"vault_[a-z_]+", SYSTEM_PROMPT))
+        # Strip trailing underscores in case any regex artifact slips in.
+        referenced = {t.rstrip("_") for t in referenced}
+        assert referenced, "expected SYSTEM_PROMPT to reference at least one vault_* tool"
+        prefixed_allowlist = set(TOOLS_EXTRACTION)
+        for name in referenced:
+            full = f"mcp__obsidian-pkm__{name}"
+            assert full in prefixed_allowlist, (
+                f"SYSTEM_PROMPT references {name!r} but it is not in TOOLS_EXTRACTION"
+            )

@@ -25,6 +25,7 @@ _VAULT_READ = [
     "mcp__obsidian-pkm__vault_activity",
     "mcp__obsidian-pkm__vault_semantic_search",
     "mcp__obsidian-pkm__vault_suggest_links",
+    "mcp__obsidian-pkm__vault_link_health",
 ]
 
 _VAULT_WRITE = [
@@ -32,6 +33,7 @@ _VAULT_WRITE = [
     "mcp__obsidian-pkm__vault_append",
     "mcp__obsidian-pkm__vault_edit",
     "mcp__obsidian-pkm__vault_update_frontmatter",
+    "mcp__obsidian-pkm__vault_add_links",
 ]
 
 _VAULT_ADMIN = [
