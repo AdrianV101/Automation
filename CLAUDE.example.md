@@ -31,17 +31,13 @@ Building an AI-augmented PKM that centralizes all information and acts on it aut
 
 ## Architecture: Hyper-Composable Decomposition
 
-The system is decomposed into **4 independent libraries + 1 thin orchestrator daemon**. Each library is independently installable, testable, and versionable. The daemon is the only integration point.
+The system is decomposed into **3 independent libraries + 1 thin orchestrator daemon**. Each library is independently installable, testable, and versionable. The daemon is the only integration point.
 
 ### Package Layout
 
 ```
 Automation/
 ├── libs/
-│   ├── plaud-api/              → import plaud_api (standalone)
-│   │   ├── src/plaud_api/      # Reverse-engineered Plaud REST + WebSocket client
-│   │   ├── tests/
-│   │   └── pyproject.toml
 │   ├── agent-infra/            → import agent_infra (standalone)
 │   │   ├── src/agent_infra/    # Claude Agent SDK plumbing (streaming, sessions, MCP)
 │   │   ├── tests/
@@ -54,10 +50,10 @@ Automation/
 │       ├── src/pkm/            # PKM writing patterns (beyond Obsidian MCP)
 │       ├── tests/
 │       └── pyproject.toml
-├── daemon/                     → import audio_ingest (depends on all 4 libs)
+├── daemon/                     → import audio_ingest (depends on the libs)
 │   ├── src/audio_ingest/       # Thin orchestrator — wires libraries together
 │   ├── tests/
-│   └── pyproject.toml          # Path deps on all 4 libs
+│   └── pyproject.toml          # Path deps on libs
 └── docs/
 ```
 
@@ -67,18 +63,18 @@ Automation/
                     ┌──────────┐
                     │  daemon  │
                     └────┬─────┘
-        ┌────────┬───────┼────────┬────────┐
-        ▼        ▼       ▼        ▼        ▼
-  ┌──────────┐ ┌─────┐ ┌──────────────┐ ┌──────┐
-  │ plaud-api│ │ pkm │ │telegram-iface│ │agent │
-  │          │ │     │ │      │       │ │infra │
-  └──────────┘ └─────┘ └──────┼───────┘ └──────┘
-                               │            ▲
-                               └────────────┘
+              ┌─────────┬┴────────┐
+              ▼         ▼         ▼
+            ┌─────┐ ┌──────────────┐ ┌──────┐
+            │ pkm │ │telegram-iface│ │agent │
+            │     │ │      │       │ │infra │
+            └─────┘ └──────┼───────┘ └──────┘
+                           │            ▲
+                           └────────────┘
 ```
 
 - **No cycles.** One inter-library dep: telegram-interface -> agent-infra.
-- **plaud-api, agent-infra, pkm** are fully independent.
+- **agent-infra, pkm** are fully independent.
 - **daemon** is the only integration point.
 
 ### Design Rules
@@ -99,7 +95,6 @@ Automation/
 
 | Library | Import Name | Key Public Types | External Deps |
 |---|---|---|---|
-| `plaud-api` | `plaud_api` | `PlaudClient`, `PlaudStateDB`, `DownloadedRecording`, `Transcript` | `httpx`, `websockets`, `aiosqlite` |
 | `agent-infra` | `agent_infra` | `TraceEvent`, `AgentLoopResult`, `SessionManager`, `SessionStore` | `claude-agent-sdk` |
 | `telegram-interface` | `telegram_interface` | `TelegramInterface`, `CommandConfig`, `BotConfig`, `ThreadStore` | `httpx`, `aiosqlite` |
 | `pkm` | `pkm` | `TranscriptWriter`, `TranscriptData` | None (stdlib only) |
@@ -116,7 +111,6 @@ The daemon (`audio_ingest`) is a thin orchestrator wiring the libraries together
 | `orchestrator.py` | Wires libraries, runs concurrent tasks (WebSocket, Telegram poller) |
 | `pipeline.py` | Composes library calls into audio processing flow |
 | `extraction.py` | Audio-specific extraction agent (uses agent-infra streaming + TII trace sender) |
-| `plaud_adapter.py` | Maps plaud-api types -> pipeline/PKM types |
 | `models.py` | `RecordingJob`, `StatusTracker` -- daemon-owned pipeline types |
 | `notifications.py` | Telegram notification helpers |
 | `status_provider.py` | Implements TII's `StatusProvider` protocol for `/status` command |
@@ -144,7 +138,7 @@ The daemon (`audio_ingest`) is a thin orchestrator wiring the libraries together
 
 ### Environment Setup
 - Each library and the daemon have their own venv (managed by `uv`)
-- Daemon depends on all 4 libraries via editable path deps in `pyproject.toml`
+- Daemon depends on the libraries via editable path deps in `pyproject.toml`
 - Install deps: `uv sync` or `uv pip install <package>` (run from the relevant package directory)
 - `sudo` not available from Claude Code -- systemd operations require manual execution
 
@@ -154,7 +148,6 @@ Each package runs its own test suite independently:
 
 ```bash
 # Libraries (use each library's own venv)
-cd libs/plaud-api && .venv/bin/python -m pytest tests/ -v
 cd libs/agent-infra && .venv/bin/python -m pytest tests/ -v
 cd libs/telegram-interface && .venv/bin/python -m pytest tests/ -v
 cd libs/pkm && .venv/bin/python -m pytest tests/ -v

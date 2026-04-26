@@ -32,7 +32,6 @@ A **monorepo of composable libraries** -- four independent packages with clear i
 ```
 Automation/
 ├── libs/
-│   ├── plaud-api/            # Plaud REST + WebSocket client (78 tests)
 │   ├── agent-infra/          # Claude Agent SDK runner, sessions, MCP config (66 tests)
 │   ├── telegram-interface/   # Telegram bot, command dispatch, trace streaming (178 tests)
 │   └── pkm/                  # PKM writing patterns (3 tests)
@@ -41,12 +40,6 @@ Automation/
 ```
 
 ### Libraries
-
-**`libs/plaud-api/`** -- Plaud cloud integration
-- `PlaudClient` -- REST API wrapper for authentication, recording metadata, file downloads
-- `PlaudStateDB` -- SQLite state tracking for processed recordings
-- WebSocket sync loop -- real-time monitoring for new recordings
-- Audio downloader -- .ogg download with retry logic
 
 **`libs/agent-infra/`** -- Claude Agent SDK infrastructure
 - `run_agent_loop` -- executes a Claude agent with tool access and turn limits
@@ -91,7 +84,7 @@ git clone https://github.com/AdrianV101/Automation.git
 cd Automation
 
 # Install all packages (each has its own venv)
-for pkg in libs/plaud-api libs/agent-infra libs/telegram-interface libs/pkm daemon; do
+for pkg in libs/agent-infra libs/telegram-interface libs/pkm daemon; do
   cd $pkg && uv venv && uv pip install -e ".[dev]" && cd -
 done
 
@@ -121,7 +114,6 @@ Each package has its own test suite and venv. 416 tests total.
 
 ```bash
 # Individual packages
-libs/plaud-api/.venv/bin/python -m pytest libs/plaud-api/tests/ -v          # 78 tests
 libs/agent-infra/.venv/bin/python -m pytest libs/agent-infra/tests/ -v      # 66 tests
 libs/telegram-interface/.venv/bin/python -m pytest libs/telegram-interface/tests/ -v  # 178 tests
 libs/pkm/.venv/bin/python -m pytest libs/pkm/tests/ -v                      # 3 tests
