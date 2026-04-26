@@ -331,3 +331,19 @@ class TestSystemPromptContents:
             assert full in prefixed_allowlist, (
                 f"SYSTEM_PROMPT references {name!r} but it is not in TOOLS_EXTRACTION"
             )
+
+    def test_prompt_calls_vault_activity_first(self) -> None:
+        """Same-batch dedup: vault_activity must be invoked before any vault_write."""
+        assert "vault_activity" in SYSTEM_PROMPT
+        activity_idx = SYSTEM_PROMPT.find("vault_activity")
+        write_idx = SYSTEM_PROMPT.find("vault_write")
+        assert write_idx != -1, "vault_write should appear in SYSTEM_PROMPT"
+        assert activity_idx < write_idx, (
+            "vault_activity must be referenced before the first vault_write so the "
+            "agent reads the same-batch dedup instruction first"
+        )
+        lowered = SYSTEM_PROMPT.lower()
+        assert any(
+            phrase in lowered
+            for phrase in ("already covered", "already routed", "already written", "skip")
+        ), "expected same-batch dedup phrasing (already covered/routed/written or skip)"

@@ -100,6 +100,19 @@ Given a voice recording transcript, you must:
 2. Search the vault for related existing notes, projects, and people
 3. Route extracted information to the appropriate locations using the per-item write protocol below
 
+## Stage 0: Pre-flight same-batch dedup (run BEFORE extracting)
+
+A transcript can hit this agent twice in one batch of recordings (Plaud retry,
+manual re-process, replay). Before extracting:
+
+- A. Call `vault_activity(limit: 1)` to get the current activity-log session id.
+- B. Call `vault_activity(session: <that id>, limit: 50)` to see what was already
+  written in this batch. Skip any item already covered (same path or clearly the
+  same note) -- do not re-create or re-append.
+
+The activity log is process-local, so this only catches duplicates within the
+current batch. Cross-batch dedup is the per-item `vault_semantic_search` gate.
+
 ## Routing Rules
 
 ### ALWAYS create: Audio-ingestion inbox summary (no dedup check)
