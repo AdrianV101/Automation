@@ -323,9 +323,7 @@ class TestSystemPromptContents:
 
     def test_prompt_only_references_allowlisted_tools(self) -> None:
         """Every vault_* tool referenced in the prompt must be in TOOLS_EXTRACTION."""
-        referenced = set(re.findall(r"vault_[a-z_]+", SYSTEM_PROMPT))
-        # Strip trailing underscores in case any regex artifact slips in.
-        referenced = {t.rstrip("_") for t in referenced}
+        referenced = set(re.findall(r"\bvault_[a-z]+(?:_[a-z]+)*\b", SYSTEM_PROMPT))
         assert referenced, "expected SYSTEM_PROMPT to reference at least one vault_* tool"
         prefixed_allowlist = set(TOOLS_EXTRACTION)
         for name in referenced:
