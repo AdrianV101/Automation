@@ -8,6 +8,20 @@ except ImportError:
 
 from .tools import KNOWN_PEOPLE, KNOWN_PEOPLE_ONELINER
 
+# Shared link-discovery recipe used by every write-capable prompt (NOTE, TASK,
+# EXTRACTION). Single source of truth for the 8 canonical relationship verbs
+# and the "related to" prohibition so the three prompts can't drift.
+LINK_DISCOVERY_RECIPE = (
+    "Run vault_suggest_links(path=<{path_label}>, limit=8), pick the top 3-5 "
+    "most relevant suggestions, write a one-line annotation per pick using a "
+    "SPECIFIC relationship verb -- builds-on, supersedes, implements, "
+    "contradicts, extends, refines, provides-context-for, is-an-instance-of "
+    "(never write a vague 'related to') -- and call "
+    "vault_add_links(path=<{path_label}>, links=[...annotated...]) to add them "
+    "to the note's '## Related' section. Skip if no suggestions returned."
+)
+
+
 NOTE_SYSTEM_PROMPT = (
     f"You are a PKM routing agent. You receive a fleeting note from {USER_NAME} "
     "and must store it in the appropriate location in their Obsidian vault.\n\n"
@@ -23,11 +37,7 @@ NOTE_SYSTEM_PROMPT = (
     "4. If it doesn't fit anywhere, call vault_write with template 'fleeting-note' under 00-Inbox/\n"
     "5. Always use vault_write or vault_append -- never create files without proper frontmatter\n"
     f"6. Keep it brief: store the note, don't embellish or rewrite {USER_NAME}'s words\n"
-    "7. After writing or appending, run vault_suggest_links(path=<note path>, limit=8),\n"
-    "   pick the top 3-5, annotate each with a SPECIFIC relationship verb (builds-on,\n"
-    "   supersedes, implements, contradicts, extends, refines, provides-context-for,\n"
-    "   is-an-instance-of -- never 'related to'), then call vault_add_links to write\n"
-    "   them to the note's '## Related' section. Skip if no suggestions returned.\n\n"
+    "7. " + LINK_DISCOVERY_RECIPE.format(path_label="note path") + "\n\n"
     "## Response Format\n"
     "Respond with a SINGLE LINE: the vault path where you stored it.\n\n"
     f"{KNOWN_PEOPLE_ONELINER}\n"
@@ -49,11 +59,7 @@ TASK_SYSTEM_PROMPT = (
     "2. Optionally read relevant code or search the web to add brief context to the task\n"
     "   (e.g. noting which file/function is relevant), but do NOT go deep -- 1-2 lookups max\n"
     "3. Create a task note using vault_write with template 'task' in the appropriate location\n"
-    "4. After writing, run vault_suggest_links(path=<task path>, limit=8), pick the top\n"
-    "   3-5, annotate each with a SPECIFIC relationship verb (builds-on, supersedes,\n"
-    "   implements, contradicts, extends, refines, provides-context-for,\n"
-    "   is-an-instance-of -- never 'related to'), then call vault_add_links to write\n"
-    "   them to the task's '## Related' section. Skip if no suggestions returned.\n"
+    "4. " + LINK_DISCOVERY_RECIPE.format(path_label="task path") + "\n"
     "5. Respond with the vault path where you stored it\n\n"
     "## Location Rules\n"
     "- If project-related, create in that project's tasks/ folder\n"
@@ -205,8 +211,8 @@ Apply this protocol to every routed item EXCEPT the always-on audio-ingestion in
 1. **Dedup check.** Run `vault_semantic_search(query=<intended title or topic>, limit=5)`.
    If any result has similarity > 0.8, treat it as the same note: switch to `vault_append`,
    `vault_edit`, or `vault_update_frontmatter` on that existing note instead of creating a
-   new one. Skip the rest of the per-item protocol's creation step but still run steps 4-6
-   (link discovery + insertion + bidirectional linking) against the existing note.
+   new one. Skip the rest of the per-item protocol's creation step but still run step 4
+   (link discovery + insertion) and step 5 (bidirectional linking) against the existing note.
 2. **Pick the template** from the content-type table above. Determine the target path.
 3. **Create the note** with `vault_write`. Populate every required frontmatter field --
    `type`, `created`, and `tags` are always required. Templates also require:
@@ -215,16 +221,8 @@ Apply this protocol to every routed item EXCEPT the always-on audio-ingestion in
    - `adr`: `deciders`.
    After `vault_write`, read the note with `vault_read` and replace the template's
    placeholder bullets with real content via `vault_edit`.
-4. **Discover connections.** Run `vault_suggest_links(path=<new note path>, limit=8)`
-   and pick the top 3-5 most relevant suggestions. If none are returned (isolated topic),
-   skip steps 5-6 -- the graph will fill in over time.
-5. **Annotate links.** Write a one-line annotation per pick using a SPECIFIC relationship
-   verb: builds-on, supersedes, implements, contradicts, extends, refines, provides-context-for,
-   is-an-instance-of. Never write a vague "related to <topic>" annotation.
-6. **Insert links.** Call `vault_add_links(path=<new note path>, links=[...annotated...])` to
-   write them to the note's `## Related` section. The tool deduplicates and creates the
-   section if missing.
-7. **Bidirectional linking.** For ADRs, research-notes, meeting-notes, troubleshooting-logs,
+4. **Discover, annotate, and insert links.** """ + LINK_DISCOVERY_RECIPE.format(path_label="new note path") + """
+5. **Bidirectional linking.** For ADRs, research-notes, meeting-notes, troubleshooting-logs,
    and permanent-notes: also call `vault_add_links` on the top 1-2 target notes to add a
    backlink annotation pointing to the new note. Skip this step for ephemeral or
    single-purpose items: fleeting-note, daily-note, and task.
