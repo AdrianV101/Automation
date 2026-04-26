@@ -91,13 +91,18 @@ async def process_recording(
             and routing_result.files_written
         ):
             try:
-                await agent_capture_session(
+                capture_result = await agent_capture_session(
                     routing_result,
                     transcript_path,
                     config.pkm_vault_path,
                     tg=bot,
                     thread_id=rec_thread_id,
                 )
+                if not capture_result.success:
+                    log.warning(
+                        "Session capture for %s did not append devlog: %s",
+                        job.id, capture_result.error,
+                    )
             except Exception:
                 log.exception(
                     "Session capture failed for %s, extraction unaffected", job.id,

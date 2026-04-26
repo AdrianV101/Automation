@@ -7,6 +7,7 @@ subset of vault tools: read-side plus vault_append and vault_add_links only.
 """
 from __future__ import annotations
 
+import logging
 import re
 from pathlib import Path
 from unittest.mock import AsyncMock, patch
@@ -408,6 +409,42 @@ class TestPipelineCaptureWiring:
             await process_recording(_make_job(), config, status=AsyncMock())
 
         mock_cap.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_capture_returning_unsuccess_logs_warning(
+        self, tmp_path, caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        """When capture returns success=False, pipeline logs a warning."""
+        from audio_ingest.pipeline import process_recording
+
+        config = _make_config(tmp_path, capture=True)
+        unsuccess = CaptureResult(
+            success=False, summary="", error="no devlog appended", turns_used=2,
+        )
+        with (
+            patch("audio_ingest.pipeline.create_forum_topic", new_callable=AsyncMock, return_value=None),
+            patch("audio_ingest.pipeline.write_raw_transcript", return_value=Path("/tmp/t.md")),
+            patch(
+                "audio_ingest.pipeline.agent_extract_and_route",
+                new_callable=AsyncMock, return_value=_make_routing_success(),
+            ),
+            patch("audio_ingest.pipeline.send_routing_summary", new_callable=AsyncMock),
+            patch(
+                "audio_ingest.pipeline.agent_capture_session",
+                new_callable=AsyncMock, return_value=unsuccess,
+            ),
+            caplog.at_level(logging.WARNING, logger="audio_ingest.pipeline"),
+        ):
+            await process_recording(_make_job(), config, status=AsyncMock())
+
+        warnings = [
+            r for r in caplog.records
+            if r.levelno == logging.WARNING and "did not append devlog" in r.getMessage()
+        ]
+        assert warnings, (
+            f"expected a warning containing 'did not append devlog'; "
+            f"got records: {[(r.levelname, r.getMessage()) for r in caplog.records]}"
+        )
 
     @pytest.mark.asyncio
     async def test_capture_failure_does_not_break_pipeline(self, tmp_path) -> None:
