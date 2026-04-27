@@ -6,6 +6,7 @@ protocol for resume-on-restart.
 """
 from __future__ import annotations
 
+import asyncio
 import logging
 from collections.abc import Awaitable, Callable
 from pathlib import Path
@@ -205,7 +206,22 @@ class SessionManager:
             except Exception:
                 log.exception("Error closing session %s", session_key)
 
-    async def close_all(self) -> None:
-        """Close all cached clients."""
+    async def close_all(self, per_session_timeout_s: float = 10.0) -> None:
+        """Close all cached clients with a per-session timeout.
+
+        A stuck SDK transport (subprocess unresponsive to close) would
+        otherwise block daemon shutdown indefinitely; the timeout ensures we
+        proceed to subprocess-tree cleanup in __main__._terminate_children.
+        """
         for key in list(self._clients):
-            await self.close_session(key)
+            try:
+                await asyncio.wait_for(
+                    self.close_session(key), timeout=per_session_timeout_s,
+                )
+            except asyncio.TimeoutError:
+                log.warning(
+                    "Timeout closing session %s after %.1fs; "
+                    "subprocess will be reaped on shutdown",
+                    key, per_session_timeout_s,
+                )
+                self._clients.pop(key, None)

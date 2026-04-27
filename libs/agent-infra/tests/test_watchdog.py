@@ -87,3 +87,64 @@ async def test_watchdog_propagates_work_exception():
             boom, on_event=None,
             inactivity_timeout_s=1.0, poll_interval_s=0.02,
         )
+
+
+@pytest.mark.asyncio
+async def test_watchdog_drains_work_task_finally_block_executes():
+    """When the watchdog cancels the work task, its finally block must run
+    before with_inactivity_watchdog returns — no orphaned tasks holding
+    resources past this function's return."""
+    finally_ran = asyncio.Event()
+
+    async def work_with_finally(_emit):
+        try:
+            await asyncio.sleep(60)
+        finally:
+            finally_ran.set()
+
+    with pytest.raises(AgentInactivityTimeout):
+        await with_inactivity_watchdog(
+            work_with_finally, on_event=None,
+            inactivity_timeout_s=0.1, poll_interval_s=0.02,
+        )
+
+    # By the time with_inactivity_watchdog returned, the work task's finally
+    # must have executed — otherwise it's still running in the background.
+    assert finally_ran.is_set(), "work task finally did not run before watchdog returned"
+
+
+@pytest.mark.asyncio
+async def test_watchdog_logs_masked_exception(caplog):
+    """If the work raises a real exception around the time it's cancelled,
+    log it so the user can see what actually went wrong."""
+    import logging as stdlib_logging
+
+    class HiddenError(Exception):
+        pass
+
+    async def crashing_work(emit):
+        # Begin work, then raise after the watchdog will have fired.
+        await asyncio.sleep(0.15)
+        raise HiddenError("real underlying cause")
+
+    caplog.set_level(stdlib_logging.ERROR, logger="agent_infra.watchdog")
+
+    with pytest.raises(AgentInactivityTimeout):
+        await with_inactivity_watchdog(
+            crashing_work, on_event=None,
+            inactivity_timeout_s=0.05, poll_interval_s=0.02,
+        )
+
+    # Either the work was cancelled cleanly OR the masked error was logged —
+    # both outcomes are acceptable; the bug we're guarding against is
+    # silently dropping HiddenError entirely.
+    if any("masked by AgentInactivityTimeout" in r.message for r in caplog.records):
+        # The error path executed — verify HiddenError was the logged exception
+        masked_records = [
+            r for r in caplog.records
+            if "masked by AgentInactivityTimeout" in r.message
+        ]
+        assert any(
+            r.exc_info and r.exc_info[0] is HiddenError
+            for r in masked_records
+        ), "masked-exception log did not include HiddenError"

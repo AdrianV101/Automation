@@ -12,6 +12,7 @@ tool_result, complete, error) will keep the timer fresh.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import logging
 import time
 from collections.abc import Awaitable, Callable
@@ -79,10 +80,15 @@ async def with_inactivity_watchdog(
             return_when=asyncio.FIRST_COMPLETED,
         )
     finally:
-        if not work_task.done():
-            work_task.cancel()
-        if not watchdog_task.done():
-            watchdog_task.cancel()
+        # Cancel + await both tasks so we don't leave background work running
+        # past this function. Suppress everything during the drain — we'll
+        # propagate the right exception below based on `done`.
+        for t in (work_task, watchdog_task):
+            if not t.done():
+                t.cancel()
+        for t in (work_task, watchdog_task):
+            with contextlib.suppress(BaseException):
+                await t
 
     # Honor outer cancellation if it landed during asyncio.wait. asyncio.wait
     # can return normally even when the awaiting task was cancelled, so check
@@ -94,18 +100,18 @@ async def with_inactivity_watchdog(
     if work_task in done:
         return work_task.result()
 
-    # Watchdog fired first — drain the cancelled work_task. If the work raised
-    # a real exception (e.g., an SDK error that itself caused the silence), log
-    # it: the AgentInactivityTimeout we raise next would otherwise mask it.
-    try:
-        await work_task
-    except asyncio.CancelledError:
-        pass
-    except Exception:
-        log.exception(
-            "Work task raised during inactivity-watchdog drain "
-            "(masked by AgentInactivityTimeout)",
-        )
+    # Watchdog fired first. The work_task has already been drained above; if
+    # it raised a real exception (e.g. an SDK error that caused the silence)
+    # log it before raising AgentInactivityTimeout — otherwise the synthetic
+    # timeout masks the real cause.
+    if not work_task.cancelled():
+        exc = work_task.exception()
+        if exc is not None:
+            log.error(
+                "Work task raised during inactivity-watchdog drain "
+                "(masked by AgentInactivityTimeout)",
+                exc_info=exc,
+            )
     raise AgentInactivityTimeout(
         f"No TraceEvent for {inactivity_timeout_s:.1f}s",
     )

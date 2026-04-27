@@ -416,3 +416,45 @@ async def test_send_inactivity_timeout_evicts_session_and_returns_error():
     assert "inactivity" in resp.error.lower() or "timeout" in resp.error.lower()
     assert "t1" not in mgr._clients  # evicted
     fake_client.__aexit__.assert_called()  # subprocess cleanup
+
+
+@pytest.mark.asyncio
+async def test_close_all_skips_session_that_hangs_in_aexit(caplog):
+    """If one client's __aexit__ hangs, close_all must time out and proceed
+    to the next client; subprocess cleanup is the next layer's responsibility."""
+    import logging as stdlib_logging
+
+    store = FakeSessionStore()
+    mgr = SessionManager(store, Path("/tmp/vault"))
+
+    hang_event = asyncio.Event()  # never set
+
+    async def hanging_aexit(*_args):
+        await hang_event.wait()  # blocks forever
+
+    async def fast_aexit(*_args):
+        return None
+
+    hanging_client = MagicMock()
+    hanging_client.__aexit__ = hanging_aexit
+
+    fast_client = MagicMock()
+    fast_client.__aexit__ = AsyncMock(side_effect=fast_aexit)
+
+    mgr._clients["hung"] = hanging_client
+    mgr._clients["fast"] = fast_client
+
+    caplog.set_level(stdlib_logging.WARNING, logger="agent_infra.sessions")
+
+    await mgr.close_all(per_session_timeout_s=0.05)
+
+    # Both clients must be removed (the hung one popped after timeout)
+    assert "hung" not in mgr._clients
+    assert "fast" not in mgr._clients
+    # Fast client got its __aexit__ called normally
+    fast_client.__aexit__.assert_called_once()
+    # Operator gets a warning about the timeout
+    assert any(
+        "Timeout closing session" in r.message and "hung" in r.message
+        for r in caplog.records
+    ), "expected timeout warning for hung session"
