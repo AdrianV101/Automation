@@ -18,11 +18,16 @@ logging.basicConfig(
 log = logging.getLogger(__name__)
 
 
-def _install_signal_handlers(loop: asyncio.AbstractEventLoop) -> None:
+def _install_signal_handlers(
+    loop: asyncio.AbstractEventLoop, root_task: asyncio.Task,
+) -> None:
+    # Cancel only the root task — the TaskGroup inside run_daemon then drives
+    # structured cancellation of its children, and the orchestrator's finally
+    # block closes SDK clients before subprocess pipes are torn down.
     def _request_shutdown(sig_name: str) -> None:
-        log.info("Received %s, cancelling tasks", sig_name)
-        for task in asyncio.all_tasks(loop):
-            task.cancel()
+        log.info("Received %s, cancelling root task", sig_name)
+        if not root_task.done():
+            root_task.cancel()
 
     for sig in (signal.SIGTERM, signal.SIGINT):
         try:
@@ -58,14 +63,6 @@ def _terminate_children(timeout_s: float = 5.0) -> None:
 
 
 def main() -> None:
-    # Become a process group leader so children inherit our pgid.
-    # Best-effort: if the daemon is already a session leader (rare under
-    # launchd) this is a no-op or raises PermissionError.
-    try:
-        os.setpgrp()
-    except (PermissionError, OSError):
-        pass
-
     parser = argparse.ArgumentParser(prog="audio-ingest")
     subparsers = parser.add_subparsers(dest="command")
     add_subparsers(subparsers)
@@ -80,9 +77,10 @@ def main() -> None:
     loop = asyncio.new_event_loop()
     try:
         asyncio.set_event_loop(loop)
-        _install_signal_handlers(loop)
+        root = loop.create_task(run_daemon(config))
+        _install_signal_handlers(loop, root)
         try:
-            loop.run_until_complete(run_daemon(config))
+            loop.run_until_complete(root)
         except asyncio.CancelledError:
             log.info("Daemon cancelled, draining")
     finally:

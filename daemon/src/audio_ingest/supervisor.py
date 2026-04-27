@@ -3,6 +3,12 @@
 A supervisor calls a coroutine factory in a loop; if the factory raises any
 non-CancelledError exception, it logs and restarts after a backoff. Cancellation
 propagates so the parent TaskGroup can shut down cleanly.
+
+Limitation: this catches crashes (factory raised) and clean returns (factory
+returned without raising). It does NOT detect a task that is silently parked
+on a non-firing await — for that, use a watchdog at the call site (e.g.,
+agent_infra.watchdog.with_inactivity_watchdog) or a heartbeat-based liveness
+check inside the supervised work.
 """
 from __future__ import annotations
 
