@@ -208,6 +208,7 @@ async def poll_telegram_updates(
         name: str,
         coro: Awaitable[None],
         *,
+        error_text: str = "Failed to process command. Check daemon logs.",
         thread_id: int | None = None,
         client: httpx.AsyncClient | None = None,
     ) -> None:
@@ -219,7 +220,7 @@ async def poll_telegram_updates(
                 if client is not None:
                     try:
                         await _send_message_with_client(
-                            "Failed to process command. Check daemon logs.",
+                            error_text,
                             tg, client, thread_id=thread_id,
                         )
                     except Exception:
@@ -233,8 +234,8 @@ async def poll_telegram_updates(
         active.add(t)
         t.add_done_callback(active.discard)
 
-    try:
-        async with httpx.AsyncClient(timeout=45.0) as client:
+    async with httpx.AsyncClient(timeout=45.0) as client:
+        try:
             while True:
                 try:
                     params: dict = {"timeout": 30, "allowed_updates": allowed}
@@ -278,6 +279,7 @@ async def poll_telegram_updates(
                             _spawn(
                                 "topic_message",
                                 on_topic_message(thread_id, text),
+                                error_text="Failed to process message. Check daemon logs.",
                                 thread_id=thread_id, client=client,
                             )
                         elif reply_to and on_labeling_reply is not None:
@@ -286,6 +288,7 @@ async def poll_telegram_updates(
                                 _spawn(
                                     "labeling_reply",
                                     on_labeling_reply(reply_to_id, text),
+                                    error_text="Failed to process labeling reply. Check daemon logs.",
                                     client=client,
                                 )
                         elif on_message is not None:
@@ -309,21 +312,23 @@ async def poll_telegram_updates(
                     log.exception("Telegram polling error, retrying in %ds", backoff)
                     await asyncio.sleep(backoff)
                     backoff = min(backoff * 2, 60)
-    finally:
-        # Cancel and drain in-flight handlers on shutdown.
-        # Yield control once first so freshly-spawned tasks can reach their
-        # first await before we cancel (needed for graceful shutdown).
-        if active:
-            await asyncio.sleep(0)
-        for t in list(active):
-            t.cancel()
-        for t in list(active):
-            try:
-                await t
-            except asyncio.CancelledError:
-                pass
-            except Exception:
-                log.warning(
-                    "In-flight Telegram handler raised during shutdown drain",
-                    exc_info=True,
-                )
+        finally:
+            # Cancel and drain in-flight handlers while the httpx client is
+            # still open — handlers in their except branch may send error
+            # notifications via the client.
+            # Yield once first so freshly-spawned tasks can reach their first
+            # await before we cancel (needed for graceful shutdown).
+            if active:
+                await asyncio.sleep(0)
+            for t in list(active):
+                t.cancel()
+            for t in list(active):
+                try:
+                    await t
+                except asyncio.CancelledError:
+                    pass
+                except Exception:
+                    log.warning(
+                        "In-flight Telegram handler raised during shutdown drain",
+                        exc_info=True,
+                    )

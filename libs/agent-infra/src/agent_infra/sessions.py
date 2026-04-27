@@ -94,15 +94,27 @@ class SessionManager:
             options = self._build_options(
                 system_prompt, allowed_tools=allowed_tools, resume=resume_id,
             )
-            client = ClaudeSDKClient(options=options)
-            await client.__aenter__()
+            try:
+                client = ClaudeSDKClient(options=options)
+                await client.__aenter__()
+            except Exception:
+                log.exception("Failed to create SDK client for session %s", session_key)
+                raise
             self._clients[session_key] = client
 
         try:
             await client.query(message)
         except Exception:
             log.exception("Client query failed for session %s, evicting", session_key)
-            await self.close_session(session_key)
+            try:
+                await asyncio.wait_for(self.close_session(session_key), timeout=5.0)
+            except asyncio.TimeoutError:
+                log.warning(
+                    "Timeout closing session %s after query failure; "
+                    "subprocess will be reaped at daemon shutdown",
+                    session_key,
+                )
+                self._clients.pop(session_key, None)
             return SessionResponse(
                 text="Session error. Please try again.",
                 error="Client query failed",
@@ -116,14 +128,33 @@ class SessionManager:
         async def _work(emit):
             return await self._collect_response(client, session_key, on_event=emit)
 
+        # Poll at 1/4 of the timeout, capped at 5s — keeps the watchdog cheap
+        # for long timeouts while still reacting promptly for short ones.
+        poll_interval_s = min(5.0, inactivity_timeout_s / 4)
         try:
             return await with_inactivity_watchdog(
                 _work, on_event=on_event,
                 inactivity_timeout_s=inactivity_timeout_s,
+                poll_interval_s=poll_interval_s,
             )
         except AgentInactivityTimeout as exc:
             log.error("Session %s timed out: %s", session_key, exc)
-            await self.close_session(session_key)
+            # close_session awaits client.__aexit__, which can ITSELF hang if
+            # the SDK can't shut down a wedged subprocess transport — exactly
+            # the scenario the watchdog just detected. Bound it so dispatch
+            # returns to the user even when cleanup leaks a subprocess; the
+            # daemon's _terminate_children reaper will catch it on shutdown.
+            try:
+                await asyncio.wait_for(
+                    self.close_session(session_key), timeout=5.0,
+                )
+            except asyncio.TimeoutError:
+                log.warning(
+                    "Timeout closing session %s after watchdog fired; "
+                    "subprocess will be reaped at daemon shutdown",
+                    session_key,
+                )
+                self._clients.pop(session_key, None)
             return SessionResponse(
                 text="Agent went silent — request cancelled.",
                 error=f"inactivity timeout after {inactivity_timeout_s:.0f}s",

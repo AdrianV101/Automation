@@ -668,3 +668,64 @@ class TestConcurrentDispatch:
 
         assert handler_started_count == 3, "all 3 handlers must eventually start"
         assert peak_in_flight == 2, f"concurrency must be capped at 2, was {peak_in_flight}"
+
+
+@pytest.mark.asyncio
+async def test_topic_handler_error_sends_correct_message():
+    """A failing topic_message handler sends "Failed to process message",
+    not "Failed to process command"."""
+    tg = BotConfig(bot_token="tok", chat_id="123")
+    sent_texts: list[str] = []
+
+    async def failing_topic_handler(thread_id: int, text: str) -> None:
+        raise RuntimeError("boom")
+
+    update = {
+        "update_id": 1,
+        "message": {
+            "text": "hello",
+            "chat": {"id": 123},
+            "message_thread_id": 42,
+        },
+    }
+
+    call_count = 0
+
+    async def mock_get(url, *, params):
+        nonlocal call_count
+        call_count += 1
+        resp = MagicMock()
+        resp.raise_for_status = MagicMock()
+        if call_count == 1:
+            resp.json.return_value = {"result": [update]}
+        else:
+            raise KeyboardInterrupt()
+        return resp
+
+    async def mock_post(url, *, json):
+        sent_texts.append(json.get("text", ""))
+        resp = MagicMock()
+        resp.raise_for_status = MagicMock()
+        resp.json.return_value = {}
+        return resp
+
+    with patch("telegram_interface.bot.httpx.AsyncClient") as MockClient:
+        mock_client = AsyncMock()
+        MockClient.return_value.__aenter__ = AsyncMock(return_value=mock_client)
+        MockClient.return_value.__aexit__ = AsyncMock(return_value=False)
+        mock_client.get = mock_get
+        mock_client.post = mock_post
+
+        with pytest.raises(KeyboardInterrupt):
+            await poll_telegram_updates(
+                tg, on_topic_message=failing_topic_handler,
+            )
+
+        await asyncio.sleep(0.05)
+
+    assert any("Failed to process message" in t for t in sent_texts), (
+        f"expected 'Failed to process message' in sent texts, got: {sent_texts}"
+    )
+    assert not any("process command" in t for t in sent_texts), (
+        f"should not say 'process command' for topic handler, got: {sent_texts}"
+    )

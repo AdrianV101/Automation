@@ -419,6 +419,63 @@ async def test_send_inactivity_timeout_evicts_session_and_returns_error():
 
 
 @pytest.mark.asyncio
+async def test_send_aenter_failure_is_logged(caplog):
+    """If SDK __aenter__ fails, the exception is logged before propagating."""
+    import logging as stdlib_logging
+    from agent_infra import SessionManager
+
+    store = FakeSessionStore()
+    mgr = SessionManager(store, Path("/tmp/vault"))
+
+    fake_client = MagicMock()
+    fake_client.__aenter__ = AsyncMock(side_effect=RuntimeError("subprocess failed to start"))
+
+    caplog.set_level(stdlib_logging.ERROR, logger="agent_infra.sessions")
+
+    with patch("agent_infra.sessions.ClaudeSDKClient", return_value=fake_client):
+        with pytest.raises(RuntimeError, match="subprocess failed"):
+            await mgr.send(session_key="s1", message="hi", system_prompt="sys")
+
+    assert any(
+        "Failed to create SDK client" in r.message and "s1" in r.message
+        for r in caplog.records
+    ), "expected log entry for __aenter__ failure"
+    assert "s1" not in mgr._clients  # must not be cached on failure
+
+
+@pytest.mark.asyncio
+async def test_send_query_failure_eviction_is_bounded(caplog):
+    """When client.query() fails, close_session is called with a timeout so a
+    hung transport cannot re-create the original 18-hour-hang scenario."""
+    import logging as stdlib_logging
+    from agent_infra import SessionManager
+
+    store = FakeSessionStore()
+    mgr = SessionManager(store, Path("/tmp/vault"))
+
+    hang_event = asyncio.Event()  # never set
+
+    async def hanging_aexit(*_):
+        await hang_event.wait()
+
+    fake_client = MagicMock()
+    fake_client.__aenter__ = AsyncMock(return_value=fake_client)
+    fake_client.query = AsyncMock(side_effect=RuntimeError("query boom"))
+    fake_client.__aexit__ = hanging_aexit
+
+    caplog.set_level(stdlib_logging.WARNING, logger="agent_infra.sessions")
+
+    with patch("agent_infra.sessions.ClaudeSDKClient", return_value=fake_client):
+        resp = await mgr.send(
+            session_key="q1", message="hi", system_prompt="sys",
+        )
+
+    assert resp.error is not None
+    assert "q1" not in mgr._clients
+    assert any("Timeout closing session" in r.message for r in caplog.records)
+
+
+@pytest.mark.asyncio
 async def test_close_all_skips_session_that_hangs_in_aexit(caplog):
     """If one client's __aexit__ hangs, close_all must time out and proceed
     to the next client; subprocess cleanup is the next layer's responsibility."""

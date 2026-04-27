@@ -148,3 +148,51 @@ async def test_watchdog_logs_masked_exception(caplog):
             r.exc_info and r.exc_info[0] is HiddenError
             for r in masked_records
         ), "masked-exception log did not include HiddenError"
+
+
+@pytest.mark.asyncio
+async def test_watchdog_raises_for_zero_timeout():
+    """inactivity_timeout_s must be positive."""
+    with pytest.raises(ValueError, match="inactivity_timeout_s must be positive"):
+        await with_inactivity_watchdog(
+            lambda emit: asyncio.sleep(0),
+            on_event=None,
+            inactivity_timeout_s=0,
+            poll_interval_s=0.01,
+        )
+
+
+@pytest.mark.asyncio
+async def test_watchdog_raises_when_poll_interval_exceeds_timeout():
+    """poll_interval_s must be less than inactivity_timeout_s."""
+    with pytest.raises(ValueError, match="poll_interval_s"):
+        await with_inactivity_watchdog(
+            lambda emit: asyncio.sleep(0),
+            on_event=None,
+            inactivity_timeout_s=0.1,
+            poll_interval_s=0.5,
+        )
+
+
+@pytest.mark.asyncio
+async def test_watchdog_fires_after_events_then_silence():
+    """Events arrive then stop; watchdog fires and on_event received all events."""
+    received: list[TraceEvent] = []
+
+    async def on_event(ev: TraceEvent) -> None:
+        received.append(ev)
+
+    async def emit_then_hang(emit):
+        await emit(TraceEvent(kind="text", content="hello"))
+        await asyncio.sleep(60)  # goes silent
+
+    with pytest.raises(AgentInactivityTimeout):
+        await with_inactivity_watchdog(
+            emit_then_hang,
+            on_event=on_event,
+            inactivity_timeout_s=0.2,
+            poll_interval_s=0.05,
+        )
+
+    assert len(received) == 1
+    assert received[0].content == "hello"

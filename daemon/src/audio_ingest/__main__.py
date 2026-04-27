@@ -52,14 +52,30 @@ def _terminate_children(timeout_s: float = 5.0) -> None:
     for c in children:
         try:
             c.terminate()
-        except (psutil.NoSuchProcess, psutil.AccessDenied):
+        except psutil.NoSuchProcess:
             pass
-    gone, alive = psutil.wait_procs(children, timeout=timeout_s)
+        except psutil.AccessDenied:
+            log.warning(
+                "AccessDenied terminating child pid=%d (%s); leaking",
+                c.pid, c.name(),
+            )
+    try:
+        _gone, alive = psutil.wait_procs(children, timeout=timeout_s)
+    except Exception:
+        log.exception(
+            "psutil.wait_procs raised; force-killing all children",
+        )
+        alive = children
     for c in alive:
         try:
             c.kill()
-        except (psutil.NoSuchProcess, psutil.AccessDenied):
+        except psutil.NoSuchProcess:
             pass
+        except psutil.AccessDenied:
+            log.warning(
+                "AccessDenied killing child pid=%d (%s); leaking",
+                c.pid, c.name(),
+            )
 
 
 def main() -> None:
@@ -83,9 +99,14 @@ def main() -> None:
             loop.run_until_complete(root)
         except asyncio.CancelledError:
             log.info("Daemon cancelled, draining")
+        except Exception:
+            log.exception("Daemon exited with unexpected error")
+            raise
     finally:
         try:
             loop.run_until_complete(loop.shutdown_asyncgens())
+        except Exception:
+            log.warning("shutdown_asyncgens raised during teardown", exc_info=True)
         finally:
             loop.close()
         _terminate_children()

@@ -108,13 +108,16 @@ def test_terminate_children_swallows_no_such_process_during_terminate():
     c2.terminate.assert_called_once()
 
 
-def test_terminate_children_swallows_access_denied_during_kill():
-    """A SIGKILL that fails with AccessDenied is logged-and-skipped, not
-    propagated — daemon shutdown must not crash on cleanup edge cases."""
+def test_terminate_children_logs_access_denied_during_kill(caplog):
+    """A SIGKILL that fails with AccessDenied is logged at WARNING and
+    skipped; daemon shutdown must not crash on cleanup edge cases, but
+    leaving an orphan running deserves an operator-visible signal."""
     c1 = _make_child(101)
     c1.kill.side_effect = psutil.AccessDenied(pid=101)
     me = MagicMock(spec=psutil.Process)
     me.children.return_value = [c1]
+
+    caplog.set_level(logging.WARNING, logger="audio_ingest.__main__")
 
     with (
         patch("audio_ingest.__main__.psutil.Process", return_value=me),
@@ -127,6 +130,63 @@ def test_terminate_children_swallows_access_denied_during_kill():
 
     c1.terminate.assert_called_once()
     c1.kill.assert_called_once()
+    assert any(
+        "AccessDenied killing" in r.message and "pid=101" in r.message
+        for r in caplog.records
+    ), f"missing AccessDenied warning; got: {[r.message for r in caplog.records]}"
+
+
+def test_terminate_children_logs_access_denied_during_terminate(caplog):
+    """SIGTERM AccessDenied is also logged at WARNING."""
+    c1 = _make_child(101)
+    c1.terminate.side_effect = psutil.AccessDenied(pid=101)
+    me = MagicMock(spec=psutil.Process)
+    me.children.return_value = [c1]
+
+    caplog.set_level(logging.WARNING, logger="audio_ingest.__main__")
+
+    with (
+        patch("audio_ingest.__main__.psutil.Process", return_value=me),
+        patch(
+            "audio_ingest.__main__.psutil.wait_procs",
+            return_value=([c1], []),
+        ),
+    ):
+        _terminate_children(timeout_s=0.5)
+
+    assert any(
+        "AccessDenied terminating" in r.message and "pid=101" in r.message
+        for r in caplog.records
+    ), f"missing AccessDenied warning; got: {[r.message for r in caplog.records]}"
+
+
+def test_terminate_children_force_kills_when_wait_procs_raises(caplog):
+    """If wait_procs itself raises, the function logs and falls back to
+    SIGKILLing all children — no crash, no leaked subprocesses."""
+    c1 = _make_child(101)
+    c2 = _make_child(102)
+    me = MagicMock(spec=psutil.Process)
+    me.children.return_value = [c1, c2]
+
+    caplog.set_level(logging.ERROR, logger="audio_ingest.__main__")
+
+    with (
+        patch("audio_ingest.__main__.psutil.Process", return_value=me),
+        patch(
+            "audio_ingest.__main__.psutil.wait_procs",
+            side_effect=psutil.Error("simulated wait_procs failure"),
+        ),
+    ):
+        _terminate_children(timeout_s=0.5)
+
+    c1.terminate.assert_called_once()
+    c2.terminate.assert_called_once()
+    # All children get SIGKILL since wait_procs couldn't enumerate survivors
+    c1.kill.assert_called_once()
+    c2.kill.assert_called_once()
+    assert any(
+        "wait_procs raised" in r.message for r in caplog.records
+    )
 
 
 def test_terminate_children_logs_count_at_info_level(caplog):

@@ -93,7 +93,13 @@ async def supervise(
             backoff = restart_backoff_s
             consecutive_failures = 0
             persistent_alerted = False
-        log.warning("%s returned after %.1fs (expected long-running), restarting in %.1fs", name, elapsed, backoff)
+        consecutive_failures += 1
+        log.warning(
+            "%s returned after %.1fs (expected long-running, consecutive failures=%d), restarting in %.1fs",
+            name, elapsed, consecutive_failures, backoff,
+        )
+        if consecutive_failures >= persistent_failure_threshold:
+            await _fire_persistent(consecutive_failures)
         try:
             await asyncio.sleep(backoff)
         except asyncio.CancelledError:

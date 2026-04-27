@@ -44,8 +44,19 @@ async def with_inactivity_watchdog(
                             emit so the user-visible event stream is preserved
     inactivity_timeout_s  : raise AgentInactivityTimeout if no event for this long
     poll_interval_s       : how often the watchdog checks (small enough to react
-                            promptly, large enough to be cheap)
+                            promptly, large enough to be cheap). Must be less
+                            than inactivity_timeout_s; for timeouts shorter
+                            than ~60s, pass a proportionally smaller value.
     """
+    if inactivity_timeout_s <= 0:
+        raise ValueError(
+            f"inactivity_timeout_s must be positive, got {inactivity_timeout_s}"
+        )
+    if poll_interval_s >= inactivity_timeout_s:
+        raise ValueError(
+            f"poll_interval_s ({poll_interval_s}) must be less than "
+            f"inactivity_timeout_s ({inactivity_timeout_s})"
+        )
     last_event_at = time.monotonic()
     lock = asyncio.Lock()
 
@@ -87,7 +98,7 @@ async def with_inactivity_watchdog(
             if not t.done():
                 t.cancel()
         for t in (work_task, watchdog_task):
-            with contextlib.suppress(BaseException):
+            with contextlib.suppress(asyncio.CancelledError, Exception):
                 await t
 
     # Honor outer cancellation if it landed during asyncio.wait. asyncio.wait
