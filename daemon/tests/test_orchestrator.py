@@ -25,6 +25,14 @@ class TestRunDaemonEarlyExits:
         await run_daemon(config)
 
 
+async def _fake_supervise_run_once(name, factory, **_kwargs):
+    """Test helper: run the factory exactly once so TaskGroup completes."""
+    try:
+        await factory()
+    except Exception:
+        pass
+
+
 class TestRunDaemonEmailPath:
     @pytest.mark.asyncio
     async def test_orchestrator_starts_email_listener_when_enabled(
@@ -44,6 +52,7 @@ class TestRunDaemonEmailPath:
         )
 
         with (
+            patch("audio_ingest.orchestrator.supervise", new=_fake_supervise_run_once),
             patch("audio_ingest.orchestrator.ImapIdleListener") as MockListener,
             patch("audio_ingest.orchestrator.EmailIngestStateDB") as MockDb,
             patch("audio_ingest.orchestrator.TelegramInterface") as MockTii,
@@ -67,6 +76,59 @@ class TestRunDaemonEmailPath:
             await run_daemon(cfg)
             MockListener.assert_called_once()
             mock_listener.run.assert_awaited()
+
+    @pytest.mark.asyncio
+    async def test_orchestrator_wraps_listener_and_poller_in_supervisor(
+        self, tmp_path: Path,
+    ) -> None:
+        """Both long-running tasks must be wrapped in supervise() so a crash
+        in one does not bring down the daemon."""
+        cfg = DaemonConfig(
+            email_ingest_enabled=True,
+            imap_host="127.0.0.1", imap_port=9999,
+            imap_user="u@x", imap_password="p",
+            telegram_bot_token="t", telegram_chat_id="c",
+            pkm_vault_path=tmp_path,
+            email_ingest_state_db_path=tmp_path / "email.db",
+        )
+
+        supervised_names: list[str] = []
+
+        async def fake_supervise(name, factory, **_kwargs):
+            # Record the task name and run the factory exactly once so the
+            # TaskGroup completes deterministically.
+            supervised_names.append(name)
+            try:
+                await factory()
+            except Exception:
+                pass
+
+        with (
+            patch("audio_ingest.orchestrator.supervise", new=fake_supervise),
+            patch("audio_ingest.orchestrator.ImapIdleListener") as MockListener,
+            patch("audio_ingest.orchestrator.EmailIngestStateDB") as MockDb,
+            patch("audio_ingest.orchestrator.TelegramInterface") as MockTii,
+            patch("audio_ingest.orchestrator.ThreadStore") as MockThreadStore,
+            patch("audio_ingest.orchestrator.SessionManager") as MockSessionMgr,
+            patch("audio_ingest.orchestrator.check_topics_enabled", new=AsyncMock(return_value=True)),
+            patch("audio_ingest.orchestrator.create_forum_topic", new=AsyncMock(return_value=42)),
+            patch("audio_ingest.orchestrator.reopen_forum_topic", new=AsyncMock(return_value=False)),
+        ):
+            MockListener.return_value.run = AsyncMock(return_value=None)
+            mock_db = MockDb.return_value
+            mock_db.init_db = AsyncMock(return_value=None)
+            mock_db.get_setting = AsyncMock(return_value=None)
+            mock_db.set_setting = AsyncMock(return_value=None)
+            MockThreadStore.return_value.init_db = AsyncMock(return_value=None)
+            MockSessionMgr.return_value.close_all = AsyncMock(return_value=None)
+            MockTii.return_value.run_poller = AsyncMock(return_value=None)
+
+            await run_daemon(cfg)
+
+        # Both names must appear, regardless of order
+        assert set(supervised_names) == {"imap-listener", "telegram-poller"}, (
+            f"unexpected supervised tasks: {supervised_names}"
+        )
 
 
 class TestSetupPipelineTopicEmail:

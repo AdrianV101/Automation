@@ -15,6 +15,7 @@ from email_ingest import (
 
 from .config import DaemonConfig
 from .command_config import DAEMON_COMMANDS
+from .supervisor import supervise
 from .models import RecordingJob, StatusTracker
 from .notifications import format_file_list
 from .pipeline import process_recording
@@ -229,8 +230,8 @@ async def _run_email_ingest_path(config: DaemonConfig) -> None:
 
     try:
         async with asyncio.TaskGroup() as tg:
-            tg.create_task(listener.run())
-            tg.create_task(tii.run_poller())
+            tg.create_task(supervise("imap-listener", listener.run))
+            tg.create_task(supervise("telegram-poller", tii.run_poller))
     finally:
         await session_mgr.close_all()
 
