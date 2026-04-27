@@ -81,3 +81,23 @@ def test_email_ingest_enabled_from_env(monkeypatch: pytest.MonkeyPatch) -> None:
     assert cfg.email_ingest_enabled is True
     assert cfg.imap_user == "imap-test@example.com"
     assert cfg.imap_password == "test-password"
+
+
+def test_agent_inactivity_timeout_default(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "x")
+    monkeypatch.setenv("TELEGRAM_CHAT_ID", "y")
+    monkeypatch.setenv("PKM_VAULT_PATH", "/tmp/vault")
+    cfg = DaemonConfig.from_env()
+    assert cfg.agent_inactivity_timeout_s == 600.0
+    assert cfg.max_concurrent_dispatch == 4
+
+
+def test_agent_inactivity_timeout_from_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "x")
+    monkeypatch.setenv("TELEGRAM_CHAT_ID", "y")
+    monkeypatch.setenv("PKM_VAULT_PATH", "/tmp/vault")
+    monkeypatch.setenv("AGENT_INACTIVITY_TIMEOUT_S", "300")
+    monkeypatch.setenv("MAX_CONCURRENT_DISPATCH", "8")
+    cfg = DaemonConfig.from_env()
+    assert cfg.agent_inactivity_timeout_s == 300.0
+    assert cfg.max_concurrent_dispatch == 8

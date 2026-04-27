@@ -190,6 +190,7 @@ async def _run_email_ingest_path(config: DaemonConfig) -> None:
         thread_store=thread_store,
         status_provider=None,  # no status backend for email ingest yet
         file_formatter=format_file_list,
+        agent_inactivity_timeout_s=config.agent_inactivity_timeout_s,
     )
 
     topics_ok = await check_topics_enabled(bot)
