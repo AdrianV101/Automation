@@ -178,8 +178,12 @@ async def poll_telegram_updates(
     on_callback_query: Callable[[str, int, str], Awaitable[None]] | None = None,
     on_message: Callable[[str], Awaitable[None]] | None = None,
     on_topic_message: Callable[[int, str], Awaitable[None]] | None = None,
+    max_concurrent_dispatch: int = 4,
 ) -> None:
     """Long-running coroutine. Uses Telegram long-polling (timeout=30).
+
+    Dispatches handlers concurrently up to max_concurrent_dispatch at a time, so
+    one slow handler does not block subsequent updates.
 
     Calls on_labeling_reply(reply_to_message_id, text) for replies
     to bot messages (if provided).
@@ -197,117 +201,121 @@ async def poll_telegram_updates(
     if on_callback_query is not None:
         allowed.append("callback_query")
 
-    async with httpx.AsyncClient(timeout=45.0) as client:
-        while True:
+    sem = asyncio.Semaphore(max_concurrent_dispatch)
+    active: set[asyncio.Task] = set()
+
+    async def _run_handler(
+        name: str,
+        coro: Awaitable[None],
+        *,
+        thread_id: int | None = None,
+        client: httpx.AsyncClient | None = None,
+    ) -> None:
+        async with sem:
             try:
-                params: dict = {"timeout": 30, "allowed_updates": allowed}
-                if offset:
-                    params["offset"] = offset
-
-                resp = await client.get(url, params=params)
-                resp.raise_for_status()
-                data = resp.json()
-
-                for update in data.get("result", []):
-                    offset = update["update_id"] + 1
-
-                    # Handle callback queries (inline keyboard button presses)
-                    cbq = update.get("callback_query")
-                    if cbq and on_callback_query:
-                        cbq_msg = cbq.get("message", {})
-                        cbq_chat_id = str(cbq_msg.get("chat", {}).get("id", ""))
-                        if cbq_chat_id == tg.chat_id:
-                            cbq_id = cbq["id"]
-                            cbq_message_id = cbq_msg.get("message_id")
-                            cbq_data = cbq.get("data", "")
-                            if cbq_message_id and cbq_data:
-                                try:
-                                    await on_callback_query(cbq_id, cbq_message_id, cbq_data)
-                                except Exception:
-                                    log.exception(
-                                        "Error handling callback query %s",
-                                        cbq_id,
-                                    )
-                        continue
-
-                    # Handle messages
-                    message = update.get("message", {})
-                    text = message.get("text", "").strip()
-
-                    if not text:
-                        continue
-
-                    # Only process messages from the configured chat
-                    chat_id = str(message.get("chat", {}).get("id", ""))
-                    if chat_id != tg.chat_id:
-                        continue
-
-                    reply_to = message.get("reply_to_message")
-                    thread_id = message.get("message_thread_id")
-                    if thread_id and on_topic_message is not None:
-                        # Message inside a named topic -> follow-up (check BEFORE reply_to
-                        # because Telegram sets implicit reply_to on all topic messages)
-                        try:
-                            await on_topic_message(thread_id, text)
-                        except Exception:
-                            log.exception(
-                                "Error handling topic message in thread %d",
-                                thread_id,
-                            )
-                            try:
-                                await _send_message_with_client(
-                                    "Failed to process message. Check daemon logs.",
-                                    tg, client, thread_id=thread_id,
-                                )
-                            except Exception:
-                                log.debug("Failed to send error notification for topic message")
-                    elif reply_to and on_labeling_reply is not None:
-                        # Reply to a bot message in General -> labeling flow
-                        reply_to_id = reply_to.get("message_id")
-                        if reply_to_id is not None:
-                            try:
-                                await on_labeling_reply(reply_to_id, text)
-                            except Exception:
-                                log.exception(
-                                    "Error handling labeling reply for message %d",
-                                    reply_to_id,
-                                )
-                                try:
-                                    await _send_message_with_client(
-                                        f"Failed to process labeling reply for message {reply_to_id}. "
-                                        "Check daemon logs.",
-                                        tg, client,
-                                    )
-                                except Exception:
-                                    log.debug("Failed to send error notification for labeling reply")
-                    elif on_message is not None:
-                        # Standalone message -> on_message callback
-                        try:
-                            await on_message(text)
-                        except Exception:
-                            log.exception(
-                                "Error handling standalone message",
-                            )
-                            try:
-                                await _send_message_with_client(
-                                    "Failed to process command. Check daemon logs.",
-                                    tg, client,
-                                )
-                            except Exception:
-                                log.debug("Failed to send error notification for command")
-
-                backoff = 5
-
-            except httpx.TimeoutException:
-                continue
-            except httpx.HTTPStatusError as e:
-                if e.response.status_code in (401, 403):
-                    log.critical("Telegram bot token rejected (HTTP %d), stopping poller", e.response.status_code)
-                    return
-                log.exception("Telegram polling HTTP error, retrying in %ds", backoff)
-                await asyncio.sleep(backoff)
-                backoff = min(backoff * 2, 60)
+                await coro
             except Exception:
-                log.exception("Telegram polling error, retrying in %ds", backoff)
-                await asyncio.sleep(backoff)
-                backoff = min(backoff * 2, 60)
+                log.exception("Error in %s handler", name)
+                if client is not None:
+                    try:
+                        await _send_message_with_client(
+                            "Failed to process command. Check daemon logs.",
+                            tg, client, thread_id=thread_id,
+                        )
+                    except Exception:
+                        log.debug("Failed to send error notification for %s", name)
+
+    def _spawn(name: str, coro: Awaitable[None], **err_kwargs) -> None:
+        t = asyncio.create_task(_run_handler(name, coro, **err_kwargs))
+        active.add(t)
+        t.add_done_callback(active.discard)
+
+    try:
+        async with httpx.AsyncClient(timeout=45.0) as client:
+            while True:
+                try:
+                    params: dict = {"timeout": 30, "allowed_updates": allowed}
+                    if offset:
+                        params["offset"] = offset
+
+                    resp = await client.get(url, params=params)
+                    resp.raise_for_status()
+                    data = resp.json()
+
+                    for update in data.get("result", []):
+                        offset = update["update_id"] + 1
+
+                        cbq = update.get("callback_query")
+                        if cbq and on_callback_query:
+                            cbq_msg = cbq.get("message", {})
+                            cbq_chat_id = str(cbq_msg.get("chat", {}).get("id", ""))
+                            if cbq_chat_id == tg.chat_id:
+                                cbq_id = cbq["id"]
+                                cbq_message_id = cbq_msg.get("message_id")
+                                cbq_data = cbq.get("data", "")
+                                if cbq_message_id and cbq_data:
+                                    _spawn(
+                                        "callback_query",
+                                        on_callback_query(cbq_id, cbq_message_id, cbq_data),
+                                    )
+                            continue
+
+                        message = update.get("message", {})
+                        text = message.get("text", "").strip()
+                        if not text:
+                            continue
+                        chat_id = str(message.get("chat", {}).get("id", ""))
+                        if chat_id != tg.chat_id:
+                            continue
+
+                        reply_to = message.get("reply_to_message")
+                        thread_id = message.get("message_thread_id")
+
+                        if thread_id and on_topic_message is not None:
+                            _spawn(
+                                "topic_message",
+                                on_topic_message(thread_id, text),
+                                thread_id=thread_id, client=client,
+                            )
+                        elif reply_to and on_labeling_reply is not None:
+                            reply_to_id = reply_to.get("message_id")
+                            if reply_to_id is not None:
+                                _spawn(
+                                    "labeling_reply",
+                                    on_labeling_reply(reply_to_id, text),
+                                    client=client,
+                                )
+                        elif on_message is not None:
+                            _spawn(
+                                "message", on_message(text),
+                                client=client,
+                            )
+
+                    backoff = 5
+
+                except httpx.TimeoutException:
+                    continue
+                except httpx.HTTPStatusError as e:
+                    if e.response.status_code in (401, 403):
+                        log.critical("Telegram bot token rejected (HTTP %d), stopping poller", e.response.status_code)
+                        return
+                    log.exception("Telegram polling HTTP error, retrying in %ds", backoff)
+                    await asyncio.sleep(backoff)
+                    backoff = min(backoff * 2, 60)
+                except Exception:
+                    log.exception("Telegram polling error, retrying in %ds", backoff)
+                    await asyncio.sleep(backoff)
+                    backoff = min(backoff * 2, 60)
+    finally:
+        # Cancel and drain in-flight handlers on shutdown.
+        # Yield control once first so freshly-spawned tasks can reach their
+        # first await before we cancel (needed for graceful shutdown).
+        if active:
+            await asyncio.sleep(0)
+        for t in list(active):
+            t.cancel()
+        for t in list(active):
+            try:
+                await t
+            except (asyncio.CancelledError, Exception):
+                pass

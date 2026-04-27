@@ -284,6 +284,7 @@ class TelegramInterface:
         self,
         on_labeling_reply: Callable[[int, str], Awaitable[None]] | None = None,
         on_callback_query: Callable[[str, int, str], Awaitable[None]] | None = None,
+        max_concurrent_dispatch: int = 4,
     ) -> None:
         """Run Telegram polling loop. Dispatches commands and handles topic follow-ups."""
         await poll_telegram_updates(
@@ -292,6 +293,7 @@ class TelegramInterface:
             on_callback_query=on_callback_query,
             on_message=self.dispatch_command,
             on_topic_message=self._handle_topic_message,
+            max_concurrent_dispatch=max_concurrent_dispatch,
         )
 
 

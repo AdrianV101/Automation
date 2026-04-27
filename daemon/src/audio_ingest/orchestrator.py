@@ -232,7 +232,10 @@ async def _run_email_ingest_path(config: DaemonConfig) -> None:
     try:
         async with asyncio.TaskGroup() as tg:
             tg.create_task(supervise("imap-listener", listener.run))
-            tg.create_task(supervise("telegram-poller", tii.run_poller))
+            tg.create_task(supervise(
+                "telegram-poller",
+                lambda: tii.run_poller(max_concurrent_dispatch=config.max_concurrent_dispatch),
+            ))
     finally:
         await session_mgr.close_all()
 

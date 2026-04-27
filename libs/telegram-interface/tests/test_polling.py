@@ -1,3 +1,4 @@
+import asyncio
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -547,3 +548,123 @@ class TestPollerThreadRouting:
         reply_cb.assert_called_once_with(789, "Carol")
         topic_cb.assert_not_called()
         msg_cb.assert_not_called()
+
+
+class TestConcurrentDispatch:
+    @pytest.mark.asyncio
+    async def test_slow_handler_does_not_block_subsequent_messages(self):
+        """A slow on_message handler must not stop the poller from processing
+        the next update — both handlers should start before either finishes."""
+        tg = _make_tg()
+
+        handler_started: list[str] = []
+        handler_done: list[str] = []
+        blocker = asyncio.Event()
+
+        async def slow_handler(text: str) -> None:
+            handler_started.append(text)
+            await blocker.wait()
+            handler_done.append(text)
+
+        updates_response = {
+            "ok": True,
+            "result": [
+                {
+                    "update_id": 100,
+                    "message": {"message_id": 10, "chat": {"id": 456}, "text": "first"},
+                },
+                {
+                    "update_id": 101,
+                    "message": {"message_id": 11, "chat": {"id": 456}, "text": "second"},
+                },
+            ],
+        }
+
+        call_count = 0
+
+        async def mock_get(url, params=None):
+            nonlocal call_count
+            call_count += 1
+            resp = MagicMock()
+            resp.raise_for_status = MagicMock()
+            if call_count == 1:
+                resp.json.return_value = updates_response
+            else:
+                await asyncio.sleep(0.1)
+                raise KeyboardInterrupt()
+            return resp
+
+        with patch("telegram_interface.bot.httpx.AsyncClient") as MockClient:
+            mock_client = AsyncMock()
+            MockClient.return_value.__aenter__ = AsyncMock(return_value=mock_client)
+            MockClient.return_value.__aexit__ = AsyncMock(return_value=False)
+            mock_client.get = mock_get
+
+            with pytest.raises(KeyboardInterrupt):
+                await poll_telegram_updates(
+                    tg, on_message=slow_handler, max_concurrent_dispatch=4,
+                )
+
+        # Both handlers started concurrently (proves non-blocking dispatch),
+        # but neither completed (blocker never set).
+        assert handler_started == ["first", "second"]
+        assert handler_done == []
+
+    @pytest.mark.asyncio
+    async def test_dispatch_concurrency_capped_at_2(self):
+        """With max_concurrent_dispatch=2 and 3 queued updates, the third
+        handler must wait until one of the first two releases."""
+        tg = _make_tg()
+
+        in_flight = 0
+        peak_in_flight = 0
+        handler_started_count = 0
+        release = asyncio.Event()
+
+        async def handler(text: str) -> None:
+            nonlocal in_flight, peak_in_flight, handler_started_count
+            in_flight += 1
+            handler_started_count += 1
+            peak_in_flight = max(peak_in_flight, in_flight)
+            await release.wait()
+            in_flight -= 1
+
+        updates_response = {
+            "ok": True,
+            "result": [
+                {"update_id": 100, "message": {"message_id": 1, "chat": {"id": 456}, "text": "a"}},
+                {"update_id": 101, "message": {"message_id": 2, "chat": {"id": 456}, "text": "b"}},
+                {"update_id": 102, "message": {"message_id": 3, "chat": {"id": 456}, "text": "c"}},
+            ],
+        }
+
+        call_count = 0
+
+        async def mock_get(url, params=None):
+            nonlocal call_count
+            call_count += 1
+            resp = MagicMock()
+            resp.raise_for_status = MagicMock()
+            if call_count == 1:
+                resp.json.return_value = updates_response
+            elif call_count == 2:
+                await asyncio.sleep(0.1)
+                assert peak_in_flight == 2, f"expected cap=2, got peak={peak_in_flight}"
+                release.set()
+                await asyncio.sleep(0.1)
+                raise KeyboardInterrupt()
+            return resp
+
+        with patch("telegram_interface.bot.httpx.AsyncClient") as MockClient:
+            mock_client = AsyncMock()
+            MockClient.return_value.__aenter__ = AsyncMock(return_value=mock_client)
+            MockClient.return_value.__aexit__ = AsyncMock(return_value=False)
+            mock_client.get = mock_get
+
+            with pytest.raises(KeyboardInterrupt):
+                await poll_telegram_updates(
+                    tg, on_message=handler, max_concurrent_dispatch=2,
+                )
+
+        assert handler_started_count == 3, "all 3 handlers must eventually start"
+        assert peak_in_flight == 2, f"concurrency must be capped at 2, was {peak_in_flight}"
