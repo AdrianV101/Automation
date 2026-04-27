@@ -26,6 +26,7 @@ from .events import TraceEvent
 from .options import build_agent_options
 from .results import SessionResponse
 from .utils import extract_file_path
+from .watchdog import AgentInactivityTimeout, with_inactivity_watchdog
 
 log = logging.getLogger(__name__)
 
@@ -70,8 +71,14 @@ class SessionManager:
         system_prompt: str,
         on_event: Callable[[TraceEvent], Awaitable[None]] | None = None,
         allowed_tools: list[str] | None = None,
+        inactivity_timeout_s: float | None = None,
     ) -> SessionResponse:
-        """Send a message in a session. Creates or reuses a ClaudeSDKClient."""
+        """Send a message in a session. Creates or reuses a ClaudeSDKClient.
+
+        If inactivity_timeout_s is set, the response collection is wrapped in
+        an inactivity watchdog: if no TraceEvent arrives for that many seconds,
+        the session is evicted and SessionResponse carries an error.
+        """
         client = self._clients.get(session_key)
 
         if client is None:
@@ -100,7 +107,26 @@ class SessionManager:
                 error="Client query failed",
             )
 
-        return await self._collect_response(client, session_key, on_event=on_event)
+        if inactivity_timeout_s is None:
+            return await self._collect_response(client, session_key, on_event=on_event)
+
+        # Run with inactivity watchdog. The watchdog wraps the user's on_event
+        # and will cancel _collect_response if no TraceEvent arrives in time.
+        async def _work(emit):
+            return await self._collect_response(client, session_key, on_event=emit)
+
+        try:
+            return await with_inactivity_watchdog(
+                _work, on_event=on_event,
+                inactivity_timeout_s=inactivity_timeout_s,
+            )
+        except AgentInactivityTimeout as exc:
+            log.error("Session %s timed out: %s", session_key, exc)
+            await self.close_session(session_key)
+            return SessionResponse(
+                text="Agent went silent — request cancelled.",
+                error=f"inactivity timeout after {inactivity_timeout_s:.0f}s",
+            )
 
     async def _collect_response(
         self, client: ClaudeSDKClient, session_key: str,

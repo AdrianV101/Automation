@@ -1,6 +1,7 @@
 """Tests for agent_infra.sessions — SessionManager with SessionStore protocol."""
 from __future__ import annotations
 
+import asyncio
 import contextlib
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -381,3 +382,37 @@ class TestSessionManager:
 
         assert response.error is not None
         assert "Partial result here." in response.text
+
+
+@pytest.mark.asyncio
+async def test_send_inactivity_timeout_evicts_session_and_returns_error():
+    """When the agent goes silent past the timeout, the session is evicted
+    and SessionResponse carries an error message instead of hanging."""
+    from agent_infra import SessionManager
+
+    store = FakeSessionStore()
+    mgr = SessionManager(store, Path("/tmp/vault"))
+
+    # Mock a ClaudeSDKClient whose receive_response() hangs forever
+    fake_client = MagicMock()
+    fake_client.__aenter__ = AsyncMock(return_value=fake_client)
+    fake_client.__aexit__ = AsyncMock(return_value=None)
+    fake_client.query = AsyncMock(return_value=None)
+
+    async def hang_forever():
+        await asyncio.sleep(60)
+        if False:
+            yield  # never reached, but makes this an async generator
+
+    fake_client.receive_response = MagicMock(return_value=hang_forever())
+
+    with patch("agent_infra.sessions.ClaudeSDKClient", return_value=fake_client):
+        resp = await mgr.send(
+            session_key="t1", message="hi", system_prompt="sys",
+            inactivity_timeout_s=0.1,
+        )
+
+    assert resp.error is not None
+    assert "inactivity" in resp.error.lower() or "timeout" in resp.error.lower()
+    assert "t1" not in mgr._clients  # evicted
+    fake_client.__aexit__.assert_called()  # subprocess cleanup
