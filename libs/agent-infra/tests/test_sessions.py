@@ -515,3 +515,70 @@ async def test_close_all_skips_session_that_hangs_in_aexit(caplog):
         "Timeout closing session" in r.message and "hung" in r.message
         for r in caplog.records
     ), "expected timeout warning for hung session"
+
+
+@pytest.mark.asyncio
+async def test_concurrent_send_same_key_creates_client_once():
+    """Two concurrent send() calls for the same session_key must create exactly
+    one ClaudeSDKClient; the second call reuses the client the first created."""
+    store = FakeSessionStore()
+    mgr = SessionManager(store, Path("/tmp/vault"))
+
+    mock_client, result_cls = _make_mock_client(text_blocks=["ok"])
+
+    creation_count = 0
+    original_aenter = mock_client.__aenter__
+
+    async def counting_aenter(*args, **kwargs):
+        nonlocal creation_count
+        creation_count += 1
+        return await original_aenter(*args, **kwargs)
+
+    mock_client.__aenter__ = counting_aenter
+
+    with _patch_sessions(mock_client, result_cls):
+        # Launch two concurrent sends for the same key
+        results = await asyncio.gather(
+            mgr.send(session_key="shared-key", message="msg1", system_prompt="sys"),
+            mgr.send(session_key="shared-key", message="msg2", system_prompt="sys"),
+        )
+
+    # __aenter__ called exactly once — no double-creation
+    assert creation_count == 1, f"expected 1 __aenter__ call, got {creation_count}"
+    # Both sends completed successfully
+    assert all(r.text == "ok" for r in results)
+    # query was called twice (once per send)
+    assert mock_client.query.call_count == 2
+
+
+@pytest.mark.asyncio
+async def test_close_all_total_timeout_pops_remaining_sessions(caplog):
+    """If all sessions hang in __aexit__, close_all returns within total_timeout_s
+    and pops the remaining sessions rather than blocking indefinitely."""
+    import logging as stdlib_logging
+
+    store = FakeSessionStore()
+    mgr = SessionManager(store, Path("/tmp/vault"))
+
+    hang_event = asyncio.Event()  # never set
+
+    async def hanging_aexit(*_args):
+        await hang_event.wait()
+
+    for i in range(5):
+        client = MagicMock()
+        client.__aexit__ = hanging_aexit
+        mgr._clients[f"sess-{i}"] = client
+
+    caplog.set_level(stdlib_logging.WARNING, logger="agent_infra.sessions")
+
+    # per-session timeout > total: total must win
+    await mgr.close_all(per_session_timeout_s=10.0, total_timeout_s=0.1)
+
+    # All sessions must be cleared
+    assert len(mgr._clients) == 0, "expected all sessions to be cleared after total timeout"
+    # Warning must be emitted
+    assert any(
+        "total timeout" in r.message.lower() or "Timeout closing session" in r.message
+        for r in caplog.records
+    ), "expected a timeout warning"
