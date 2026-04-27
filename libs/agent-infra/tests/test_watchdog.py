@@ -196,3 +196,49 @@ async def test_watchdog_fires_after_events_then_silence():
 
     assert len(received) == 1
     assert received[0].content == "hello"
+
+
+@pytest.mark.asyncio
+async def test_watchdog_respects_outer_cancellation_during_wait():
+    """When the outer task is cancelled while asyncio.wait is running,
+    with_inactivity_watchdog must raise CancelledError rather than returning
+    the work result — outer cancellation must not be swallowed."""
+    work_started = asyncio.Event()
+    work_can_return = asyncio.Event()
+
+    async def quick_work(emit):
+        work_started.set()
+        await work_can_return.wait()
+        return "done"
+
+    outer_task_cancelled = asyncio.Event()
+
+    async def run_watchdog():
+        try:
+            return await with_inactivity_watchdog(
+                quick_work, on_event=None,
+                inactivity_timeout_s=5.0, poll_interval_s=1.0,
+            )
+        except asyncio.CancelledError:
+            outer_task_cancelled.set()
+            raise
+
+    # Start the watchdog in a task so we can cancel it from outside
+    task = asyncio.create_task(run_watchdog())
+
+    # Wait until work has started
+    await asyncio.wait_for(work_started.wait(), timeout=1.0)
+
+    # Cancel the outer task first, THEN unblock work to complete.
+    # The cancel() call queues cancellation; unblocking work ensures
+    # asyncio.wait() can return normally with work_task in done —
+    # this is the exact race we need to cover.
+    task.cancel()
+    work_can_return.set()  # let work finish while cancellation is pending
+
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+    assert outer_task_cancelled.is_set(), (
+        "CancelledError should have been raised, not the work result"
+    )
