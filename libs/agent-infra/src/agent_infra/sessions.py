@@ -6,6 +6,7 @@ protocol for resume-on-restart.
 """
 from __future__ import annotations
 
+import asyncio
 import logging
 from collections.abc import Awaitable, Callable
 from pathlib import Path
@@ -26,6 +27,7 @@ from .events import TraceEvent
 from .options import build_agent_options
 from .results import SessionResponse
 from .utils import extract_file_path
+from .watchdog import AgentInactivityTimeout, with_inactivity_watchdog
 
 log = logging.getLogger(__name__)
 
@@ -47,6 +49,7 @@ class SessionManager:
         self._store = session_store
         self._pkm_vault_path = pkm_vault_path
         self._clients: dict[str, ClaudeSDKClient] = {}
+        self._locks: dict[str, asyncio.Lock] = {}
 
     def _build_options(
         self, system_prompt: str, *,
@@ -70,37 +73,95 @@ class SessionManager:
         system_prompt: str,
         on_event: Callable[[TraceEvent], Awaitable[None]] | None = None,
         allowed_tools: list[str] | None = None,
+        inactivity_timeout_s: float | None = None,
     ) -> SessionResponse:
-        """Send a message in a session. Creates or reuses a ClaudeSDKClient."""
-        client = self._clients.get(session_key)
+        """Send a message in a session. Creates or reuses a ClaudeSDKClient.
 
-        if client is None:
-            # Evict oldest session if at capacity
-            if len(self._clients) >= _MAX_SESSIONS:
-                oldest_key = next(iter(self._clients))
-                await self.close_session(oldest_key)
+        If inactivity_timeout_s is set, the response collection is wrapped in
+        an inactivity watchdog: if no TraceEvent arrives for that many seconds,
+        the session is evicted and SessionResponse carries an error.
+        """
+        lock = self._locks.setdefault(session_key, asyncio.Lock())
+        async with lock:
+            client = self._clients.get(session_key)
 
-            # Check if we can resume an existing session
-            resume_id = await self._store.get_session_id(session_key)
+            if client is None:
+                # Evict oldest session if at capacity
+                if len(self._clients) >= _MAX_SESSIONS:
+                    oldest_key = next(iter(self._clients))
+                    await self.close_session(oldest_key)
 
-            options = self._build_options(
-                system_prompt, allowed_tools=allowed_tools, resume=resume_id,
-            )
-            client = ClaudeSDKClient(options=options)
-            await client.__aenter__()
-            self._clients[session_key] = client
+                # Check if we can resume an existing session
+                resume_id = await self._store.get_session_id(session_key)
 
-        try:
-            await client.query(message)
-        except Exception:
-            log.exception("Client query failed for session %s, evicting", session_key)
-            await self.close_session(session_key)
-            return SessionResponse(
-                text="Session error. Please try again.",
-                error="Client query failed",
-            )
+                options = self._build_options(
+                    system_prompt, allowed_tools=allowed_tools, resume=resume_id,
+                )
+                try:
+                    client = ClaudeSDKClient(options=options)
+                    await client.__aenter__()
+                except Exception:
+                    log.exception("Failed to create SDK client for session %s", session_key)
+                    raise
+                self._clients[session_key] = client
 
-        return await self._collect_response(client, session_key, on_event=on_event)
+            try:
+                await client.query(message)
+            except Exception:
+                log.exception("Client query failed for session %s, evicting", session_key)
+                try:
+                    await asyncio.wait_for(self.close_session(session_key), timeout=5.0)
+                except asyncio.TimeoutError:
+                    log.warning(
+                        "Timeout closing session %s after query failure; "
+                        "subprocess will be reaped at daemon shutdown",
+                        session_key,
+                    )
+                    self._clients.pop(session_key, None)
+                return SessionResponse(
+                    text="Session error. Please try again.",
+                    error="Client query failed",
+                )
+
+            if inactivity_timeout_s is None:
+                return await self._collect_response(client, session_key, on_event=on_event)
+
+            # Run with inactivity watchdog. The watchdog wraps the user's on_event
+            # and will cancel _collect_response if no TraceEvent arrives in time.
+            async def _work(emit):
+                return await self._collect_response(client, session_key, on_event=emit)
+
+            # Poll at 1/4 of the timeout, capped at 5s — keeps the watchdog cheap
+            # for long timeouts while still reacting promptly for short ones.
+            poll_interval_s = min(5.0, inactivity_timeout_s / 4)
+            try:
+                return await with_inactivity_watchdog(
+                    _work, on_event=on_event,
+                    inactivity_timeout_s=inactivity_timeout_s,
+                    poll_interval_s=poll_interval_s,
+                )
+            except AgentInactivityTimeout as exc:
+                log.error("Session %s timed out: %s", session_key, exc)
+                # close_session awaits client.__aexit__, which can ITSELF hang if
+                # the SDK can't shut down a wedged subprocess transport — exactly
+                # the scenario the watchdog just detected. Bound it so dispatch
+                # returns to the user even when cleanup leaks a subprocess; the
+                # daemon's _terminate_children reaper will catch it on shutdown.
+                try:
+                    await asyncio.wait_for(
+                        self.close_session(session_key), timeout=5.0,
+                    )
+                except asyncio.TimeoutError:
+                    log.warning(
+                        "Timeout closing session %s after watchdog fired; "
+                        "subprocess will be reaped at daemon shutdown",
+                        session_key,
+                    )
+                    self._clients.pop(session_key, None)
+                return SessionResponse(
+                    text="Agent went silent — request cancelled.",
+                    error=f"inactivity timeout after {inactivity_timeout_s:.0f}s",
+                )
 
     async def _collect_response(
         self, client: ClaudeSDKClient, session_key: str,
@@ -179,7 +240,38 @@ class SessionManager:
             except Exception:
                 log.exception("Error closing session %s", session_key)
 
-    async def close_all(self) -> None:
-        """Close all cached clients."""
+    async def close_all(
+        self,
+        per_session_timeout_s: float = 10.0,
+        total_timeout_s: float = 60.0,
+    ) -> None:
+        """Close all cached clients with per-session and total time bounds.
+
+        A stuck SDK transport (subprocess unresponsive to close) would
+        otherwise block daemon shutdown indefinitely; the timeouts ensure we
+        proceed to subprocess-tree cleanup in __main__._terminate_children.
+        With up to _MAX_SESSIONS=50 sessions, a per-session-only bound could
+        require 500s before cleanup runs; total_timeout_s caps that.
+        """
+        deadline = asyncio.get_event_loop().time() + total_timeout_s
         for key in list(self._clients):
-            await self.close_session(key)
+            remaining = deadline - asyncio.get_event_loop().time()
+            if remaining <= 0:
+                log.warning(
+                    "close_all total timeout reached; %d sessions leaked",
+                    len(self._clients),
+                )
+                self._clients.clear()
+                break
+            session_timeout = min(per_session_timeout_s, remaining)
+            try:
+                await asyncio.wait_for(
+                    self.close_session(key), timeout=session_timeout,
+                )
+            except asyncio.TimeoutError:
+                log.warning(
+                    "Timeout closing session %s after %.1fs; "
+                    "subprocess will be reaped on shutdown",
+                    key, session_timeout,
+                )
+                self._clients.pop(key, None)

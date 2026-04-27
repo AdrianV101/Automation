@@ -40,6 +40,9 @@ class DaemonConfig:
     # authserv-id (the MTA's identifier). Matches Proton Mail Bridge's default.
     dkim_trusted_authserv_id: str = "mail.protonmail.ch"
     dkim_required_domain: str = "plaud.ai"
+    # Agent runtime safety
+    agent_inactivity_timeout_s: float = 600.0
+    max_concurrent_dispatch: int = 4
 
     @classmethod
     def from_env(cls, env_file: str | Path | None = None) -> DaemonConfig:
@@ -76,6 +79,13 @@ class DaemonConfig:
                 f"got IMAP_HOST={imap_host!r}. Set IMAP_SSL_VERIFY=true.",
             )
 
+        agent_inactivity_timeout_s = typed_env(
+            "AGENT_INACTIVITY_TIMEOUT_S", "600", float,
+        )
+        max_concurrent_dispatch = typed_env(
+            "MAX_CONCURRENT_DISPATCH", "4", int,
+        )
+
         return cls(
             telegram_bot_token=require("TELEGRAM_BOT_TOKEN"),
             telegram_chat_id=require("TELEGRAM_CHAT_ID"),
@@ -97,4 +107,18 @@ class DaemonConfig:
                 "DKIM_TRUSTED_AUTHSERV_ID", "mail.protonmail.ch",
             ),
             dkim_required_domain=os.environ.get("DKIM_REQUIRED_DOMAIN", "plaud.ai"),
+            agent_inactivity_timeout_s=agent_inactivity_timeout_s,
+            max_concurrent_dispatch=max_concurrent_dispatch,
         )
+
+    def __post_init__(self) -> None:
+        if self.agent_inactivity_timeout_s <= 0:
+            raise ValueError(
+                f"agent_inactivity_timeout_s must be positive, "
+                f"got {self.agent_inactivity_timeout_s}"
+            )
+        if self.max_concurrent_dispatch < 1:
+            raise ValueError(
+                f"max_concurrent_dispatch must be >= 1, "
+                f"got {self.max_concurrent_dispatch}"
+            )
