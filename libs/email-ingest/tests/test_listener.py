@@ -199,3 +199,33 @@ async def test_persistent_failure_fires_after_threshold(tmp_path: Path) -> None:
 
 async def _noop(uid: int, raw: bytes, headers: dict) -> None:
     return None
+
+
+@pytest.mark.asyncio
+async def test_listener_logs_connect_and_idle_heartbeat(setup, caplog):
+    """Listener emits INFO logs on connect and on entering IDLE."""
+    import logging
+    caplog.set_level(logging.INFO, logger="email_ingest.listener")
+
+    server, db, cfg = setup
+
+    async def noop(*_args, **_kwargs):
+        return None
+
+    listener = ImapIdleListener(
+        cfg, db,
+        on_new_email=noop,
+    )
+
+    task = asyncio.create_task(listener.run())
+    # Wait long enough for connect + idle_start to fire
+    await asyncio.sleep(0.3)
+    listener.stop()
+    try:
+        await asyncio.wait_for(task, timeout=1.0)
+    except (asyncio.TimeoutError, asyncio.CancelledError):
+        task.cancel()
+
+    msgs = [r.message for r in caplog.records if r.name == "email_ingest.listener"]
+    assert any("IMAP connected" in m for m in msgs), f"missing connect log; got: {msgs}"
+    assert any("Entering IDLE" in m for m in msgs), f"missing idle log; got: {msgs}"
