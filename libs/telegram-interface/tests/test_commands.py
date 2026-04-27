@@ -413,6 +413,69 @@ class TestDispatchCommandWithTopics:
             assert call_kwargs["system_prompt"] == "Chat prompt"
 
 
+class TestInactivityTimeoutPlumbing:
+    """Verify agent_inactivity_timeout_s set at construction time reaches
+    SessionManager.send for both standalone /command dispatch and topic
+    follow-ups. A regression here silently disables the watchdog at the
+    daemon's configured timeout."""
+
+    @pytest.mark.asyncio
+    async def test_dispatch_command_forwards_inactivity_timeout(self):
+        session_mgr = AsyncMock()
+        session_mgr.send.return_value = SessionResponse(text="ok")
+        thread_store = AsyncMock()
+        iface = TelegramInterface(
+            BOT, TEST_COMMANDS, session_mgr, thread_store,
+            agent_inactivity_timeout_s=42.0,
+        )
+
+        with (
+            patch("telegram_interface.commands.create_forum_topic", return_value=999),
+            patch("telegram_interface.commands.send_message_return_id", return_value=1),
+        ):
+            await iface.dispatch_command("/ask anything")
+
+        session_mgr.send.assert_called_once()
+        assert session_mgr.send.call_args.kwargs["inactivity_timeout_s"] == 42.0
+
+    @pytest.mark.asyncio
+    async def test_handle_topic_message_forwards_inactivity_timeout(self):
+        session_mgr = AsyncMock()
+        session_mgr.send.return_value = SessionResponse(text="ok")
+        thread_store = AsyncMock()
+        thread_store.get_thread.return_value = ThreadRecord(
+            thread_id=555, session_id="s1", name="Ask: foo", command="ask",
+            created_at="2026-04-27T15:00:00",
+        )
+        iface = TelegramInterface(
+            BOT, TEST_COMMANDS, session_mgr, thread_store,
+            agent_inactivity_timeout_s=99.0,
+        )
+
+        with patch("telegram_interface.commands.send_message_return_id", return_value=1):
+            await iface._handle_topic_message(555, "follow-up")
+
+        session_mgr.send.assert_called_once()
+        assert session_mgr.send.call_args.kwargs["inactivity_timeout_s"] == 99.0
+
+    @pytest.mark.asyncio
+    async def test_default_inactivity_timeout_is_none(self):
+        """When no timeout is configured, send() is called with None — preserves
+        the watchdog-disabled path so existing call sites don't change behaviour."""
+        session_mgr = AsyncMock()
+        session_mgr.send.return_value = SessionResponse(text="ok")
+        thread_store = AsyncMock()
+        iface = TelegramInterface(BOT, TEST_COMMANDS, session_mgr, thread_store)
+
+        with (
+            patch("telegram_interface.commands.create_forum_topic", return_value=999),
+            patch("telegram_interface.commands.send_message_return_id", return_value=1),
+        ):
+            await iface.dispatch_command("/ask anything")
+
+        assert session_mgr.send.call_args.kwargs["inactivity_timeout_s"] is None
+
+
 # ---------------------------------------------------------------------------
 # _format_response tests
 # ---------------------------------------------------------------------------
