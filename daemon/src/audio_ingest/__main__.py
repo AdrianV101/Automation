@@ -55,9 +55,13 @@ def _terminate_children(timeout_s: float = 5.0) -> None:
         except psutil.NoSuchProcess:
             pass
         except psutil.AccessDenied:
+            try:
+                name = c.name()
+            except (psutil.NoSuchProcess, psutil.AccessDenied):
+                name = "<unknown>"
             log.warning(
                 "AccessDenied terminating child pid=%d (%s); leaking",
-                c.pid, c.name(),
+                c.pid, name,
             )
     try:
         _gone, alive = psutil.wait_procs(children, timeout=timeout_s)
@@ -72,9 +76,13 @@ def _terminate_children(timeout_s: float = 5.0) -> None:
         except psutil.NoSuchProcess:
             pass
         except psutil.AccessDenied:
+            try:
+                name = c.name()
+            except (psutil.NoSuchProcess, psutil.AccessDenied):
+                name = "<unknown>"
             log.warning(
                 "AccessDenied killing child pid=%d (%s); leaking",
-                c.pid, c.name(),
+                c.pid, name,
             )
 
 
@@ -104,7 +112,11 @@ def main() -> None:
             raise
     finally:
         try:
-            loop.run_until_complete(loop.shutdown_asyncgens())
+            loop.run_until_complete(
+                asyncio.wait_for(loop.shutdown_asyncgens(), timeout=10.0)
+            )
+        except asyncio.TimeoutError:
+            log.warning("shutdown_asyncgens timed out after 10s; proceeding to child reaper")
         except Exception:
             log.warning("shutdown_asyncgens raised during teardown", exc_info=True)
         finally:
