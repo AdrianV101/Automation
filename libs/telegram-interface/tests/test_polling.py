@@ -670,6 +670,71 @@ class TestConcurrentDispatch:
         assert peak_in_flight == 2, f"concurrency must be capped at 2, was {peak_in_flight}"
 
 
+class TestShutdownDrain:
+    @pytest.mark.asyncio
+    async def test_shutdown_drain_awaits_in_flight_tasks(self):
+        tg = _make_tg()
+
+        handler_started = asyncio.Event()
+        handler_cancelled = asyncio.Event()
+
+        async def slow_handler(text: str) -> None:
+            handler_started.set()
+            try:
+                await asyncio.sleep(60)  # blocks until cancelled
+            except asyncio.CancelledError:
+                handler_cancelled.set()
+                raise
+
+        call_count = 0
+
+        async def mock_get(url, params=None):
+            nonlocal call_count
+            call_count += 1
+            resp = MagicMock()
+            resp.raise_for_status = MagicMock()
+            if call_count == 1:
+                resp.json.return_value = {
+                    "ok": True,
+                    "result": [{
+                        "update_id": 100,
+                        "message": {
+                            "message_id": 1,
+                            "chat": {"id": 456},
+                            "text": "test",
+                        },
+                    }],
+                }
+                return resp
+            else:
+                # Block until the poller task is cancelled externally
+                await asyncio.sleep(60)
+                return resp
+
+        with patch("telegram_interface.bot.httpx.AsyncClient") as MockClient:
+            mock_client = AsyncMock()
+            MockClient.return_value.__aenter__ = AsyncMock(return_value=mock_client)
+            MockClient.return_value.__aexit__ = AsyncMock(return_value=False)
+            mock_client.get = mock_get
+
+            task = asyncio.create_task(
+                poll_telegram_updates(tg, on_message=slow_handler)
+            )
+
+            # Wait for the handler to start before cancelling
+            await asyncio.wait_for(handler_started.wait(), timeout=1.0)
+
+            # Cancel the poller task
+            task.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await task
+
+        # The finally block must have cancelled and awaited the in-flight handler
+        assert handler_cancelled.is_set(), (
+            "in-flight handler was not cancelled during shutdown drain"
+        )
+
+
 @pytest.mark.asyncio
 async def test_topic_handler_error_sends_correct_message():
     """A failing topic_message handler sends "Failed to process message",
