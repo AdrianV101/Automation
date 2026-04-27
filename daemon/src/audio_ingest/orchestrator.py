@@ -229,12 +229,28 @@ async def _run_email_ingest_path(config: DaemonConfig) -> None:
         on_persistent_failure=on_persistent_failure,
     )
 
+    async def on_supervised_task_crashloop(task_name: str, failures: int) -> None:
+        try:
+            await send_message(
+                f"⚠️ Daemon task crash-looping\n\n"
+                f"Task: {task_name}\n"
+                f"Consecutive failures: {failures}\n"
+                f"Will keep restarting with backoff. Check daemon logs.",
+                bot, thread_id=pipeline_thread,
+            )
+        except Exception:
+            log.exception("Failed to send crash-loop alert for %s", task_name)
+
     try:
         async with asyncio.TaskGroup() as tg:
-            tg.create_task(supervise("imap-listener", listener.run))
+            tg.create_task(supervise(
+                "imap-listener", listener.run,
+                on_persistent_failure=on_supervised_task_crashloop,
+            ))
             tg.create_task(supervise(
                 "telegram-poller",
                 lambda: tii.run_poller(max_concurrent_dispatch=config.max_concurrent_dispatch),
+                on_persistent_failure=on_supervised_task_crashloop,
             ))
     finally:
         await session_mgr.close_all()

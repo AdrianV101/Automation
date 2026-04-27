@@ -27,16 +27,39 @@ async def supervise(
     restart_backoff_s: float = 5.0,
     max_backoff_s: float = 60.0,
     stable_after_s: float = 60.0,
+    persistent_failure_threshold: int = 3,
+    on_persistent_failure: Callable[[str, int], Awaitable[None]] | None = None,
 ) -> None:
     """Run `factory()` in a loop; restart on failure with exponential backoff.
 
-    name              : log identifier for this task
-    factory           : zero-arg async callable that runs the work
-    restart_backoff_s : initial sleep between restarts after a failure
-    max_backoff_s     : cap on the backoff sleep
-    stable_after_s    : if a run exceeds this duration, reset the backoff
+    Mirrors the IMAP listener's persistent-failure pattern: after
+    `persistent_failure_threshold` consecutive non-stable failures, fires
+    `on_persistent_failure(name, consecutive_failures)` once. The callback
+    is fired again only after a stable run resets the counter.
+
+    name                          : log identifier for this task
+    factory                       : zero-arg async callable that runs the work
+    restart_backoff_s             : initial sleep between restarts after a failure
+    max_backoff_s                 : cap on the backoff sleep
+    stable_after_s                : if a run exceeds this duration, reset the backoff
+    persistent_failure_threshold  : after this many consecutive non-stable
+                                    failures, fire on_persistent_failure
+    on_persistent_failure         : one-shot alert callback when crash-looping
     """
     backoff = restart_backoff_s
+    consecutive_failures = 0
+    persistent_alerted = False
+
+    async def _fire_persistent(failures: int) -> None:
+        nonlocal persistent_alerted
+        if persistent_alerted or on_persistent_failure is None:
+            return
+        persistent_alerted = True
+        try:
+            await on_persistent_failure(name, failures)
+        except Exception:
+            log.exception("on_persistent_failure raised for %s", name)
+
     while True:
         started = time.monotonic()
         try:
@@ -45,11 +68,19 @@ async def supervise(
             raise
         except Exception:
             elapsed = time.monotonic() - started
-            # Reset before sleeping so a stable-then-crashed run doesn't pay
-            # the accumulated backoff penalty before getting a fresh start.
             if elapsed >= stable_after_s:
+                # Stable run before crashing — reset both backoff and the
+                # persistent-failure counter (so the next crash-loop alerts).
                 backoff = restart_backoff_s
-            log.exception("%s crashed after %.1fs, restarting in %.1fs", name, elapsed, backoff)
+                consecutive_failures = 0
+                persistent_alerted = False
+            consecutive_failures += 1
+            log.exception(
+                "%s crashed after %.1fs (consecutive failures=%d), restarting in %.1fs",
+                name, elapsed, consecutive_failures, backoff,
+            )
+            if consecutive_failures >= persistent_failure_threshold:
+                await _fire_persistent(consecutive_failures)
             try:
                 await asyncio.sleep(backoff)
             except asyncio.CancelledError:
@@ -60,6 +91,8 @@ async def supervise(
         elapsed = time.monotonic() - started
         if elapsed >= stable_after_s:
             backoff = restart_backoff_s
+            consecutive_failures = 0
+            persistent_alerted = False
         log.warning("%s returned after %.1fs (expected long-running), restarting in %.1fs", name, elapsed, backoff)
         try:
             await asyncio.sleep(backoff)
