@@ -6,8 +6,8 @@ and AgentInactivityTimeout is raised. This protects the daemon from agents that
 hang waiting on a dead MCP server or a stalled subprocess pipe.
 
 The watchdog times INACTIVITY (gap between events), not total wall-clock — a
-long-running agent that emits regular tool_start / tool_result events will not
-trigger it.
+long-running agent that emits any TraceEvent (text chunk, tool_start,
+tool_result, complete, error) will keep the timer fresh.
 """
 from __future__ import annotations
 
@@ -63,6 +63,12 @@ async def with_inactivity_watchdog(
             async with lock:
                 idle_for = time.monotonic() - last_event_at
             if idle_for > inactivity_timeout_s:
+                # Log on detection — if the drain below hangs, this is the
+                # only signal an operator gets that the watchdog tripped.
+                log.warning(
+                    "Inactivity watchdog tripped at %.1fs idle, cancelling work",
+                    idle_for,
+                )
                 return
 
     watchdog_task: asyncio.Task[None] = asyncio.create_task(watchdog())
@@ -78,19 +84,28 @@ async def with_inactivity_watchdog(
         if not watchdog_task.done():
             watchdog_task.cancel()
 
+    # Honor outer cancellation if it landed during asyncio.wait. asyncio.wait
+    # can return normally even when the awaiting task was cancelled, so check
+    # explicitly and propagate before raising any synthetic timeout.
+    current = asyncio.current_task()
+    if current is not None and current.cancelling() > 0:
+        raise asyncio.CancelledError()
+
     if work_task in done:
-        # Work finished first — propagate its result or exception
         return work_task.result()
 
-    # Watchdog fired first — cancel the work and raise
+    # Watchdog fired first — drain the cancelled work_task. If the work raised
+    # a real exception (e.g., an SDK error that itself caused the silence), log
+    # it: the AgentInactivityTimeout we raise next would otherwise mask it.
     try:
         await work_task
-    except (asyncio.CancelledError, Exception):
+    except asyncio.CancelledError:
         pass
-    log.warning(
-        "Agent inactivity watchdog fired after %.1fs of silence",
-        inactivity_timeout_s,
-    )
+    except Exception:
+        log.exception(
+            "Work task raised during inactivity-watchdog drain "
+            "(masked by AgentInactivityTimeout)",
+        )
     raise AgentInactivityTimeout(
         f"No TraceEvent for {inactivity_timeout_s:.1f}s",
     )

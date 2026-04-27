@@ -223,7 +223,10 @@ async def poll_telegram_updates(
                             tg, client, thread_id=thread_id,
                         )
                     except Exception:
-                        log.debug("Failed to send error notification for %s", name)
+                        log.warning(
+                            "Failed to notify user of %s handler error",
+                            name, exc_info=True,
+                        )
 
     def _spawn(name: str, coro: Awaitable[None], **err_kwargs) -> None:
         t = asyncio.create_task(_run_handler(name, coro, **err_kwargs))

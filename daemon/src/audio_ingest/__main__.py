@@ -21,9 +21,7 @@ log = logging.getLogger(__name__)
 def _install_signal_handlers(
     loop: asyncio.AbstractEventLoop, root_task: asyncio.Task,
 ) -> None:
-    # Cancel only the root task — the TaskGroup inside run_daemon then drives
-    # structured cancellation of its children, and the orchestrator's finally
-    # block closes SDK clients before subprocess pipes are torn down.
+    # Cancel only the root task; structured cancellation unwinds from there.
     def _request_shutdown(sig_name: str) -> None:
         log.info("Received %s, cancelling root task", sig_name)
         if not root_task.done():
@@ -33,9 +31,11 @@ def _install_signal_handlers(
         try:
             loop.add_signal_handler(sig, _request_shutdown, sig.name)
         except NotImplementedError:
-            # add_signal_handler isn't available on Windows; the daemon
-            # only ships on Unix, so we skip rather than handle.
-            pass
+            log.warning(
+                "add_signal_handler not supported for %s; "
+                "graceful shutdown disabled for this signal",
+                sig.name,
+            )
 
 
 def _terminate_children(timeout_s: float = 5.0) -> None:

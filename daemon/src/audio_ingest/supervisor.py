@@ -45,25 +45,25 @@ async def supervise(
             raise
         except Exception:
             elapsed = time.monotonic() - started
+            # Reset before sleeping so a stable-then-crashed run doesn't pay
+            # the accumulated backoff penalty before getting a fresh start.
+            if elapsed >= stable_after_s:
+                backoff = restart_backoff_s
             log.exception("%s crashed after %.1fs, restarting in %.1fs", name, elapsed, backoff)
             try:
                 await asyncio.sleep(backoff)
             except asyncio.CancelledError:
                 raise
-            if elapsed >= stable_after_s:
-                backoff = restart_backoff_s
-            else:
+            if elapsed < stable_after_s:
                 backoff = min(backoff * 2, max_backoff_s)
             continue
-        # Factory returned cleanly — restart with the same backoff logic as
-        # the exception path. Long-running tasks aren't supposed to return.
         elapsed = time.monotonic() - started
+        if elapsed >= stable_after_s:
+            backoff = restart_backoff_s
         log.warning("%s returned after %.1fs (expected long-running), restarting in %.1fs", name, elapsed, backoff)
         try:
             await asyncio.sleep(backoff)
         except asyncio.CancelledError:
             raise
-        if elapsed >= stable_after_s:
-            backoff = restart_backoff_s
-        else:
+        if elapsed < stable_after_s:
             backoff = min(backoff * 2, max_backoff_s)

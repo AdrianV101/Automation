@@ -73,7 +73,9 @@ async def test_supervise_resets_backoff_after_long_run():
             raise RuntimeError("second crash (after stable run)")
         if calls == 3:
             raise RuntimeError("third crash (unstable, after reset)")
-        await real_sleep(60)  # call 4+: block until cancelled
+        if calls == 4:
+            raise RuntimeError("fourth crash (unstable, doubling resumes)")
+        await real_sleep(60)  # call 5+: block until cancelled
 
     with patch("audio_ingest.supervisor.asyncio.sleep", side_effect=tracking_sleep):
         task = asyncio.create_task(
@@ -91,20 +93,24 @@ async def test_supervise_resets_backoff_after_long_run():
     # uses real_sleep directly, bypassing the patch.
     supervisor_sleeps = sleep_durations
 
-    assert calls >= 4, f"expected at least 4 calls, got {calls}"
-    # Call 1 crashes (unstable): sleep = 0.02 (initial backoff), then double to 0.04.
-    # Call 2 runs 0.1s then crashes (stable): sleep = 0.04 (accumulated backoff),
-    #   then reset to 0.02 — we still pay the accumulated penalty once, but the
-    #   next restart gets a fresh start.
-    # Call 3 crashes (unstable, after reset): sleep = 0.02 (confirms reset worked).
+    assert calls >= 5, f"expected at least 5 calls, got {calls}"
+    # Call 1 crashes (unstable): sleep = 0.02 (initial), backoff doubles to 0.04.
+    # Call 2 runs 0.1s then crashes (stable): reset to 0.02 BEFORE sleeping;
+    #   no double-after since elapsed >= stable_after_s. Backoff stays 0.02.
+    # Call 3 crashes (unstable): sleep = 0.02 (proves reset took effect),
+    #   then doubles to 0.04.
+    # Call 4 crashes (unstable): sleep = 0.04 (proves doubling resumed).
     assert supervisor_sleeps[0] == 0.02, f"first sleep should be 0.02, got {supervisor_sleeps[0]}"
-    assert supervisor_sleeps[1] == 0.04, (
-        f"sleep after stable run should still use accumulated backoff (0.04), "
+    assert supervisor_sleeps[1] == 0.02, (
+        f"sleep after stable run should reset to restart_backoff_s (0.02), "
         f"got {supervisor_sleeps[1]}"
     )
     assert supervisor_sleeps[2] == 0.02, (
-        f"sleep after post-stable-reset crash should use reset backoff (0.02), "
-        f"got {supervisor_sleeps[2]}"
+        f"first post-reset sleep should still be 0.02, got {supervisor_sleeps[2]}"
+    )
+    assert supervisor_sleeps[3] == 0.04, (
+        f"second post-reset unstable crash should sleep doubled (0.04), "
+        f"got {supervisor_sleeps[3]}"
     )
 
 
