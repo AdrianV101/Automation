@@ -110,3 +110,15 @@ class DaemonConfig:
             agent_inactivity_timeout_s=agent_inactivity_timeout_s,
             max_concurrent_dispatch=max_concurrent_dispatch,
         )
+
+    def __post_init__(self) -> None:
+        if self.agent_inactivity_timeout_s <= 0:
+            raise ValueError(
+                f"agent_inactivity_timeout_s must be positive, "
+                f"got {self.agent_inactivity_timeout_s}"
+            )
+        if self.max_concurrent_dispatch < 1:
+            raise ValueError(
+                f"max_concurrent_dispatch must be >= 1, "
+                f"got {self.max_concurrent_dispatch}"
+            )

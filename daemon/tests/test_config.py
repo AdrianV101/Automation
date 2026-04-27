@@ -101,3 +101,23 @@ def test_agent_inactivity_timeout_from_env(monkeypatch: pytest.MonkeyPatch) -> N
     cfg = DaemonConfig.from_env()
     assert cfg.agent_inactivity_timeout_s == 300.0
     assert cfg.max_concurrent_dispatch == 8
+
+
+def test_daemon_config_rejects_zero_inactivity_timeout() -> None:
+    with pytest.raises(ValueError, match="agent_inactivity_timeout_s must be positive"):
+        DaemonConfig(
+            telegram_bot_token="x",
+            telegram_chat_id="y",
+            pkm_vault_path=Path("/tmp"),
+            agent_inactivity_timeout_s=0.0,
+        )
+
+
+def test_daemon_config_rejects_zero_concurrent_dispatch() -> None:
+    with pytest.raises(ValueError, match="max_concurrent_dispatch must be >= 1"):
+        DaemonConfig(
+            telegram_bot_token="x",
+            telegram_chat_id="y",
+            pkm_vault_path=Path("/tmp"),
+            max_concurrent_dispatch=0,
+        )
