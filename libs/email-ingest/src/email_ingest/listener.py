@@ -94,7 +94,7 @@ class ImapIdleListener:
         await self.db.set_uidnext_checkpoint(server_uidnext)
 
         while not self._stop.is_set():
-            log.info("Entering IDLE for INBOX")
+            log.debug("Entering IDLE for INBOX")
             await conn.idle_start()
             try:
                 saw_exists = await self._wait_for_new_mail(conn)

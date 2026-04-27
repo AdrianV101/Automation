@@ -203,9 +203,9 @@ async def _noop(uid: int, raw: bytes, headers: dict) -> None:
 
 @pytest.mark.asyncio
 async def test_listener_logs_connect_and_idle_heartbeat(setup, caplog):
-    """Listener emits INFO logs on connect and on entering IDLE."""
+    """Listener emits an INFO connect log and a DEBUG idle-entry log."""
     import logging
-    caplog.set_level(logging.INFO, logger="email_ingest.listener")
+    caplog.set_level(logging.DEBUG, logger="email_ingest.listener")
 
     server, db, cfg = setup
 
@@ -226,6 +226,8 @@ async def test_listener_logs_connect_and_idle_heartbeat(setup, caplog):
     except (asyncio.TimeoutError, asyncio.CancelledError):
         task.cancel()
 
-    msgs = [r.message for r in caplog.records if r.name == "email_ingest.listener"]
-    assert any("IMAP connected" in m for m in msgs), f"missing connect log; got: {msgs}"
-    assert any("Entering IDLE" in m for m in msgs), f"missing idle log; got: {msgs}"
+    records = [r for r in caplog.records if r.name == "email_ingest.listener"]
+    info_msgs = [r.message for r in records if r.levelno == logging.INFO]
+    debug_msgs = [r.message for r in records if r.levelno == logging.DEBUG]
+    assert any("IMAP connected" in m for m in info_msgs), f"missing connect INFO log; got: {info_msgs}"
+    assert any("Entering IDLE" in m for m in debug_msgs), f"missing idle DEBUG log; got: {debug_msgs}"

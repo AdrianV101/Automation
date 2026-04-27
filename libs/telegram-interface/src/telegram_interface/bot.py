@@ -320,5 +320,10 @@ async def poll_telegram_updates(
         for t in list(active):
             try:
                 await t
-            except (asyncio.CancelledError, Exception):
+            except asyncio.CancelledError:
                 pass
+            except Exception:
+                log.warning(
+                    "In-flight Telegram handler raised during shutdown drain",
+                    exc_info=True,
+                )

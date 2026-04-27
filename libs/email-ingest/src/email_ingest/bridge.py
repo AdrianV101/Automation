@@ -194,7 +194,7 @@ class ImapBridge:
         try:
             yield _BridgeConnection(client)
         finally:
-            log.info("IMAP disconnected from INBOX")
+            log.info("Closing IMAP connection")
             try:
                 await client.logout()
             except Exception:
