@@ -60,10 +60,9 @@ class TestConfigFromEnv:
 
 
 def test_email_ingest_defaults(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "t")
-    monkeypatch.setenv("TELEGRAM_CHAT_ID", "c")
-    monkeypatch.setenv("PKM_VAULT_PATH", "/tmp/vault")
-    cfg = DaemonConfig.from_env()
+    env = {"TELEGRAM_BOT_TOKEN": "t", "TELEGRAM_CHAT_ID": "c", "PKM_VAULT_PATH": "/tmp/vault"}
+    with _no_dotenv, patch.dict(os.environ, env, clear=True):
+        cfg = DaemonConfig.from_env(env_file=None)
     assert cfg.email_ingest_enabled is False
     assert cfg.imap_host == "127.0.0.1"
     assert cfg.imap_port == 1143

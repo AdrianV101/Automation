@@ -188,7 +188,7 @@ class TestAgentExtractAndRoute:
 
         opts = captured_options["options"]
         assert opts.permission_mode == "bypassPermissions"
-        assert opts.max_turns is None
+        assert opts.max_turns == 100
         assert opts.model == "claude-opus-4-6"
         assert "obsidian-pkm" in opts.mcp_servers
         assert opts.mcp_servers["obsidian-pkm"]["type"] == "stdio"

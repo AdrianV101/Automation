@@ -96,9 +96,9 @@ Here is a voice recording transcript to process:
 ---
 
 Please extract all information and route it to the appropriate PKM locations \
-using the available vault tools. Start by searching the vault for related context, \
-then write/append as needed. When done, provide a brief summary of what you routed \
-and where.
+using the available vault tools. Write the inbox summary note FIRST (00-Inbox/audio-ingestion/), \
+then search the vault for related context and append/create project-specific notes as needed. \
+When done, provide a brief summary of what you routed and where.
 """
 
 
@@ -176,7 +176,7 @@ async def agent_extract_and_route(
     user_prompt = _build_user_prompt(
         transcript, transcript_path, source_metadata=source_metadata,
     )
-    options = build_agent_options(SYSTEM_PROMPT, pkm_vault_path, allowed_tools=TOOLS_EXTRACTION)
+    options = build_agent_options(SYSTEM_PROMPT, pkm_vault_path, allowed_tools=TOOLS_EXTRACTION, max_turns=100)
     sender = TelegramStreamSender(tg, thread_id) if tg else None
     on_event = sender.handle if sender else None
     loop_result = await run_agent_loop_streaming(user_prompt, options, on_event=on_event)

@@ -80,6 +80,37 @@ class TestRunAgentLoop:
         assert result.turns_used == 2
 
     @pytest.mark.asyncio
+    async def test_max_turns_stop_sets_error(self, tmp_path) -> None:
+        msg = make_assistant_message(text_blocks=["partial work"])
+        result_msg = make_result_message(num_turns=40, stop_reason="max_turns")
+
+        async def mock_query(prompt, options):
+            yield msg
+            yield result_msg
+
+        with _patch_runner(mock_query):
+            opts = build_agent_options("sys", tmp_path)
+            result = await run_agent_loop("prompt", opts)
+
+        assert result.error == "Agent hit turn limit (40 turns)"
+        assert result.text_parts == ["partial work"]
+
+    @pytest.mark.asyncio
+    async def test_end_turn_stop_does_not_set_error(self, tmp_path) -> None:
+        msg = make_assistant_message(text_blocks=["done"])
+        result_msg = make_result_message(num_turns=5, stop_reason="end_turn")
+
+        async def mock_query(prompt, options):
+            yield msg
+            yield result_msg
+
+        with _patch_runner(mock_query):
+            opts = build_agent_options("sys", tmp_path)
+            result = await run_agent_loop("prompt", opts)
+
+        assert result.error is None
+
+    @pytest.mark.asyncio
     async def test_exception_sets_error(self, tmp_path) -> None:
         async def mock_query(prompt, options):
             raise RuntimeError("boom")
@@ -190,6 +221,29 @@ class TestRunAgentLoopStreaming:
 
         assert result.text_parts == ["text"]
         assert result.error is None
+
+    @pytest.mark.asyncio
+    async def test_max_turns_stop_sets_error(self, tmp_path) -> None:
+        msg = make_assistant_message(text_blocks=["partial work"])
+        result_msg = make_result_message(num_turns=40, stop_reason="max_turns")
+
+        async def mock_query(prompt, options):
+            yield msg
+            yield result_msg
+
+        events: list[TraceEvent] = []
+
+        async def collect(event: TraceEvent) -> None:
+            events.append(event)
+
+        with _patch_runner(mock_query):
+            opts = build_agent_options("sys", tmp_path)
+            result = await run_agent_loop_streaming("prompt", opts, on_event=collect)
+
+        assert result.error == "Agent hit turn limit (40 turns)"
+        assert result.text_parts == ["partial work"]
+        complete = next(e for e in events if e.kind == "complete")
+        assert complete.turns_used == 40
 
     @pytest.mark.asyncio
     async def test_error_emits_error_event(self, tmp_path) -> None:

@@ -72,11 +72,12 @@ def make_user_message(tool_results=None):
     return msg
 
 
-def make_result_message(num_turns=1, total_cost_usd=0.05, session_id="sess-123"):
+def make_result_message(num_turns=1, total_cost_usd=0.05, session_id="sess-123", stop_reason=None):
     """Create a mock ResultMessage."""
     msg = MagicMock()
     msg.num_turns = num_turns
     msg.total_cost_usd = total_cost_usd
     msg.session_id = session_id
+    msg.stop_reason = stop_reason
     msg.__class__ = MockResultMessage
     return msg
