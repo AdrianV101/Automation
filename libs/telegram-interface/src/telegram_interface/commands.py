@@ -78,6 +78,7 @@ class TelegramInterface:
         *,
         status_provider: StatusProvider | None = None,
         file_formatter: Callable[[list[str]], str] | None = None,
+        agent_inactivity_timeout_s: float | None = None,
     ):
         self._bot = bot_config
         self._commands = {cmd.name: cmd for cmd in commands}
@@ -86,6 +87,7 @@ class TelegramInterface:
         self._thread_store = thread_store
         self._status_provider = status_provider
         self._file_formatter = file_formatter or _default_file_formatter
+        self._agent_inactivity_timeout_s = agent_inactivity_timeout_s
 
     @property
     def help_text(self) -> str:
@@ -163,6 +165,7 @@ class TelegramInterface:
                 system_prompt=cmd_config.system_prompt,
                 allowed_tools=cmd_config.tools,
                 on_event=sender.handle,
+                inactivity_timeout_s=self._agent_inactivity_timeout_s,
             )
         except Exception:
             log.exception("Session send failed for /%s", command)
@@ -237,6 +240,7 @@ class TelegramInterface:
                 message=text,
                 system_prompt=system_prompt,
                 on_event=sender.handle,
+                inactivity_timeout_s=self._agent_inactivity_timeout_s,
             )
         except Exception:
             log.exception("Session send failed in topic %d", thread_id)
@@ -280,6 +284,7 @@ class TelegramInterface:
         self,
         on_labeling_reply: Callable[[int, str], Awaitable[None]] | None = None,
         on_callback_query: Callable[[str, int, str], Awaitable[None]] | None = None,
+        max_concurrent_dispatch: int = 4,
     ) -> None:
         """Run Telegram polling loop. Dispatches commands and handles topic follow-ups."""
         await poll_telegram_updates(
@@ -288,6 +293,7 @@ class TelegramInterface:
             on_callback_query=on_callback_query,
             on_message=self.dispatch_command,
             on_topic_message=self._handle_topic_message,
+            max_concurrent_dispatch=max_concurrent_dispatch,
         )
 
 

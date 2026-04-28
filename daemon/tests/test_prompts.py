@@ -1,17 +1,26 @@
-"""Phase 4 guards: vault-pkm dogfood discipline in Telegram-command prompts.
+"""Tests for the dynamic system-prompt builders.
 
-Mirrors the structure of test_extraction.py::TestSystemPromptContents but targets
-the four interactive prompts (NOTE/TASK/ASK/CHAT) plus a regression smoke check
-on EXTRACTION_SYSTEM_PROMPT.
+Combines:
+- Main's roster/builder shape tests (empty/populated, MUST-NOT framing)
+- PR's vault-pkm dogfood discipline guards (link-discovery recipe consistency,
+  allowlist drift, fleeting-note/task template anchors, gap-analysis closer,
+  Phase 1-3 extraction marker regression).
+
+After the PR-into-main merge, prompts are dynamic builders rather than
+module-level constants, so PR's class-based assertions now invoke the builders
+with a tmp_path fixture before pattern-matching.
 """
 import re
+from pathlib import Path
+
+import pytest
 
 from audio_ingest.prompts import (
-    ASK_SYSTEM_PROMPT,
-    CHAT_SYSTEM_PROMPT,
-    EXTRACTION_SYSTEM_PROMPT,
-    NOTE_SYSTEM_PROMPT,
-    TASK_SYSTEM_PROMPT,
+    build_ask_system_prompt,
+    build_chat_system_prompt,
+    build_extraction_system_prompt,
+    build_note_system_prompt,
+    build_task_system_prompt,
 )
 from audio_ingest.tools import TOOLS_ASK, TOOLS_TASK
 
@@ -25,13 +34,67 @@ def _allowlisted_vault_tools(profile: list[str]) -> set[str]:
     return {name[len(prefix):] for name in profile if name.startswith(prefix)}
 
 
-class TestNoteSystemPrompt:
-    def test_invokes_post_write_link_discovery(self) -> None:
-        """After writing the note, the agent must run vault_suggest_links and vault_add_links."""
-        assert "vault_suggest_links" in NOTE_SYSTEM_PROMPT
-        assert "vault_add_links" in NOTE_SYSTEM_PROMPT
+def _seed_person(vault: Path, name: str, relationship: str, description: str) -> None:
+    folder = vault / "03-Resources" / "People"
+    folder.mkdir(parents=True, exist_ok=True)
+    (folder / f"{name}.md").write_text(
+        "---\n"
+        "type: person\n"
+        f"relationship: \"{relationship}\"\n"
+        f"description: \"{description}\"\n"
+        "tags: [person]\n"
+        "---\n"
+        f"# {name}\n",
+        encoding="utf-8",
+    )
 
-    def test_fleeting_note_template_is_explicit(self) -> None:
+
+# ---------------------------------------------------------------------------
+# Roster / builder shape (from main)
+# ---------------------------------------------------------------------------
+
+@pytest.mark.parametrize("builder", [
+    build_note_system_prompt,
+    build_task_system_prompt,
+    build_ask_system_prompt,
+    build_chat_system_prompt,
+])
+def test_empty_roster_renders_none(builder, tmp_path):
+    prompt = builder(tmp_path)
+    assert "Known people: (none)" in prompt
+
+
+@pytest.mark.parametrize("builder", [
+    build_note_system_prompt,
+    build_task_system_prompt,
+    build_ask_system_prompt,
+    build_chat_system_prompt,
+])
+def test_populated_roster_renders_oneliner(builder, tmp_path):
+    _seed_person(tmp_path, "Adrian Verhoosel Azpiroz", "self / system owner", "the user")
+    prompt = builder(tmp_path)
+    assert "Adrian Verhoosel Azpiroz (self / system owner)" in prompt
+    assert prompt.count("Adrian Verhoosel Azpiroz (self / system owner)") == 1
+
+
+def test_note_prompt_keeps_critical_constraints(tmp_path):
+    prompt = build_note_system_prompt(tmp_path)
+    assert "MUST NOT" in prompt
+    assert "vault_semantic_search" in prompt
+
+
+# ---------------------------------------------------------------------------
+# vault-pkm dogfood discipline guards (from PR, adapted to builders)
+# ---------------------------------------------------------------------------
+
+class TestNoteSystemPrompt:
+    def test_invokes_post_write_link_discovery(self, tmp_path) -> None:
+        """After writing the note, the agent must run vault_suggest_links and vault_add_links."""
+        prompt = build_note_system_prompt(tmp_path)
+        assert "vault_suggest_links" in prompt
+        assert "vault_add_links" in prompt
+
+    def test_fleeting_note_template_is_explicit(self, tmp_path) -> None:
         """The fleeting-note template name must be visible to the agent.
 
         Asserts against the literal `template 'fleeting-note'` string rather than
@@ -39,25 +102,28 @@ class TestNoteSystemPrompt:
         without the `vault_write with template 'fleeting-note'` instruction would
         fail this guard.
         """
-        assert "template 'fleeting-note'" in NOTE_SYSTEM_PROMPT
+        prompt = build_note_system_prompt(tmp_path)
+        assert "template 'fleeting-note'" in prompt
 
-    def test_keeps_filing_clerk_framing(self) -> None:
+    def test_keeps_filing_clerk_framing(self, tmp_path) -> None:
         """Phase 4 must preserve the CRITICAL CONSTRAINTS / filing clerk language."""
-        assert "CRITICAL CONSTRAINTS" in NOTE_SYSTEM_PROMPT
-        assert "filing clerk" in NOTE_SYSTEM_PROMPT
+        prompt = build_note_system_prompt(tmp_path)
+        assert "CRITICAL CONSTRAINTS" in prompt
+        assert "filing clerk" in prompt
 
-    def test_keeps_single_line_response_format(self) -> None:
+    def test_keeps_single_line_response_format(self, tmp_path) -> None:
         """The SINGLE-LINE response format must be preserved."""
-        assert "SINGLE LINE" in NOTE_SYSTEM_PROMPT
+        assert "SINGLE LINE" in build_note_system_prompt(tmp_path)
 
-    def test_only_references_allowlisted_tools(self) -> None:
+    def test_only_references_allowlisted_tools(self, tmp_path) -> None:
         """Every vault_* token in the prompt must be in TOOLS_TASK (the /note profile)."""
-        referenced = set(VAULT_TOOL_RE.findall(NOTE_SYSTEM_PROMPT))
-        assert referenced, "expected NOTE_SYSTEM_PROMPT to reference at least one vault_* tool"
+        prompt = build_note_system_prompt(tmp_path)
+        referenced = set(VAULT_TOOL_RE.findall(prompt))
+        assert referenced, "expected NOTE prompt to reference at least one vault_* tool"
         allowed = _allowlisted_vault_tools(TOOLS_TASK)
         for name in referenced:
             assert name in allowed, (
-                f"NOTE_SYSTEM_PROMPT references {name!r} but it is not in TOOLS_TASK"
+                f"NOTE prompt references {name!r} but it is not in TOOLS_TASK"
             )
 
     def test_allowlist_includes_load_bearing_tools(self) -> None:
@@ -81,38 +147,40 @@ class TestNoteSystemPrompt:
 
 
 class TestTaskSystemPrompt:
-    def test_invokes_post_write_link_discovery(self) -> None:
-        assert "vault_suggest_links" in TASK_SYSTEM_PROMPT
-        assert "vault_add_links" in TASK_SYSTEM_PROMPT
+    def test_invokes_post_write_link_discovery(self, tmp_path) -> None:
+        prompt = build_task_system_prompt(tmp_path)
+        assert "vault_suggest_links" in prompt
+        assert "vault_add_links" in prompt
 
-    def test_references_task_template(self) -> None:
+    def test_references_task_template(self, tmp_path) -> None:
         """Assert against the literal template-name string, not the bare word
         'task' (which appears in prose as 'task CAPTURE agent', 'task note', etc.
         and would make this guard trivially true).
         """
-        assert "template 'task'" in TASK_SYSTEM_PROMPT
+        assert "template 'task'" in build_task_system_prompt(tmp_path)
 
-    def test_lists_status_enum(self) -> None:
+    def test_lists_status_enum(self, tmp_path) -> None:
+        prompt = build_task_system_prompt(tmp_path)
         for keyword in ("pending", "active", "done", "cancelled"):
-            assert keyword in TASK_SYSTEM_PROMPT, f"missing status enum value: {keyword}"
+            assert keyword in prompt, f"missing status enum value: {keyword}"
 
-    def test_keeps_critical_constraints_and_response_format(self) -> None:
-        assert "CRITICAL CONSTRAINTS" in TASK_SYSTEM_PROMPT
-        assert "SINGLE LINE" in TASK_SYSTEM_PROMPT
+    def test_keeps_critical_constraints_and_response_format(self, tmp_path) -> None:
+        prompt = build_task_system_prompt(tmp_path)
+        assert "CRITICAL CONSTRAINTS" in prompt
+        assert "SINGLE LINE" in prompt
 
-    def test_only_references_allowlisted_tools(self) -> None:
-        referenced = set(VAULT_TOOL_RE.findall(TASK_SYSTEM_PROMPT))
-        assert referenced, "expected TASK_SYSTEM_PROMPT to reference at least one vault_* tool"
+    def test_only_references_allowlisted_tools(self, tmp_path) -> None:
+        prompt = build_task_system_prompt(tmp_path)
+        referenced = set(VAULT_TOOL_RE.findall(prompt))
+        assert referenced, "expected TASK prompt to reference at least one vault_* tool"
         allowed = _allowlisted_vault_tools(TOOLS_TASK)
         for name in referenced:
             assert name in allowed, (
-                f"TASK_SYSTEM_PROMPT references {name!r} but it is not in TOOLS_TASK"
+                f"TASK prompt references {name!r} but it is not in TOOLS_TASK"
             )
 
     def test_allowlist_includes_load_bearing_tools(self) -> None:
-        """The vault-pkm tools the prompt's recipe relies on must remain allowlisted.
-
-        Catches a future edit that removes a load-bearing tool from BOTH the
+        """Catches a future edit that removes a load-bearing tool from BOTH the
         prompt body and the allowlist (which the subset test would not).
         """
         required = [
@@ -127,21 +195,23 @@ class TestTaskSystemPrompt:
 
 
 class TestAskSystemPrompt:
-    def test_keeps_semantic_search_primary(self) -> None:
-        assert "vault_semantic_search" in ASK_SYSTEM_PROMPT
+    def test_keeps_semantic_search_primary(self, tmp_path) -> None:
+        assert "vault_semantic_search" in build_ask_system_prompt(tmp_path)
 
-    def test_has_gap_analysis_closer(self) -> None:
+    def test_has_gap_analysis_closer(self, tmp_path) -> None:
         """If the vault couldn't answer, the agent must name a candidate /note."""
-        assert "candidate for" in ASK_SYSTEM_PROMPT
-        assert "/note" in ASK_SYSTEM_PROMPT
+        prompt = build_ask_system_prompt(tmp_path)
+        assert "candidate for" in prompt.lower() or "Candidate for" in prompt
+        assert "/note" in prompt
 
-    def test_only_references_allowlisted_tools(self) -> None:
-        referenced = set(VAULT_TOOL_RE.findall(ASK_SYSTEM_PROMPT))
-        assert referenced, "expected ASK_SYSTEM_PROMPT to reference at least one vault_* tool"
+    def test_only_references_allowlisted_tools(self, tmp_path) -> None:
+        prompt = build_ask_system_prompt(tmp_path)
+        referenced = set(VAULT_TOOL_RE.findall(prompt))
+        assert referenced, "expected ASK prompt to reference at least one vault_* tool"
         allowed = _allowlisted_vault_tools(TOOLS_ASK)
         for name in referenced:
             assert name in allowed, (
-                f"ASK_SYSTEM_PROMPT references {name!r} but it is not in TOOLS_ASK"
+                f"ASK prompt references {name!r} but it is not in TOOLS_ASK"
             )
 
     def test_allowlist_includes_load_bearing_tools(self) -> None:
@@ -157,18 +227,20 @@ class TestAskSystemPrompt:
 
 
 class TestChatSystemPrompt:
-    def test_prefers_semantic_search_and_neighborhood(self) -> None:
-        assert "vault_semantic_search" in CHAT_SYSTEM_PROMPT
-        assert "vault_neighborhood" in CHAT_SYSTEM_PROMPT
+    def test_prefers_semantic_search_and_neighborhood(self, tmp_path) -> None:
+        prompt = build_chat_system_prompt(tmp_path)
+        assert "vault_semantic_search" in prompt
+        assert "vault_neighborhood" in prompt
 
-    def test_only_references_allowlisted_tools(self) -> None:
+    def test_only_references_allowlisted_tools(self, tmp_path) -> None:
         """The chat profile uses TOOLS_ASK (read-only)."""
-        referenced = set(VAULT_TOOL_RE.findall(CHAT_SYSTEM_PROMPT))
-        assert referenced, "expected CHAT_SYSTEM_PROMPT to reference at least one vault_* tool"
+        prompt = build_chat_system_prompt(tmp_path)
+        referenced = set(VAULT_TOOL_RE.findall(prompt))
+        assert referenced, "expected CHAT prompt to reference at least one vault_* tool"
         allowed = _allowlisted_vault_tools(TOOLS_ASK)
         for name in referenced:
             assert name in allowed, (
-                f"CHAT_SYSTEM_PROMPT references {name!r} but it is not in TOOLS_ASK"
+                f"CHAT prompt references {name!r} but it is not in TOOLS_ASK"
             )
 
     def test_allowlist_includes_load_bearing_tools(self) -> None:
@@ -185,9 +257,10 @@ class TestChatSystemPrompt:
 class TestExtractionPromptRegression:
     """Smoke test: Phase 4 must not regress the Phase 1-3 extraction markers."""
 
-    def test_phase_1_to_3_markers_intact(self) -> None:
+    def test_phase_1_to_3_markers_intact(self, tmp_path) -> None:
+        prompt = build_extraction_system_prompt(tmp_path)
         for marker in ("Stage 0", "Stage 1", "vault_add_links", "vault_suggest_links"):
-            assert marker in EXTRACTION_SYSTEM_PROMPT, f"missing marker {marker!r}"
+            assert marker in prompt, f"missing marker {marker!r}"
 
 
 class TestLinkDiscoveryRecipeConsistency:
@@ -200,28 +273,31 @@ class TestLinkDiscoveryRecipeConsistency:
     silently drift one of them.
     """
 
-    def test_link_discovery_recipe_consistent_across_prompts(self) -> None:
+    def test_link_discovery_recipe_consistent_across_prompts(self, tmp_path) -> None:
         # Discriminator: a chunk of the canonical 8 relationship verbs that
         # would only appear if the shared recipe is in the prompt.
         discriminator = (
             "builds-on, supersedes, implements, contradicts, extends, refines, "
             "provides-context-for, is-an-instance-of"
         )
-        assert discriminator in NOTE_SYSTEM_PROMPT, (
-            "NOTE_SYSTEM_PROMPT is missing the canonical 8-verb relationship list"
+        note = build_note_system_prompt(tmp_path)
+        task = build_task_system_prompt(tmp_path)
+        extraction = build_extraction_system_prompt(tmp_path)
+        assert discriminator in note, (
+            "NOTE prompt is missing the canonical 8-verb relationship list"
         )
-        assert discriminator in TASK_SYSTEM_PROMPT, (
-            "TASK_SYSTEM_PROMPT is missing the canonical 8-verb relationship list"
+        assert discriminator in task, (
+            "TASK prompt is missing the canonical 8-verb relationship list"
         )
-        assert discriminator in EXTRACTION_SYSTEM_PROMPT, (
-            "EXTRACTION_SYSTEM_PROMPT is missing the canonical 8-verb relationship list"
+        assert discriminator in extraction, (
+            "EXTRACTION prompt is missing the canonical 8-verb relationship list"
         )
 
-    def test_related_to_prohibition_consistent_across_prompts(self) -> None:
+    def test_related_to_prohibition_consistent_across_prompts(self, tmp_path) -> None:
         """The 'never write a vague related to' guardrail must appear in all three."""
         prohibition = "'related to'"
-        assert prohibition in NOTE_SYSTEM_PROMPT
-        assert prohibition in TASK_SYSTEM_PROMPT
+        assert prohibition in build_note_system_prompt(tmp_path)
+        assert prohibition in build_task_system_prompt(tmp_path)
         # The EXTRACTION prompt's prohibition is preserved through the shared
         # LINK_DISCOVERY_RECIPE constant interpolation.
-        assert prohibition in EXTRACTION_SYSTEM_PROMPT
+        assert prohibition in build_extraction_system_prompt(tmp_path)

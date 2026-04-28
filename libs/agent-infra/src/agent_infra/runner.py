@@ -38,6 +38,11 @@ async def run_agent_loop(
                         path = extract_file_path(block.name, block.input)
                         if path and path not in result.files_written:
                             result.files_written.append(path)
+            elif isinstance(message, ResultMessage):
+                turns = getattr(message, "num_turns", result.turns_used)
+                result.turns_used = turns
+                if getattr(message, "stop_reason", None) == "max_turns":
+                    result.error = f"Agent hit turn limit ({turns} turns)"
     except Exception:
         log.exception("Agent SDK query failed")
         result.error = "Agent SDK query failed"
@@ -89,6 +94,8 @@ async def run_agent_loop_streaming(
             elif isinstance(message, ResultMessage):
                 turns = getattr(message, "num_turns", result.turns_used)
                 cost = getattr(message, "total_cost_usd", None)
+                if getattr(message, "stop_reason", None) == "max_turns":
+                    result.error = f"Agent hit turn limit ({turns} turns)"
                 await _emit(TraceEvent(
                     kind="complete",
                     turns_used=turns,

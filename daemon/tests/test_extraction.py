@@ -6,11 +6,11 @@ import pytest
 
 from audio_ingest.extraction import (
     AgentRoutingResult,
-    SYSTEM_PROMPT,
     _build_user_prompt,
     _find_summary_path,
     agent_extract_and_route,
 )
+from audio_ingest.prompts import build_extraction_system_prompt
 from audio_ingest.tools import TOOLS_EXTRACTION
 from agent_infra import AgentLoopResult
 from pkm import TranscriptData, TranscriptSegment
@@ -191,7 +191,7 @@ class TestAgentExtractAndRoute:
 
         opts = captured_options["options"]
         assert opts.permission_mode == "bypassPermissions"
-        assert opts.max_turns is None
+        assert opts.max_turns == 100
         assert opts.model == "claude-opus-4-6"
         assert "obsidian-pkm" in opts.mcp_servers
         assert opts.mcp_servers["obsidian-pkm"]["type"] == "stdio"
@@ -290,19 +290,28 @@ def test_prompt_omits_plaud_block_when_no_summaries() -> None:
 
 
 class TestSystemPromptContents:
-    """Guard the SYSTEM_PROMPT against drift away from the pkm-write workflow."""
+    """Guard the extraction prompt against drift away from the pkm-write workflow.
 
-    def test_prompt_invokes_dedup_before_write(self) -> None:
+    The extraction prompt is built per-call via build_extraction_system_prompt
+    so it can pull the live People roster from the vault. These tests build it
+    once per method against a fresh tmp_path and assert against the result.
+    """
+
+    @pytest.fixture
+    def prompt(self, tmp_path) -> str:
+        return build_extraction_system_prompt(tmp_path)
+
+    def test_prompt_invokes_dedup_before_write(self, prompt) -> None:
         """Dedup gate must be in the prompt with a 0.8 similarity threshold."""
-        assert "vault_semantic_search" in SYSTEM_PROMPT
-        assert "0.8" in SYSTEM_PROMPT
+        assert "vault_semantic_search" in prompt
+        assert "0.8" in prompt
 
-    def test_prompt_uses_suggest_and_add_links(self) -> None:
+    def test_prompt_uses_suggest_and_add_links(self, prompt) -> None:
         """The link-discovery + link-insertion pair must be referenced."""
-        assert "vault_suggest_links" in SYSTEM_PROMPT
-        assert "vault_add_links" in SYSTEM_PROMPT
+        assert "vault_suggest_links" in prompt
+        assert "vault_add_links" in prompt
 
-    def test_prompt_lists_content_type_template_table(self) -> None:
+    def test_prompt_lists_content_type_template_table(self, prompt) -> None:
         """All structured-note templates must appear so the agent can pick them."""
         for template in [
             "research-note",
@@ -312,51 +321,51 @@ class TestSystemPromptContents:
             "meeting-notes",
             "permanent-note",
         ]:
-            assert template in SYSTEM_PROMPT, f"missing template {template} in SYSTEM_PROMPT"
+            assert template in prompt, f"missing template {template} in extraction prompt"
 
-    def test_inbox_summary_skips_dedup(self) -> None:
+    def test_inbox_summary_skips_dedup(self, prompt) -> None:
         """Audio-ingestion inbox note must always be created, bypassing dedup."""
-        assert "ALWAYS create" in SYSTEM_PROMPT
-        assert "audio-ingestion" in SYSTEM_PROMPT
+        assert "ALWAYS create" in prompt
+        assert "audio-ingestion" in prompt
         # Make sure the inbox path appears so a regression that drops the carve-out fails.
-        assert "00-Inbox/audio-ingestion/" in SYSTEM_PROMPT
+        assert "00-Inbox/audio-ingestion/" in prompt
 
-    def test_prompt_only_references_allowlisted_tools(self) -> None:
+    def test_prompt_only_references_allowlisted_tools(self, prompt) -> None:
         """Every vault_* tool referenced in the prompt must be in TOOLS_EXTRACTION."""
-        referenced = set(re.findall(r"\bvault_[a-z]+(?:_[a-z]+)*\b", SYSTEM_PROMPT))
-        assert referenced, "expected SYSTEM_PROMPT to reference at least one vault_* tool"
+        referenced = set(re.findall(r"\bvault_[a-z]+(?:_[a-z]+)*\b", prompt))
+        assert referenced, "expected extraction prompt to reference at least one vault_* tool"
         prefixed_allowlist = set(TOOLS_EXTRACTION)
         for name in referenced:
             full = f"mcp__obsidian-pkm__{name}"
             assert full in prefixed_allowlist, (
-                f"SYSTEM_PROMPT references {name!r} but it is not in TOOLS_EXTRACTION"
+                f"extraction prompt references {name!r} but it is not in TOOLS_EXTRACTION"
             )
 
-    def test_prompt_calls_vault_activity_first(self) -> None:
+    def test_prompt_calls_vault_activity_first(self, prompt) -> None:
         """Same-batch dedup: the Stage 0 block must precede any vault_write."""
-        assert "vault_activity" in SYSTEM_PROMPT
-        assert "Stage 0" in SYSTEM_PROMPT
-        assert SYSTEM_PROMPT.find("Stage 0") < SYSTEM_PROMPT.find("vault_write"), (
+        assert "vault_activity" in prompt
+        assert "Stage 0" in prompt
+        assert prompt.find("Stage 0") < prompt.find("vault_write"), (
             "Stage 0 (same-batch dedup) must be introduced before the first "
             "vault_write reference so the agent reads it first"
         )
-        lowered = SYSTEM_PROMPT.lower()
+        lowered = prompt.lower()
         assert any(
             phrase in lowered
             for phrase in ("already covered", "already routed", "already written")
         ), "expected same-batch dedup phrasing (already covered/routed/written)"
 
-    def test_prompt_runs_pre_write_vault_sweep(self) -> None:
+    def test_prompt_runs_pre_write_vault_sweep(self, prompt) -> None:
         """Stage 1 vault sweep must sit between Stage 0 and the Routing Rules."""
-        assert "vault_neighborhood" in SYSTEM_PROMPT
-        assert "Stage 1" in SYSTEM_PROMPT
-        assert SYSTEM_PROMPT.find("Stage 1") < SYSTEM_PROMPT.find("## Routing Rules"), (
+        assert "vault_neighborhood" in prompt
+        assert "Stage 1" in prompt
+        assert prompt.find("Stage 1") < prompt.find("## Routing Rules"), (
             "Stage 1 (vault context sweep) must appear before the Routing Rules section"
         )
-        assert SYSTEM_PROMPT.find("Stage 0") < SYSTEM_PROMPT.find("Stage 1"), (
+        assert prompt.find("Stage 0") < prompt.find("Stage 1"), (
             "Stage 1 must come after Stage 0 so the agent reads dedup first, then the sweep"
         )
-        lowered = SYSTEM_PROMPT.lower()
+        lowered = prompt.lower()
         assert any(
             phrase in lowered
             for phrase in ("before routing", "existing vault state", "existing notes")

@@ -43,6 +43,9 @@ class DaemonConfig:
     # Session capture: append a devlog entry after each successful extraction.
     # OFF by default. Doubles per-recording agent-loop cost when enabled.
     enable_session_capture: bool = False
+    # Agent runtime safety
+    agent_inactivity_timeout_s: float = 600.0
+    max_concurrent_dispatch: int = 4
 
     @classmethod
     def from_env(cls, env_file: str | Path | None = None) -> DaemonConfig:
@@ -80,6 +83,13 @@ class DaemonConfig:
                 f"got IMAP_HOST={imap_host!r}. Set IMAP_SSL_VERIFY=true.",
             )
 
+        agent_inactivity_timeout_s = typed_env(
+            "AGENT_INACTIVITY_TIMEOUT_S", "600", float,
+        )
+        max_concurrent_dispatch = typed_env(
+            "MAX_CONCURRENT_DISPATCH", "4", int,
+        )
+
         return cls(
             telegram_bot_token=require("TELEGRAM_BOT_TOKEN"),
             telegram_chat_id=require("TELEGRAM_CHAT_ID"),
@@ -102,4 +112,18 @@ class DaemonConfig:
             ),
             dkim_required_domain=os.environ.get("DKIM_REQUIRED_DOMAIN", "plaud.ai"),
             enable_session_capture=enable_session_capture,
+            agent_inactivity_timeout_s=agent_inactivity_timeout_s,
+            max_concurrent_dispatch=max_concurrent_dispatch,
         )
+
+    def __post_init__(self) -> None:
+        if self.agent_inactivity_timeout_s <= 0:
+            raise ValueError(
+                f"agent_inactivity_timeout_s must be positive, "
+                f"got {self.agent_inactivity_timeout_s}"
+            )
+        if self.max_concurrent_dispatch < 1:
+            raise ValueError(
+                f"max_concurrent_dispatch must be >= 1, "
+                f"got {self.max_concurrent_dispatch}"
+            )

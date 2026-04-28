@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import logging
 import os
+import shutil
 from pathlib import Path
 
 from claude_agent_sdk import ClaudeAgentOptions
@@ -18,6 +19,7 @@ def build_agent_options(
     *, model: str = "claude-opus-4-6",
     allowed_tools: list[str] | None = None,
     mcp_server_path: str | None = None,
+    max_turns: int | None = None,
 ) -> ClaudeAgentOptions:
     """Build standard ClaudeAgentOptions with Obsidian MCP config."""
     server_path = mcp_server_path or os.environ.get("OBSIDIAN_MCP_SERVER_PATH")
@@ -26,12 +28,20 @@ def build_agent_options(
             "OBSIDIAN_MCP_SERVER_PATH environment variable is not set. "
             "Set it to the path of your Obsidian MCP server's index.js."
         )
+    node_path = shutil.which("node")
+    if not node_path:
+        raise RuntimeError(
+            "node executable not found on PATH. The obsidian-pkm MCP server "
+            "requires node; install it or extend the daemon's PATH "
+            f"(current PATH={os.environ.get('PATH', '')!r})."
+        )
     return ClaudeAgentOptions(
         system_prompt=system_prompt,
+        max_turns=max_turns,
         mcp_servers={
             "obsidian-pkm": {
                 "type": "stdio",
-                "command": "node",
+                "command": node_path,
                 "args": [server_path],
                 "env": {
                     "VAULT_PATH": str(pkm_vault_path),

@@ -24,7 +24,7 @@ class TestBuildAgentOptions:
         opts = build_agent_options("sys", tmp_path)
         mcp = opts.mcp_servers["obsidian-pkm"]
         assert mcp["type"] == "stdio"
-        assert mcp["command"] == "node"
+        assert Path(mcp["command"]).name == "node"
         assert str(tmp_path) in mcp["env"]["VAULT_PATH"]
 
     def test_default_tools_empty(self, tmp_path: Path) -> None:
@@ -55,9 +55,27 @@ class TestBuildAgentOptions:
         with pytest.raises(RuntimeError, match="OBSIDIAN_MCP_SERVER_PATH"):
             build_agent_options("sys", tmp_path)
 
+    def test_missing_node_raises(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("PATH", "/nonexistent")
+        with pytest.raises(RuntimeError, match="node"):
+            build_agent_options("sys", tmp_path)
+
+    def test_uses_absolute_node_path(self, tmp_path: Path) -> None:
+        opts = build_agent_options("sys", tmp_path)
+        mcp = opts.mcp_servers["obsidian-pkm"]
+        assert Path(mcp["command"]).is_absolute()
+
     def test_custom_model(self, tmp_path: Path) -> None:
         opts = build_agent_options("sys", tmp_path, model="claude-sonnet-4-20250514")
         assert opts.model == "claude-sonnet-4-20250514"
+
+    def test_max_turns_passed_through(self, tmp_path: Path) -> None:
+        opts = build_agent_options("sys", tmp_path, max_turns=40)
+        assert opts.max_turns == 40
+
+    def test_max_turns_default_is_none(self, tmp_path: Path) -> None:
+        opts = build_agent_options("sys", tmp_path)
+        assert opts.max_turns is None
 
     def test_openai_api_key_included_when_set(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setenv("OPENAI_API_KEY", "sk-test-key")

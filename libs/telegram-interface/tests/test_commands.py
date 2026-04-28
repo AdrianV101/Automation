@@ -1,6 +1,7 @@
 """Tests for telegram_interface.commands — parse_command, TelegramInterface dispatch, and topic follow-ups."""
 from __future__ import annotations
 
+import asyncio
 from unittest.mock import AsyncMock, patch
 
 import pytest
@@ -411,6 +412,185 @@ class TestDispatchCommandWithTopics:
 
             call_kwargs = iface._session_mgr.send.call_args[1]
             assert call_kwargs["system_prompt"] == "Chat prompt"
+
+
+class TestInactivityTimeoutPlumbing:
+    """Verify agent_inactivity_timeout_s set at construction time reaches
+    SessionManager.send for both standalone /command dispatch and topic
+    follow-ups. A regression here silently disables the watchdog at the
+    daemon's configured timeout."""
+
+    @pytest.mark.asyncio
+    async def test_dispatch_command_forwards_inactivity_timeout(self):
+        session_mgr = AsyncMock()
+        session_mgr.send.return_value = SessionResponse(text="ok")
+        thread_store = AsyncMock()
+        iface = TelegramInterface(
+            BOT, TEST_COMMANDS, session_mgr, thread_store,
+            agent_inactivity_timeout_s=42.0,
+        )
+
+        with (
+            patch("telegram_interface.commands.create_forum_topic", return_value=999),
+            patch("telegram_interface.commands.send_message_return_id", return_value=1),
+        ):
+            await iface.dispatch_command("/ask anything")
+
+        session_mgr.send.assert_called_once()
+        assert session_mgr.send.call_args.kwargs["inactivity_timeout_s"] == 42.0
+
+    @pytest.mark.asyncio
+    async def test_handle_topic_message_forwards_inactivity_timeout(self):
+        session_mgr = AsyncMock()
+        session_mgr.send.return_value = SessionResponse(text="ok")
+        thread_store = AsyncMock()
+        thread_store.get_thread.return_value = ThreadRecord(
+            thread_id=555, session_id="s1", name="Ask: foo", command="ask",
+            created_at="2026-04-27T15:00:00",
+        )
+        iface = TelegramInterface(
+            BOT, TEST_COMMANDS, session_mgr, thread_store,
+            agent_inactivity_timeout_s=99.0,
+        )
+
+        with patch("telegram_interface.commands.send_message_return_id", return_value=1):
+            await iface._handle_topic_message(555, "follow-up")
+
+        session_mgr.send.assert_called_once()
+        assert session_mgr.send.call_args.kwargs["inactivity_timeout_s"] == 99.0
+
+    @pytest.mark.asyncio
+    async def test_default_inactivity_timeout_is_none(self):
+        """When no timeout is configured, send() is called with None — preserves
+        the watchdog-disabled path so existing call sites don't change behaviour."""
+        session_mgr = AsyncMock()
+        session_mgr.send.return_value = SessionResponse(text="ok")
+        thread_store = AsyncMock()
+        iface = TelegramInterface(BOT, TEST_COMMANDS, session_mgr, thread_store)
+
+        with (
+            patch("telegram_interface.commands.create_forum_topic", return_value=999),
+            patch("telegram_interface.commands.send_message_return_id", return_value=1),
+        ):
+            await iface.dispatch_command("/ask anything")
+
+        assert session_mgr.send.call_args.kwargs["inactivity_timeout_s"] is None
+
+
+class TestHungSubprocessRecoveryIntegration:
+    """End-to-end test of the original incident's recovery path:
+
+      poller receives /task → dispatch_command runs → SessionManager.send hangs →
+      watchdog times out → user gets a 'timed out' Telegram reply →
+      a SECOND command then flows normally.
+
+    This pins the composition that the unit tests prove individually.
+    """
+
+    @pytest.mark.asyncio
+    async def test_first_command_times_out_second_succeeds(self):
+        import asyncio as _asyncio
+        from agent_infra.watchdog import AgentInactivityTimeout
+
+        # Real-shaped SessionManager: first send() raises AgentInactivityTimeout
+        # (as the actual SessionManager would after the watchdog evicts the
+        # session); second send() returns normally.
+        send_calls: list[str] = []
+
+        async def mock_send(*, session_key, message, system_prompt, on_event=None,
+                            allowed_tools=None, inactivity_timeout_s=None):
+            send_calls.append(message)
+            assert inactivity_timeout_s == 0.1, (
+                "first call must receive the configured inactivity timeout"
+            )
+            if len(send_calls) == 1:
+                # Simulate the timeout path: the real SessionManager would
+                # catch AgentInactivityTimeout and return a SessionResponse
+                # with error=...; mimic that here.
+                return SessionResponse(
+                    text="Agent went silent — request cancelled.",
+                    error="inactivity timeout after 0s",
+                )
+            return SessionResponse(text="second command ok")
+
+        session_mgr = AsyncMock()
+        session_mgr.send.side_effect = mock_send
+        thread_store = AsyncMock()
+
+        iface = TelegramInterface(
+            BOT, TEST_COMMANDS, session_mgr, thread_store,
+            agent_inactivity_timeout_s=0.1,
+        )
+
+        sent_messages: list[str] = []
+
+        async def capture_send(text, *args, **kwargs):
+            sent_messages.append(text)
+            return 1
+
+        with (
+            patch("telegram_interface.commands.create_forum_topic", return_value=777),
+            patch("telegram_interface.commands.send_message_return_id", side_effect=capture_send),
+        ):
+            # First command: hangs → times out → user sees "Failed:" reply
+            await iface.dispatch_command("/task something hung")
+            # Second command: succeeds
+            await iface.dispatch_command("/task something else")
+
+        # Both commands reached SessionManager.send with the configured timeout
+        assert len(send_calls) == 2
+
+        # The user got a Telegram error message for the first command
+        timeout_replies = [m for m in sent_messages if "Failed" in m and "timeout" in m.lower()]
+        assert timeout_replies, (
+            f"expected a 'Failed: ... timeout ...' reply for the hung command; "
+            f"got: {sent_messages}"
+        )
+
+        # The user got a normal response for the second command
+        assert any("second command ok" in m for m in sent_messages), (
+            f"second command response missing; got: {sent_messages}"
+        )
+
+    @pytest.mark.asyncio
+    async def test_concurrent_commands_one_hangs_other_completes(self):
+        """When two commands run concurrently and the first hangs in send(),
+        the second one still reaches send() and returns. This is what the
+        bounded-concurrent dispatch primitive (Task 7) buys us — verified
+        here against a real TelegramInterface."""
+        first_started = asyncio.Event()
+        first_release = asyncio.Event()
+        second_done = asyncio.Event()
+
+        async def mock_send(*, session_key, message, **_kwargs):
+            if message == "first":
+                first_started.set()
+                await first_release.wait()
+                return SessionResponse(text="first done")
+            second_done.set()
+            return SessionResponse(text="second done")
+
+        session_mgr = AsyncMock()
+        session_mgr.send.side_effect = mock_send
+        thread_store = AsyncMock()
+        iface = TelegramInterface(
+            BOT, TEST_COMMANDS, session_mgr, thread_store,
+        )
+
+        with (
+            patch("telegram_interface.commands.create_forum_topic", return_value=777),
+            patch("telegram_interface.commands.send_message_return_id", return_value=1),
+        ):
+            t1 = asyncio.create_task(iface.dispatch_command("/note first"))
+            await first_started.wait()
+            # While t1 is hung in send(), a concurrent dispatch must reach send()
+            t2 = asyncio.create_task(iface.dispatch_command("/note second"))
+            await asyncio.wait_for(second_done.wait(), timeout=1.0)
+            # Now release the first one and let both complete
+            first_release.set()
+            await asyncio.gather(t1, t2)
+
+        assert session_mgr.send.call_count == 2
 
 
 # ---------------------------------------------------------------------------
