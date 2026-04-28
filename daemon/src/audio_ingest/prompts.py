@@ -1,7 +1,12 @@
 """Domain-specific system prompts for agent commands.
 
-Prompts are rendered dynamically at call time so the people roster from
-03-Resources/People/ in the vault stays current without code changes.
+Each builder reads the vault's `03-Resources/People/` folder at call time and
+renders the roster into the prompt. The orchestrator calls these once per
+daemon start to seed `CommandConfig.system_prompt` for the four command
+agents (note/task/ask/chat); adding a person to the vault therefore takes
+effect on the next daemon restart, not the next Telegram command. The
+extraction agent (extraction.py) rebuilds its prompt for every recording, so
+that path picks up roster changes without a restart.
 """
 from __future__ import annotations
 

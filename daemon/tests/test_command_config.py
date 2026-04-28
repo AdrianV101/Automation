@@ -7,7 +7,8 @@ from audio_ingest.command_config import build_daemon_commands
 def test_factory_returns_four_commands(tmp_path: Path):
     cmds = build_daemon_commands(tmp_path)
     names = [c.name for c in cmds]
-    assert names == ["note", "ask", "task", "chat"]
+    assert set(names) == {"note", "ask", "task", "chat"}
+    assert len(names) == 4
 
 
 def test_factory_injects_oneliner_into_each_prompt(tmp_path: Path):

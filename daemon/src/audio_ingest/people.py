@@ -12,6 +12,8 @@ import re
 from dataclasses import dataclass
 from pathlib import Path
 
+import yaml
+
 log = logging.getLogger(__name__)
 
 PEOPLE_FOLDER = Path("03-Resources") / "People"
@@ -23,6 +25,10 @@ class Person:
     relationship: str
     description: str
     aliases: tuple[str, ...] = ()
+
+    def __post_init__(self) -> None:
+        if not self.name:
+            raise ValueError("Person.name must be non-empty")
 
     @property
     def is_stub(self) -> bool:
@@ -60,7 +66,12 @@ def _parse_person_note(path: Path) -> Person | None:
     if not match:
         log.warning("Person note %s has no frontmatter; skipping", path)
         return None
-    fm = _parse_simple_yaml(match.group(1))
+    try:
+        loaded = yaml.safe_load(match.group(1))
+    except yaml.YAMLError:
+        log.warning("Malformed YAML in person note %s; skipping", path, exc_info=True)
+        return None
+    fm = loaded if isinstance(loaded, dict) else {}
     if fm.get("type") != "person":
         return None
     return Person(
@@ -69,17 +80,6 @@ def _parse_person_note(path: Path) -> Person | None:
         description=str(fm.get("description", "") or ""),
         aliases=tuple(fm.get("aliases", []) or ()),
     )
-
-
-def _parse_simple_yaml(text: str) -> dict:
-    """Parse YAML frontmatter using PyYAML (already in the daemon venv)."""
-    import yaml
-    try:
-        loaded = yaml.safe_load(text)
-    except yaml.YAMLError:
-        log.warning("Malformed YAML frontmatter; skipping note", exc_info=True)
-        return {}
-    return loaded if isinstance(loaded, dict) else {}
 
 
 def render_full_block(people: list[Person]) -> str:

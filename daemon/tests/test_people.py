@@ -78,13 +78,18 @@ class TestLoadPeople:
         )
         assert load_people(tmp_path) == []
 
-    def test_skips_malformed_yaml(self, tmp_path: Path, caplog):
+    def test_skips_malformed_yaml_and_logs_path(self, tmp_path: Path, caplog):
+        import logging
         folder = tmp_path / "03-Resources" / "People"
         folder.mkdir(parents=True)
-        (folder / "Broken.md").write_text(
+        bad_path = folder / "Broken.md"
+        bad_path.write_text(
             "---\ntype: person\nrelationship: [unclosed\n---\n# Broken\n", encoding="utf-8",
         )
-        assert load_people(tmp_path) == []
+        with caplog.at_level(logging.WARNING, logger="audio_ingest.people"):
+            assert load_people(tmp_path) == []
+        assert any("Broken.md" in record.getMessage() for record in caplog.records), \
+            f"Expected a warning mentioning 'Broken.md', got: {[r.getMessage() for r in caplog.records]}"
 
     def test_sorts_alphabetically(self, tmp_path: Path):
         folder = tmp_path / "03-Resources" / "People"
@@ -102,6 +107,55 @@ class TestLoadPeople:
         _write_person(folder, "X", body)
         people = load_people(tmp_path)
         assert people[0].aliases == ("AV", "av")
+
+    def test_person_requires_non_empty_name(self):
+        with pytest.raises(ValueError):
+            Person(name="", relationship="x", description="y")
+
+    def test_person_is_hashable(self):
+        # frozen dataclass with tuple aliases must hash for set/dict use
+        p = Person(name="A", relationship="r", description="d", aliases=("x",))
+        assert hash(p) == hash(p)
+        assert {p} == {p}
+
+    def test_half_stub_relationship_only_treated_as_stub(self, tmp_path: Path):
+        # design decision: either field empty => stub; matches spec
+        folder = tmp_path / "03-Resources" / "People"
+        folder.mkdir(parents=True)
+        (folder / "Half.md").write_text(
+            "---\ntype: person\nrelationship: \"friend\"\ndescription: \"\"\ntags: [person]\n---\n",
+            encoding="utf-8",
+        )
+        people = load_people(tmp_path)
+        assert people[0].is_stub is True
+
+    def test_half_stub_description_only_treated_as_stub(self, tmp_path: Path):
+        folder = tmp_path / "03-Resources" / "People"
+        folder.mkdir(parents=True)
+        (folder / "Half.md").write_text(
+            "---\ntype: person\nrelationship: \"\"\ndescription: \"close friend\"\ntags: [person]\n---\n",
+            encoding="utf-8",
+        )
+        people = load_people(tmp_path)
+        assert people[0].is_stub is True
+
+    def test_aliases_are_loaded_but_not_rendered(self, tmp_path: Path):
+        # Aliases live in the dataclass but neither renderer references them in v1.
+        # If a future change wants to render aliases, this test must be updated to
+        # match -- a regression here without intent is a silent prompt change.
+        folder = tmp_path / "03-Resources" / "People"
+        folder.mkdir(parents=True)
+        (folder / "Alex.md").write_text(
+            "---\ntype: person\nrelationship: \"friend\"\ndescription: \"x\"\n"
+            "aliases: [\"AX\", \"alex\"]\ntags: [person]\n---\n",
+            encoding="utf-8",
+        )
+        people = load_people(tmp_path)
+        assert people[0].aliases == ("AX", "alex")
+        assert "AX" not in render_full_block(people)
+        assert "AX" not in render_oneliner(people)
+        assert "alex" not in render_full_block(people)
+        assert "alex" not in render_oneliner(people)
 
 
 class TestRenderFullBlock:
@@ -124,6 +178,16 @@ class TestRenderFullBlock:
         out = render_full_block(people)
         assert out == "## Known People\n- Alpha - d\n- Beta"
 
+    def test_sorts_unsorted_input_directly(self):
+        # bypass the loader; renderer must sort its own input deterministically
+        people = [
+            Person(name="Charlie", relationship="r", description="d"),
+            Person(name="Alice", relationship="r", description="d"),
+            Person(name="Bob", relationship="r", description="d"),
+        ]
+        out = render_full_block(people)
+        assert out.index("Alice") < out.index("Bob") < out.index("Charlie")
+
 
 class TestRenderOneliner:
     def test_empty_renders_none(self):
@@ -143,3 +207,12 @@ class TestRenderOneliner:
             Person(name="Alpha", relationship="x", description="y"),
         ]
         assert render_oneliner(people) == "Known people: Alpha (x), Beta"
+
+    def test_sorts_unsorted_input_directly(self):
+        people = [
+            Person(name="Charlie", relationship="r", description="d"),
+            Person(name="Alice", relationship="r", description="d"),
+            Person(name="Bob", relationship="r", description="d"),
+        ]
+        out = render_oneliner(people)
+        assert out.index("Alice") < out.index("Bob") < out.index("Charlie")

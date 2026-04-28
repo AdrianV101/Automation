@@ -47,6 +47,7 @@ def test_populated_roster_renders_oneliner(builder, tmp_path):
     _seed_person(tmp_path, "Adrian Verhoosel Azpiroz", "self / system owner", "the user")
     prompt = builder(tmp_path)
     assert "Adrian Verhoosel Azpiroz (self / system owner)" in prompt
+    assert prompt.count("Adrian Verhoosel Azpiroz (self / system owner)") == 1
 
 
 def test_note_prompt_keeps_critical_constraints(tmp_path):
