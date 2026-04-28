@@ -1,14 +1,7 @@
-"""Domain-specific tool profiles and context constants.
+"""Domain-specific tool profiles.
 
 Tool categories compose into profiles for different agent use cases.
-People context comes from the gitignored user_context module.
 """
-
-try:
-    from .user_context import KNOWN_PEOPLE, KNOWN_PEOPLE_ONELINER
-except ImportError:
-    KNOWN_PEOPLE = ""
-    KNOWN_PEOPLE_ONELINER = ""
 
 # -- Tool categories (composable) --
 

@@ -14,7 +14,7 @@ from email_ingest import (
 )
 
 from .config import DaemonConfig
-from .command_config import DAEMON_COMMANDS
+from .command_config import build_daemon_commands
 from .supervisor import supervise
 from .models import RecordingJob, StatusTracker
 from .notifications import format_file_list
@@ -185,7 +185,7 @@ async def _run_email_ingest_path(config: DaemonConfig) -> None:
 
     tii = TelegramInterface(
         bot_config=bot,
-        commands=DAEMON_COMMANDS,
+        commands=build_daemon_commands(config.pkm_vault_path),
         session_manager=session_mgr,
         thread_store=thread_store,
         status_provider=None,  # no status backend for email ingest yet

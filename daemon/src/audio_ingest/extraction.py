@@ -14,7 +14,8 @@ from pathlib import Path
 from typing import Any
 
 from agent_infra import build_agent_options, parse_date, run_agent_loop_streaming
-from .tools import KNOWN_PEOPLE, TOOLS_EXTRACTION
+from .tools import TOOLS_EXTRACTION
+from .people import load_people, render_full_block
 from telegram_interface import BotConfig
 from pkm import TranscriptData
 from telegram_interface import TelegramStreamSender
@@ -27,7 +28,9 @@ except ImportError:
 
 log = logging.getLogger(__name__)
 
-SYSTEM_PROMPT = f"""\
+def build_extraction_system_prompt(vault_path: Path) -> str:
+    people_block = render_full_block(load_people(vault_path))
+    return f"""\
 You are an information extraction and routing agent for {USER_NAME}'s Obsidian PKM.
 
 Given a voice recording transcript, you must:
@@ -68,7 +71,7 @@ If the recording is a meeting about a specific project:
 - Place the full summary under that project's folder (e.g., 01-Projects/{{Project}}/meetings/)
 - Still create the inbox summary with a link
 
-""" + KNOWN_PEOPLE + """
+{people_block}
 
 ## Tools
 - Use vault_search and vault_query to find existing context before writing
@@ -176,7 +179,7 @@ async def agent_extract_and_route(
     user_prompt = _build_user_prompt(
         transcript, transcript_path, source_metadata=source_metadata,
     )
-    options = build_agent_options(SYSTEM_PROMPT, pkm_vault_path, allowed_tools=TOOLS_EXTRACTION, max_turns=100)
+    options = build_agent_options(build_extraction_system_prompt(pkm_vault_path), pkm_vault_path, allowed_tools=TOOLS_EXTRACTION, max_turns=100)
     sender = TelegramStreamSender(tg, thread_id) if tg else None
     on_event = sender.handle if sender else None
     loop_result = await run_agent_loop_streaming(user_prompt, options, on_event=on_event)
