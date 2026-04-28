@@ -5,28 +5,29 @@ TelegramInterface class.
 """
 from __future__ import annotations
 
+from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
 from agent_infra import SessionManager, SessionResponse
-from audio_ingest.command_config import DAEMON_COMMANDS
-from audio_ingest.prompts import ASK_SYSTEM_PROMPT, NOTE_SYSTEM_PROMPT
+from audio_ingest.command_config import build_daemon_commands
+from audio_ingest.prompts import build_ask_system_prompt, build_note_system_prompt
 from audio_ingest.tools import TOOLS_ASK, TOOLS_TASK
 from telegram_interface import BotConfig, TelegramInterface, ThreadStore
 
 
-def _make_tii(session_mgr: SessionManager, thread_store: ThreadStore) -> TelegramInterface:
+def _make_tii(session_mgr: SessionManager, thread_store: ThreadStore, vault_path: Path) -> TelegramInterface:
     return TelegramInterface(
         bot_config=BotConfig(bot_token="test", chat_id="123"),
-        commands=DAEMON_COMMANDS,
+        commands=build_daemon_commands(vault_path),
         session_manager=session_mgr,
         thread_store=thread_store,
     )
 
 
 @pytest.mark.asyncio
-async def test_command_creates_topic_session_and_responds():
+async def test_command_creates_topic_session_and_responds(tmp_path):
     """Full /ask flow: topic created, ack sent in topic, session used, response sent."""
     session_mgr = AsyncMock(spec=SessionManager)
     session_mgr.send.return_value = SessionResponse(
@@ -34,7 +35,7 @@ async def test_command_creates_topic_session_and_responds():
         session_id="sess-1",
     )
     thread_store = AsyncMock(spec=ThreadStore)
-    tii = _make_tii(session_mgr, thread_store)
+    tii = _make_tii(session_mgr, thread_store, tmp_path)
 
     with patch("telegram_interface.commands.create_forum_topic", return_value=555) as mock_topic, \
          patch("telegram_interface.commands.send_message_return_id", return_value=42) as mock_send:
@@ -67,7 +68,7 @@ async def test_command_creates_topic_session_and_responds():
 
 
 @pytest.mark.asyncio
-async def test_note_creates_topic_with_note_prefix():
+async def test_note_creates_topic_with_note_prefix(tmp_path):
     """/note flow: topic name starts with 'Note:', session uses note system prompt."""
     session_mgr = AsyncMock(spec=SessionManager)
     session_mgr.send.return_value = SessionResponse(
@@ -75,7 +76,7 @@ async def test_note_creates_topic_with_note_prefix():
         session_id="sess-2",
     )
     thread_store = AsyncMock(spec=ThreadStore)
-    tii = _make_tii(session_mgr, thread_store)
+    tii = _make_tii(session_mgr, thread_store, tmp_path)
 
     with patch("telegram_interface.commands.create_forum_topic", return_value=888) as mock_topic, \
          patch("telegram_interface.commands.send_message_return_id", return_value=10) as mock_send:
@@ -100,7 +101,7 @@ async def test_note_creates_topic_with_note_prefix():
 
 
 @pytest.mark.asyncio
-async def test_topic_failure_degrades_gracefully():
+async def test_topic_failure_degrades_gracefully(tmp_path):
     """When create_forum_topic returns None, dispatch still works with general- key."""
     session_mgr = AsyncMock(spec=SessionManager)
     session_mgr.send.return_value = SessionResponse(
@@ -108,7 +109,7 @@ async def test_topic_failure_degrades_gracefully():
         session_id="sess-3",
     )
     thread_store = AsyncMock(spec=ThreadStore)
-    tii = _make_tii(session_mgr, thread_store)
+    tii = _make_tii(session_mgr, thread_store, tmp_path)
 
     with patch("telegram_interface.commands.create_forum_topic", return_value=None), \
          patch("telegram_interface.commands.send_message_return_id", return_value=5) as mock_send:
@@ -125,11 +126,11 @@ async def test_topic_failure_degrades_gracefully():
 
 
 @pytest.mark.asyncio
-async def test_status_bypasses_sessions_entirely():
+async def test_status_bypasses_sessions_entirely(tmp_path):
     """/status does NOT create topic, does NOT use session_manager."""
     session_mgr = AsyncMock(spec=SessionManager)
     thread_store = AsyncMock(spec=ThreadStore)
-    tii = _make_tii(session_mgr, thread_store)
+    tii = _make_tii(session_mgr, thread_store, tmp_path)
 
     with patch("telegram_interface.commands.create_forum_topic") as mock_topic, \
          patch("telegram_interface.commands.send_message_return_id") as mock_send:
@@ -146,8 +147,8 @@ async def test_status_bypasses_sessions_entirely():
 
 
 @pytest.mark.asyncio
-async def test_different_commands_get_different_system_prompts():
-    """Verify /ask uses ASK_SYSTEM_PROMPT and /note uses NOTE_SYSTEM_PROMPT."""
+async def test_different_commands_get_different_system_prompts(tmp_path):
+    """Verify /ask uses ask prompt and /note uses note prompt."""
     thread_store = AsyncMock(spec=ThreadStore)
 
     captured_prompts: dict[str, str] = {}
@@ -158,7 +159,7 @@ async def test_different_commands_get_different_system_prompts():
     ]:
         session_mgr = AsyncMock(spec=SessionManager)
         session_mgr.send.return_value = SessionResponse(text="ok", session_id="s1")
-        tii = _make_tii(session_mgr, thread_store)
+        tii = _make_tii(session_mgr, thread_store, tmp_path)
 
         with patch("telegram_interface.commands.create_forum_topic", return_value=100), \
              patch("telegram_interface.commands.send_message_return_id", return_value=1):
@@ -167,6 +168,6 @@ async def test_different_commands_get_different_system_prompts():
             call_kwargs = session_mgr.send.call_args[1]
             captured_prompts[expected_command] = call_kwargs["system_prompt"]
 
-    assert captured_prompts["ask"] == ASK_SYSTEM_PROMPT
-    assert captured_prompts["note"] == NOTE_SYSTEM_PROMPT
+    assert captured_prompts["ask"] == build_ask_system_prompt(tmp_path)
+    assert captured_prompts["note"] == build_note_system_prompt(tmp_path)
     assert captured_prompts["ask"] != captured_prompts["note"]
