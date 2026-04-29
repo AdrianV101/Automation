@@ -19,25 +19,24 @@ from agent_infra import build_agent_options, run_agent_loop_streaming
 from telegram_interface import BotConfig, TelegramStreamSender
 
 from .extraction import AgentRoutingResult
-from .prompts import CAPTURE_SYSTEM_PROMPT
+from .prompts import AUTOMATION_DEVLOG_PATH, CAPTURE_SYSTEM_PROMPT
 from .tools import TOOLS_CAPTURE
 
 log = logging.getLogger(__name__)
 
 
-USER_PROMPT_TEMPLATE = """\
+USER_PROMPT_TEMPLATE = f"""\
 The extraction agent just finished routing a voice recording. Capture a
 devlog entry referencing the work.
 
-**Transcript:** [[{transcript_link}]]
-**One-line summary:** {summary_line}
+**Transcript:** [[{{transcript_link}}]]
+**One-line summary:** {{summary_line}}
 **Files written by the extraction pass:**
-{files_block}
+{{files_block}}
 
 Confirm the writes via vault_activity, compose a devlog entry following the
-shape in your system prompt, and append it to
-01-Projects/Automation/development/devlog.md under the existing sessions
-heading.
+shape in your system prompt, and append it to {AUTOMATION_DEVLOG_PATH}
+under the existing sessions heading.
 """
 
 
@@ -75,8 +74,9 @@ async def agent_capture_session(
 ) -> CaptureResult:
     """Append a devlog entry capturing the just-completed extraction work.
 
-    Read-only on note creation: only vault_append (existing devlog) and
-    vault_add_links (backlink fallback) are allowed.
+    Append-only: this agent cannot create or restructure notes; only
+    vault_append (existing devlog) and vault_add_links (optional backlinks)
+    are allowed.
     """
     user_prompt = _build_user_prompt(routing_result, transcript_path)
     options = build_agent_options(
@@ -90,7 +90,8 @@ async def agent_capture_session(
         try:
             await sender.flush()
         except Exception:
-            log.warning("Final trace flush failed, capture result unaffected", exc_info=True)
+            # Capture data is correct; only the Telegram trace tail is lost.
+            log.warning("Final trace flush failed, devlog append unaffected", exc_info=True)
 
     summary = "\n".join(loop_result.text_parts).strip()
 

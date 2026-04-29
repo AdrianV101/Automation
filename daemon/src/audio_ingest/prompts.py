@@ -1,12 +1,16 @@
 """Domain-specific system prompts for agent commands.
 
-Each builder reads the vault's `03-Resources/People/` folder at call time and
-renders the roster into the prompt. The orchestrator calls these once per
-daemon start to seed `CommandConfig.system_prompt` for the four command
-agents (note/task/ask/chat); adding a person to the vault therefore takes
-effect on the next daemon restart, not the next Telegram command. The
-extraction agent (extraction.py) rebuilds its prompt for every recording, so
-that path picks up roster changes without a restart.
+Each builder is pure: it re-reads `{vault}/03-Resources/People/` on every
+call. Whether new people show up depends entirely on call cadence:
+
+- The four command builders (note/task/ask/chat) are invoked exactly once at
+  daemon startup by `command_config.build_daemon_commands`, which stuffs the
+  rendered prompt into a `CommandConfig` reused for every Telegram command.
+  Adding a person therefore takes effect on the next daemon restart, not the
+  next /note.
+- `build_extraction_system_prompt` is invoked per recording in
+  `extraction.agent_extract_and_route`, so extraction picks up roster changes
+  without a restart.
 """
 from __future__ import annotations
 
@@ -22,8 +26,8 @@ except ImportError:
 
 
 # Shared link-discovery recipe used by every write-capable prompt (NOTE, TASK,
-# EXTRACTION). Single source of truth for the 8 canonical relationship verbs
-# and the "related to" prohibition so the three prompts can't drift.
+# EXTRACTION). Single source of truth for the canonical relationship verbs
+# and the "related to" prohibition so the write-capable prompts can't drift.
 LINK_DISCOVERY_RECIPE = (
     "Run vault_suggest_links(path=<{path_label}>, limit=8), pick the top 3-5 "
     "most relevant suggestions, write a one-line annotation per pick using a "
@@ -278,11 +282,14 @@ Codebase: Read, Glob, Grep.
 """
 
 
+# Single source of truth for the project devlog path. Used by capture's
+# system prompt AND its user prompt (capture.py). Lift into config alongside
+# enable_session_capture if a future daemon needs a different project.
+AUTOMATION_DEVLOG_PATH = "01-Projects/Automation/development/devlog.md"
+
+
 # Capture pass: append a devlog entry after a successful extraction. Mirrors
 # pkm-session-end Step 2/3a (devlog append with links to just-written notes).
-# The project name "Automation" is hardcoded in the devlog path because the
-# daemon is the Automation project; if a future daemon needs a different
-# project, lift this into config alongside enable_session_capture.
 CAPTURE_SYSTEM_PROMPT = (
     "You are a session-capture agent. An extraction agent just routed a voice "
     "recording into the Obsidian vault. Append a single structured devlog "
@@ -292,7 +299,7 @@ CAPTURE_SYSTEM_PROMPT = (
     "## What you do\n"
     "1. Call vault_activity(limit: 50) to confirm what was just written. "
     "Cross-reference with the files_written list in the user prompt.\n"
-    "2. Read 01-Projects/Automation/development/devlog.md with vault_read to "
+    f"2. Read {AUTOMATION_DEVLOG_PATH} with vault_read to "
     "find the '## Sessions' (or '## Recent Activity') heading.\n"
     "3. Compose a devlog entry of this shape:\n"
     "   ## YYYY-MM-DD HH:mm\n"
@@ -303,8 +310,7 @@ CAPTURE_SYSTEM_PROMPT = (
     "   ### Source\n"
     "   - [[transcript wikilink]]\n"
     "   ---\n"
-    "4. Append with vault_append against "
-    "01-Projects/Automation/development/devlog.md using "
+    f"4. Append with vault_append against {AUTOMATION_DEVLOG_PATH} using "
     "position: 'after_heading' so the newest entry is at the top.\n"
     "5. Optionally call vault_add_links to backlink the devlog from 1-2 of "
     "the just-written notes if the extraction agent did not already.\n\n"
