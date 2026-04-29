@@ -91,6 +91,20 @@ class TestCaptureResultDataclass:
         assert r.error == "something broke"
         assert r.turns_used == 3
 
+    def test_success_true_with_error_is_rejected(self) -> None:
+        """Inconsistent success/error pair must fail at construction time.
+
+        Without this, a misconstruction silently misleads operators reading
+        `result.error` after a `success=True` -- type-design-analyzer I4.
+        """
+        with pytest.raises(ValueError, match="success=True.*error=None"):
+            CaptureResult(success=True, summary="ok", error="actually failed")
+
+    def test_success_false_without_error_is_rejected(self) -> None:
+        """Failure must always carry an error message, not None."""
+        with pytest.raises(ValueError, match="success=False.*non-None error"):
+            CaptureResult(success=False, summary="failed")
+
 
 # ---------------------------------------------------------------------------
 # (f) TOOLS_CAPTURE strict-subset shape

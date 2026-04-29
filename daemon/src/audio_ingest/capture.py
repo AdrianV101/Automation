@@ -48,6 +48,18 @@ class CaptureResult:
     error: str | None = None
     turns_used: int = 0
 
+    def __post_init__(self) -> None:
+        # Mirror AgentRoutingResult's success/error pair invariant.
+        if self.success and self.error is not None:
+            raise ValueError(
+                "CaptureResult(success=True) must have error=None; "
+                f"got error={self.error!r}"
+            )
+        if not self.success and self.error is None:
+            raise ValueError(
+                "CaptureResult(success=False) requires a non-None error"
+            )
+
 
 def _build_user_prompt(
     routing_result: AgentRoutingResult,

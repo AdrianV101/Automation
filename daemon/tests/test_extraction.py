@@ -81,6 +81,27 @@ class TestFindSummaryPath:
         assert _find_summary_path([]) is None
 
 
+class TestAgentRoutingResultInvariants:
+    """The success/error pair invariant (type-design-analyzer I4) prevents
+    misconstructions that would silently mislead operators."""
+
+    def test_success_true_with_error_is_rejected(self):
+        with pytest.raises(ValueError, match="success=True.*error=None"):
+            AgentRoutingResult(success=True, summary="ok", error="actually failed")
+
+    def test_success_false_without_error_is_rejected(self):
+        with pytest.raises(ValueError, match="success=False.*non-None error"):
+            AgentRoutingResult(success=False, summary="oops")
+
+    def test_success_true_without_error_is_valid(self):
+        r = AgentRoutingResult(success=True, summary="ok")
+        assert r.error is None
+
+    def test_success_false_with_error_is_valid(self):
+        r = AgentRoutingResult(success=False, summary="", error="something broke")
+        assert r.error == "something broke"
+
+
 class TestAgentExtractAndRoute:
     async def test_successful_routing(self, pkm_vault_path, transcript, transcript_path):
         """Agent returns text + tool calls -> success."""

@@ -61,6 +61,25 @@ class AgentRoutingResult:
     frontmatter_updated: list[str] = field(default_factory=list)
     links_added: list[str] = field(default_factory=list)
 
+    def __post_init__(self) -> None:
+        # Enforce the success/error pair invariant. The gate protects the
+        # consumers in pipeline.py / notifications.py / capture.py that read
+        # `error` after seeing `success=False` (or that suppress error
+        # messaging on `success=True`); without the gate, a misconstruction
+        # like `success=True, error="oops"` would silently mislead operators.
+        # Files-vs-success is intentionally NOT enforced here -- the pipeline
+        # gate AND-conjoins success and files_written on purpose, defending
+        # against a future invariant weakening; that defense is testable.
+        if self.success and self.error is not None:
+            raise ValueError(
+                "AgentRoutingResult(success=True) must have error=None; "
+                f"got error={self.error!r}"
+            )
+        if not self.success and self.error is None:
+            raise ValueError(
+                "AgentRoutingResult(success=False) requires a non-None error"
+            )
+
 
 def _build_user_prompt(
     transcript: TranscriptData,
@@ -153,9 +172,12 @@ async def agent_extract_and_route(
         error_msg = loop_result.error
         if loop_result.tool_errors:
             error_msg = f"{error_msg}; tool_errors={loop_result.tool_errors[-2:]}"
+        # Preserve the partial trace text on failure -- it's the only
+        # forensic evidence of what the agent was doing before it crashed
+        # / hit max_turns. Mirrors capture.py's reconciled behaviour.
         return AgentRoutingResult(
             success=False,
-            summary="",
+            summary=summary,
             error=error_msg,
             turns_used=loop_result.turns_used,
             frontmatter_updated=list(loop_result.frontmatter_updated),
