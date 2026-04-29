@@ -32,6 +32,12 @@ class DaemonConfig:
     imap_password: str = ""
     email_ingest_state_db_path: Path = Path("./email_ingest_state.db")
     vault_attachments_subdir: str = "99-Attachments/plaud"
+    # News ingestion (parallel listener on a Proton-routed `News/` folder).
+    # Shares the same Bridge connection and state DB file; uses a parallel
+    # `news_ingest_events` table and the `uidnext:news` settings key.
+    news_ingest_enabled: bool = False
+    news_imap_folder: str = "News"
+    news_telegram_topic_id: int | None = None
     # Proton Mail Bridge on localhost requires STARTTLS upgrade and uses a
     # self-signed cert; defaults match that canonical deployment.
     imap_use_starttls: bool = True
@@ -91,6 +97,15 @@ class DaemonConfig:
             "MAX_CONCURRENT_DISPATCH", "4", int,
         )
 
+        news_ingest_enabled = os.environ.get(
+            "NEWS_INGEST_ENABLED", "false",
+        ).lower() == "true"
+        news_imap_folder = os.environ.get("NEWS_IMAP_FOLDER", "News")
+        raw_news_topic = os.environ.get("NEWS_TELEGRAM_TOPIC_ID")
+        news_telegram_topic_id: int | None = (
+            int(raw_news_topic) if raw_news_topic else None
+        )
+
         return cls(
             telegram_bot_token=require("TELEGRAM_BOT_TOKEN"),
             telegram_chat_id=require("TELEGRAM_CHAT_ID"),
@@ -115,6 +130,9 @@ class DaemonConfig:
             enable_session_capture=enable_session_capture,
             agent_inactivity_timeout_s=agent_inactivity_timeout_s,
             max_concurrent_dispatch=max_concurrent_dispatch,
+            news_ingest_enabled=news_ingest_enabled,
+            news_imap_folder=news_imap_folder,
+            news_telegram_topic_id=news_telegram_topic_id,
         )
 
     def __post_init__(self) -> None:
