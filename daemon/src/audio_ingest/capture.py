@@ -20,7 +20,7 @@ from telegram_interface import BotConfig, TelegramStreamSender
 
 from .extraction import AgentRoutingResult
 from .prompts import AUTOMATION_DEVLOG_PATH, CAPTURE_SYSTEM_PROMPT
-from .tools import TOOLS_CAPTURE
+from .tools import TOOLS_CAPTURE, as_list
 
 log = logging.getLogger(__name__)
 
@@ -92,7 +92,7 @@ async def agent_capture_session(
     """
     user_prompt = _build_user_prompt(routing_result, transcript_path)
     options = build_agent_options(
-        CAPTURE_SYSTEM_PROMPT, pkm_vault_path, allowed_tools=TOOLS_CAPTURE,
+        CAPTURE_SYSTEM_PROMPT, pkm_vault_path, allowed_tools=as_list(TOOLS_CAPTURE),
         max_turns=15,
     )
     sender = TelegramStreamSender(tg, thread_id) if tg else None

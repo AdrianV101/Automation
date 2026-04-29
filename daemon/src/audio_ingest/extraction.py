@@ -15,7 +15,7 @@ from typing import Any
 
 from agent_infra import build_agent_options, parse_date, run_agent_loop_streaming
 from .prompts import build_extraction_system_prompt
-from .tools import TOOLS_EXTRACTION
+from .tools import TOOLS_EXTRACTION, as_list
 from telegram_interface import BotConfig
 from pkm import TranscriptData
 from telegram_interface import TelegramStreamSender
@@ -153,7 +153,7 @@ async def agent_extract_and_route(
     options = build_agent_options(
         build_extraction_system_prompt(pkm_vault_path),
         pkm_vault_path,
-        allowed_tools=TOOLS_EXTRACTION,
+        allowed_tools=as_list(TOOLS_EXTRACTION),
         max_turns=150,
     )
     sender = TelegramStreamSender(tg, thread_id) if tg else None

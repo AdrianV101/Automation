@@ -161,6 +161,51 @@ class TestToolsCaptureSubset:
                 f"and has no business reading source or fetching from the web"
             )
 
+    def test_capture_disjoint_from_forbidden(self) -> None:
+        """Set-algebra spelling of the safety boundary.
+
+        Composes the forbidden-set as `(write - {append, add_links}) | admin`
+        and asserts disjointness. This is the negative invariant the type-
+        design-analyzer (I6) identified as critical: a future profile change
+        that introduced `vault_quick_append` into _VAULT_WRITE and re-derived
+        TOOLS_CAPTURE differently would still need to clear this assertion.
+        """
+        from audio_ingest.tools import _VAULT_ADMIN, _VAULT_WRITE, VaultTool
+
+        forbidden = (_VAULT_WRITE - {VaultTool.APPEND, VaultTool.ADD_LINKS}) | _VAULT_ADMIN
+        assert TOOLS_CAPTURE.isdisjoint(forbidden), (
+            f"TOOLS_CAPTURE leaks forbidden tools: {TOOLS_CAPTURE & forbidden}"
+        )
+
+
+class TestVaultToolPrefixInvariant:
+    """The mcp__obsidian-pkm__ prefix is the SDK's match key. A typo'd
+    member would silently fail to allowlist at runtime."""
+
+    def test_every_vault_tool_has_prefix(self) -> None:
+        from audio_ingest.tools import VAULT_PREFIX, VaultTool
+
+        for member in VaultTool:
+            assert member.value.startswith(VAULT_PREFIX), (
+                f"{member.name} = {member.value!r} missing prefix {VAULT_PREFIX!r}"
+            )
+
+    def test_profiles_are_immutable(self) -> None:
+        """The profiles are exported as frozenset so .add/.remove raise.
+
+        Pre-I6, TOOLS_CAPTURE was a list -- any caller could
+        `.append(VaultTool.WRITE.value)` and silently widen the safety
+        boundary process-wide.
+        """
+        from audio_ingest.tools import (
+            TOOLS_ASK, TOOLS_CAPTURE, TOOLS_COMMAND, TOOLS_EXTRACTION, TOOLS_TASK,
+        )
+
+        for profile in (TOOLS_CAPTURE, TOOLS_EXTRACTION, TOOLS_ASK, TOOLS_COMMAND, TOOLS_TASK):
+            assert isinstance(profile, frozenset), (
+                f"profile {profile!r} must be frozenset, got {type(profile)}"
+            )
+
 
 # ---------------------------------------------------------------------------
 # (e) CAPTURE_SYSTEM_PROMPT contents
