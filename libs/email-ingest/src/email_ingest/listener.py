@@ -82,7 +82,7 @@ class ImapIdleListener:
             pass
 
     async def _run_session(self, conn: _BridgeConnection) -> None:
-        server_uidnext = await conn.select_inbox()
+        server_uidnext = await conn.select_folder("INBOX")
         checkpoint = await self.db.get_uidnext_checkpoint() or 1
         log.info(
             "IMAP connected to INBOX (server UIDNEXT=%d, checkpoint=%d)",
@@ -106,7 +106,7 @@ class ImapIdleListener:
             if not saw_exists:
                 log.info("IDLE renewed (no new mail in last %ds)", IDLE_RENEW_SECONDS)
                 continue
-            new_uidnext = await conn.select_inbox()
+            new_uidnext = await conn.select_folder("INBOX")
             current_checkpoint = await self.db.get_uidnext_checkpoint() or 1
             for uid in range(current_checkpoint, new_uidnext):
                 await self._process_uid(conn, uid)

@@ -22,6 +22,7 @@ class FakeImapServer:
     password: str = "pw"
     messages: list[FakeMessage] = field(default_factory=list)
     reject_login: bool = False
+    selected_folders: list[str] = field(default_factory=list)
     _server: asyncio.base_events.Server | None = None
     _idle_writers: list[asyncio.StreamWriter] = field(default_factory=list)
 
@@ -78,6 +79,8 @@ class FakeImapServer:
                         else:
                             writer.write(f"{tag} OK LOGIN completed\r\n".encode())
                 elif cmd == "SELECT":
+                    folder = (args[0] if args else "").strip().strip('"')
+                    self.selected_folders.append(folder)
                     writer.write(
                         f"* {len(self.messages)} EXISTS\r\n"
                         f"* OK [UIDNEXT {len(self.messages) + 1}] Predicted\r\n"
