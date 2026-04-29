@@ -41,6 +41,35 @@ async def _run_until(listener: ImapIdleListener, condition, timeout: float = 2.0
         await asyncio.wait_for(task, timeout=1.0)
 
 
+async def test_listener_selects_configured_folder(setup) -> None:
+    server, db, cfg = setup
+
+    async def on_new(uid: int, raw: bytes, headers: dict) -> None:
+        return None
+
+    listener = ImapIdleListener(cfg, db, on_new_email=on_new, folder="News")
+    task = asyncio.create_task(listener.run())
+    await _run_until_external(lambda: "News" in server.selected_folders, timeout=2.0)
+    listener.stop()
+    await asyncio.wait_for(task, timeout=1.0)
+    assert "News" in server.selected_folders
+    assert "INBOX" not in server.selected_folders
+
+
+async def test_listener_defaults_to_inbox_folder(setup) -> None:
+    server, db, cfg = setup
+
+    async def on_new(uid: int, raw: bytes, headers: dict) -> None:
+        return None
+
+    listener = ImapIdleListener(cfg, db, on_new_email=on_new)  # no folder= kwarg
+    task = asyncio.create_task(listener.run())
+    await _run_until_external(lambda: "INBOX" in server.selected_folders, timeout=2.0)
+    listener.stop()
+    await asyncio.wait_for(task, timeout=1.0)
+    assert "INBOX" in server.selected_folders
+
+
 async def test_listener_delivers_new_message(setup) -> None:
     server, db, cfg = setup
     received: list[tuple[int, bytes]] = []

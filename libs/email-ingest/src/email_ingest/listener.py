@@ -4,11 +4,11 @@ import asyncio
 import logging
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
+from typing import Protocol
 
 from .bridge import BridgeConfig, ImapBridge, _BridgeConnection
 from .errors import ImapAuthError, ImapConnectionError, MalformedEmailError
 from .mime import parse_email
-from .state import EmailIngestStateDB
 
 log = logging.getLogger(__name__)
 
@@ -20,13 +20,19 @@ PERSISTENT_FAILURE_THRESHOLD = 3
 AUTH_FAILURE_COOLDOWN_SECONDS = 300
 
 
+class UidnextCheckpointDB(Protocol):
+    async def get_uidnext_checkpoint(self) -> int: ...
+    async def set_uidnext_checkpoint(self, uidnext: int) -> None: ...
+
+
 @dataclass
 class ImapIdleListener:
     cfg: BridgeConfig
-    db: EmailIngestStateDB
+    db: UidnextCheckpointDB
     on_new_email: OnNewEmail
     on_persistent_failure: OnPersistentFailure | None = None
     auth_failure_cooldown: float = AUTH_FAILURE_COOLDOWN_SECONDS
+    folder: str = "INBOX"
 
     def __post_init__(self) -> None:
         self._bridge = ImapBridge(self.cfg)
@@ -82,11 +88,11 @@ class ImapIdleListener:
             pass
 
     async def _run_session(self, conn: _BridgeConnection) -> None:
-        server_uidnext = await conn.select_folder("INBOX")
+        server_uidnext = await conn.select_folder(self.folder)
         checkpoint = await self.db.get_uidnext_checkpoint() or 1
         log.info(
-            "IMAP connected to INBOX (server UIDNEXT=%d, checkpoint=%d)",
-            server_uidnext, checkpoint,
+            "IMAP connected to %s (server UIDNEXT=%d, checkpoint=%d)",
+            self.folder, server_uidnext, checkpoint,
         )
 
         for uid in range(checkpoint, server_uidnext):
@@ -94,7 +100,7 @@ class ImapIdleListener:
         await self.db.set_uidnext_checkpoint(server_uidnext)
 
         while not self._stop.is_set():
-            log.debug("Entering IDLE for INBOX")
+            log.debug("Entering IDLE for %s", self.folder)
             await conn.idle_start()
             try:
                 saw_exists = await self._wait_for_new_mail(conn)
@@ -106,7 +112,7 @@ class ImapIdleListener:
             if not saw_exists:
                 log.info("IDLE renewed (no new mail in last %ds)", IDLE_RENEW_SECONDS)
                 continue
-            new_uidnext = await conn.select_folder("INBOX")
+            new_uidnext = await conn.select_folder(self.folder)
             current_checkpoint = await self.db.get_uidnext_checkpoint() or 1
             for uid in range(current_checkpoint, new_uidnext):
                 await self._process_uid(conn, uid)
