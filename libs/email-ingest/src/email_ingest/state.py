@@ -239,3 +239,27 @@ class NewsIngestStateDB:
             await db.commit()
             if cur.rowcount == 0:
                 raise KeyError(f"no event row for message_id={message_id!r}")
+
+    async def get_uidnext_checkpoint(self) -> int:
+        raw = await self._get_setting(self.SETTINGS_KEY_UIDNEXT)
+        return int(raw) if raw else 0
+
+    async def set_uidnext_checkpoint(self, uidnext: int) -> None:
+        await self._set_setting(self.SETTINGS_KEY_UIDNEXT, str(uidnext))
+
+    async def _get_setting(self, key: str) -> str | None:
+        async with aiosqlite.connect(self._path) as db:
+            async with db.execute(
+                "SELECT value FROM email_ingest_settings WHERE key = ?", (key,),
+            ) as cur:
+                row = await cur.fetchone()
+                return row[0] if row else None
+
+    async def _set_setting(self, key: str, value: str) -> None:
+        async with aiosqlite.connect(self._path) as db:
+            await db.execute(
+                "INSERT INTO email_ingest_settings (key, value) VALUES (?, ?) "
+                "ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+                (key, value),
+            )
+            await db.commit()

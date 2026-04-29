@@ -164,3 +164,24 @@ async def test_news_state_db_update_status_raises_keyerror_on_missing(tmp_path: 
     await db.init_db()
     with pytest.raises(KeyError):
         await db.update_status("never-inserted", "failed", error="boom")
+
+
+async def test_news_state_db_uidnext_round_trip(tmp_path: Path) -> None:
+    db = NewsIngestStateDB(tmp_path / "state.db")
+    await db.init_db()
+    assert await db.get_uidnext_checkpoint() == 0  # default
+    await db.set_uidnext_checkpoint(123)
+    assert await db.get_uidnext_checkpoint() == 123
+
+
+async def test_news_uidnext_isolated_from_email_uidnext(tmp_path: Path) -> None:
+    """Same DB file, two state classes, different settings keys must not clash."""
+    path = tmp_path / "state.db"
+    email_db = EmailIngestStateDB(path)
+    news_db = NewsIngestStateDB(path)
+    await email_db.init_db()
+    await news_db.init_db()
+    await email_db.set_uidnext_checkpoint(50)
+    await news_db.set_uidnext_checkpoint(900)
+    assert await email_db.get_uidnext_checkpoint() == 50
+    assert await news_db.get_uidnext_checkpoint() == 900
