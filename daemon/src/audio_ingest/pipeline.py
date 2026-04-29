@@ -8,6 +8,10 @@ from typing import TYPE_CHECKING
 from pkm import write_raw_transcript
 from telegram_interface import BotConfig, create_forum_topic
 
+from agent_infra import AgentInfraConfigError
+from telegram_interface import send_message
+
+from .capture import agent_capture_session
 from .config import DaemonConfig
 from .extraction import agent_extract_and_route
 from .models import RecordingJob
@@ -82,6 +86,66 @@ async def process_recording(
             await send_routing_summary(routing_result, bot, thread_id=rec_thread_id)
         except Exception:
             log.exception("Failed to send Telegram summary for %s", job.id)
+
+        if (
+            config.enable_session_capture
+            and routing_result is not None
+            and routing_result.success
+            and routing_result.files_written
+        ):
+            try:
+                capture_result = await agent_capture_session(
+                    routing_result,
+                    transcript_path,
+                    config.pkm_vault_path,
+                    tg=bot,
+                    thread_id=rec_thread_id,
+                )
+                if not capture_result.success:
+                    # Operator visibility: enrich the log with the
+                    # auditable context (turns, files-attempted, summary
+                    # path) and surface a one-line note in the same forum
+                    # thread that has the routing summary so the user who
+                    # opted into capture knows it failed without scraping
+                    # daemon logs.
+                    log.warning(
+                        "Session capture for job=%s did not append devlog: "
+                        "error=%r turns_used=%d files_appended=%r summary_path=%s",
+                        job.id, capture_result.error, capture_result.turns_used,
+                        capture_result.files_appended, routing_result.summary_path,
+                    )
+                    try:
+                        await send_message(
+                            f"⚠️ Devlog capture pass failed: "
+                            f"{capture_result.error or 'unknown'}. "
+                            "Extraction succeeded; transcript and notes preserved.",
+                            bot, thread_id=rec_thread_id,
+                        )
+                    except Exception:
+                        log.exception(
+                            "Failed to notify capture failure for %s", job.id,
+                        )
+            except AgentInfraConfigError:
+                # Daemon-wide misconfiguration (env var missing, node not on
+                # PATH). Don't swallow as a per-job capture failure -- this
+                # will fail every job, and the operator needs to fix the host.
+                # Propagate to the outer pipeline handler which surfaces a
+                # "failed" status and a clear Telegram error notification.
+                raise
+            except Exception:
+                log.exception(
+                    "Session capture failed for %s, extraction unaffected", job.id,
+                )
+                try:
+                    await send_message(
+                        "⚠️ Devlog capture pass crashed. "
+                        "Extraction succeeded; transcript and notes preserved.",
+                        bot, thread_id=rec_thread_id,
+                    )
+                except Exception:
+                    log.exception(
+                        "Failed to notify capture crash for %s", job.id,
+                    )
 
         log.info("Completed processing %s", job.filename)
 

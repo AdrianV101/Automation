@@ -40,6 +40,10 @@ class DaemonConfig:
     # authserv-id (the MTA's identifier). Matches Proton Mail Bridge's default.
     dkim_trusted_authserv_id: str = "mail.protonmail.ch"
     dkim_required_domain: str = "plaud.ai"
+    # Session capture: append a devlog entry after each successful extraction.
+    # OFF by default. Adds a second SDK pass per recording -- collect dogfood
+    # cost data before keeping this on long-term.
+    enable_session_capture: bool = False
     # Agent runtime safety
     agent_inactivity_timeout_s: float = 600.0
     max_concurrent_dispatch: int = 4
@@ -69,6 +73,7 @@ class DaemonConfig:
         email_ingest_enabled = os.environ.get("EMAIL_INGEST_ENABLED", "false").lower() == "true"
         imap_host = os.environ.get("IMAP_HOST", "127.0.0.1")
         imap_ssl_verify = os.environ.get("IMAP_SSL_VERIFY", "false").lower() == "true"
+        enable_session_capture = os.environ.get("ENABLE_SESSION_CAPTURE", "false").lower() == "true"
 
         # The insecure default (ssl_verify=False) is only safe because traffic
         # stays on loopback. Reject remote hosts unless the operator
@@ -107,6 +112,7 @@ class DaemonConfig:
                 "DKIM_TRUSTED_AUTHSERV_ID", "mail.protonmail.ch",
             ),
             dkim_required_domain=os.environ.get("DKIM_REQUIRED_DOMAIN", "plaud.ai"),
+            enable_session_capture=enable_session_capture,
             agent_inactivity_timeout_s=agent_inactivity_timeout_s,
             max_concurrent_dispatch=max_concurrent_dispatch,
         )

@@ -14,75 +14,14 @@ from pathlib import Path
 from typing import Any
 
 from agent_infra import build_agent_options, parse_date, run_agent_loop_streaming
-from .tools import TOOLS_EXTRACTION
-from .people import load_people, render_full_block
+from .prompts import build_extraction_system_prompt
+from .tools import TOOLS_EXTRACTION, as_list
 from telegram_interface import BotConfig
 from pkm import TranscriptData
 from telegram_interface import TelegramStreamSender
 
-try:
-    from .user_context import USER_NAME, PROJECT_ROUTES
-except ImportError:
-    USER_NAME = "User"
-    PROJECT_ROUTES = ""
-
 log = logging.getLogger(__name__)
 
-def build_extraction_system_prompt(vault_path: Path) -> str:
-    people_block = render_full_block(load_people(vault_path))
-    return f"""\
-You are an information extraction and routing agent for {USER_NAME}'s Obsidian PKM.
-
-Given a voice recording transcript, you must:
-1. Extract ALL substantive information (facts, decisions, tasks, follow-ups, social plans, people context)
-2. Search the vault for related existing notes, projects, and people
-3. Route extracted information to the appropriate locations
-
-## Routing Rules
-
-### Always create: Summary note
-- Write to: 00-Inbox/audio-ingestion/{{date}}-{{topic}}.md
-- Use vault_write with template "fleeting-note" and tags ["audio-summary", "plaud", "auto-generated"]
-- Include: summary, key facts, all extracted items, link to raw transcript
-
-### Project-specific items
-{PROJECT_ROUTES}
-
-For tasks/bugs/decisions related to a known project:
-- Search for the project's task list or devlog
-- Append tasks using vault_append under the appropriate heading
-- If no suitable file exists, create one in the project folder
-
-For unknown projects: search the vault first, then route to 00-Inbox/ if no match found.
-
-### Social commitments
-Plans with people (meetings, calls, hangouts, deadlines):
-- Append to the daily note for the relevant date (if determinable)
-- If no specific date, add to 00-Inbox/ with a clear title
-
-### People context
-New information about known people:
-- Search for existing person notes in the vault
-- If found, append new context
-- If not found, note the context in the summary
-
-### Meeting notes
-If the recording is a meeting about a specific project:
-- Place the full summary under that project's folder (e.g., 01-Projects/{{Project}}/meetings/)
-- Still create the inbox summary with a link
-
-{people_block}
-
-## Tools
-- Use vault_search and vault_query to find existing context before writing
-- You can read project source code with Read, Glob, and Grep to verify technical details mentioned in recordings
-
-## Important
-- Always link back to the raw transcript using [[wikilink]]
-- Prefer vault_append to add to existing files over creating new ones
-- Use proper Obsidian frontmatter (type, tags, etc.)
-- Extract ALL information, not just summaries - preserve nuance
-"""
 
 USER_PROMPT_TEMPLATE = """\
 Here is a voice recording transcript to process:
@@ -113,6 +52,33 @@ class AgentRoutingResult:
     summary_path: str | None = None
     error: str | None = None
     turns_used: int = 0
+    # Auxiliary mutations: notes whose frontmatter was edited via
+    # vault_update_frontmatter, and notes that received link additions via
+    # vault_add_links. These are how the per-item write protocol's dedup-hit
+    # branch (similarity > 0.8 -> append/edit/update_frontmatter on the
+    # existing note + bidirectional link insertion) shows up in the result.
+    # Surfaced so dedup-skip decisions can be audited from the daemon log.
+    frontmatter_updated: list[str] = field(default_factory=list)
+    links_added: list[str] = field(default_factory=list)
+
+    def __post_init__(self) -> None:
+        # Enforce the success/error pair invariant. The gate protects the
+        # consumers in pipeline.py / notifications.py / capture.py that read
+        # `error` after seeing `success=False` (or that suppress error
+        # messaging on `success=True`); without the gate, a misconstruction
+        # like `success=True, error="oops"` would silently mislead operators.
+        # Files-vs-success is intentionally NOT enforced here -- the pipeline
+        # gate AND-conjoins success and files_written on purpose, defending
+        # against a future invariant weakening; that defense is testable.
+        if self.success and self.error is not None:
+            raise ValueError(
+                "AgentRoutingResult(success=True) must have error=None; "
+                f"got error={self.error!r}"
+            )
+        if not self.success and self.error is None:
+            raise ValueError(
+                "AgentRoutingResult(success=False) requires a non-None error"
+            )
 
 
 def _build_user_prompt(
@@ -179,7 +145,17 @@ async def agent_extract_and_route(
     user_prompt = _build_user_prompt(
         transcript, transcript_path, source_metadata=source_metadata,
     )
-    options = build_agent_options(build_extraction_system_prompt(pkm_vault_path), pkm_vault_path, allowed_tools=TOOLS_EXTRACTION, max_turns=100)
+    # Turn cap sized for the multi-stage prompt: Stage 0 dedup (~2) + Stage 1
+    # context sweep across topics (~10) + always-on inbox summary (~5) +
+    # per-item write protocol (~6 turns/item, typically 5-10 items) +
+    # bidirectional linking on structured templates. A moderate transcript
+    # lower-bounds at ~75 turns; 150 gives headroom without going unbounded.
+    options = build_agent_options(
+        build_extraction_system_prompt(pkm_vault_path),
+        pkm_vault_path,
+        allowed_tools=as_list(TOOLS_EXTRACTION),
+        max_turns=150,
+    )
     sender = TelegramStreamSender(tg, thread_id) if tg else None
     on_event = sender.handle if sender else None
     loop_result = await run_agent_loop_streaming(user_prompt, options, on_event=on_event)
@@ -193,25 +169,55 @@ async def agent_extract_and_route(
     summary_path = _find_summary_path(loop_result.files_written)
 
     if loop_result.error:
-        return AgentRoutingResult(
-            success=False,
-            summary="",
-            error=loop_result.error,
-            turns_used=loop_result.turns_used,
-        )
-
-    if not loop_result.files_written:
-        log.warning("Agent completed but wrote no files (turns=%d)", loop_result.turns_used)
+        error_msg = loop_result.error
+        if loop_result.tool_errors:
+            error_msg = f"{error_msg}; tool_errors={loop_result.tool_errors[-2:]}"
+        # Preserve the partial trace text on failure -- it's the only
+        # forensic evidence of what the agent was doing before it crashed
+        # / hit max_turns. Mirrors capture.py's reconciled behaviour.
         return AgentRoutingResult(
             success=False,
             summary=summary,
-            error="Agent completed but wrote no files",
+            error=error_msg,
             turns_used=loop_result.turns_used,
+            frontmatter_updated=list(loop_result.frontmatter_updated),
+            links_added=list(loop_result.links_added),
+        )
+
+    if not loop_result.files_written:
+        # The always-on inbox summary should always be in files_written --
+        # the prompt excludes it from the dedup gate. Empty files_written
+        # therefore means even the inbox write didn't happen, regardless of
+        # whether aux mutations did. Surface tool_errors so an operator can
+        # distinguish "agent gave up after MCP rejection" from "agent saw
+        # zero routable items and silently violated protocol."
+        detail = (
+            f"; tool_errors={loop_result.tool_errors[-2:]}"
+            if loop_result.tool_errors else ""
+        )
+        if loop_result.frontmatter_updated or loop_result.links_added:
+            detail += (
+                f"; frontmatter_updated={len(loop_result.frontmatter_updated)}"
+                f", links_added={len(loop_result.links_added)}"
+            )
+        msg = f"Agent completed but wrote no files (turns={loop_result.turns_used}){detail}"
+        log.warning(msg)
+        return AgentRoutingResult(
+            success=False,
+            summary=summary,
+            error=msg,
+            turns_used=loop_result.turns_used,
+            frontmatter_updated=list(loop_result.frontmatter_updated),
+            links_added=list(loop_result.links_added),
         )
 
     log.info(
-        "Agent routing complete: %d files written, %d turns used",
-        len(loop_result.files_written), loop_result.turns_used,
+        "Agent routing complete: %d files written, %d frontmatter updated, "
+        "%d links added, %d turns used",
+        len(loop_result.files_written),
+        len(loop_result.frontmatter_updated),
+        len(loop_result.links_added),
+        loop_result.turns_used,
     )
     return AgentRoutingResult(
         success=True,
@@ -219,4 +225,6 @@ async def agent_extract_and_route(
         files_written=loop_result.files_written,
         summary_path=summary_path,
         turns_used=loop_result.turns_used,
+        frontmatter_updated=list(loop_result.frontmatter_updated),
+        links_added=list(loop_result.links_added),
     )

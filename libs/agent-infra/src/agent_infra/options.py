@@ -14,6 +14,16 @@ DISALLOWED_NATIVE_TOOLS = [
 ]
 
 
+class AgentInfraConfigError(RuntimeError):
+    """Raised when daemon config is missing/invalid (env vars, executables).
+
+    Distinct from runtime errors so callers can re-raise these to the
+    daemon-wide error handler instead of swallowing them as per-job
+    failures: an OBSIDIAN_MCP_SERVER_PATH miss or absent `node` will fail
+    every job until the operator fixes the host, not just this one.
+    """
+
+
 def build_agent_options(
     system_prompt: str, pkm_vault_path: Path,
     *, model: str = "claude-opus-4-6",
@@ -24,13 +34,13 @@ def build_agent_options(
     """Build standard ClaudeAgentOptions with Obsidian MCP config."""
     server_path = mcp_server_path or os.environ.get("OBSIDIAN_MCP_SERVER_PATH")
     if not server_path:
-        raise RuntimeError(
+        raise AgentInfraConfigError(
             "OBSIDIAN_MCP_SERVER_PATH environment variable is not set. "
             "Set it to the path of your Obsidian MCP server's index.js."
         )
     node_path = shutil.which("node")
     if not node_path:
-        raise RuntimeError(
+        raise AgentInfraConfigError(
             "node executable not found on PATH. The obsidian-pkm MCP server "
             "requires node; install it or extend the daemon's PATH "
             f"(current PATH={os.environ.get('PATH', '')!r})."
