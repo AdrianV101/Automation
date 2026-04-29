@@ -8,6 +8,7 @@ from typing import TYPE_CHECKING
 from pkm import write_raw_transcript
 from telegram_interface import BotConfig, create_forum_topic
 
+from agent_infra import AgentInfraConfigError
 from telegram_interface import send_message
 
 from .capture import agent_capture_session
@@ -124,6 +125,13 @@ async def process_recording(
                         log.exception(
                             "Failed to notify capture failure for %s", job.id,
                         )
+            except AgentInfraConfigError:
+                # Daemon-wide misconfiguration (env var missing, node not on
+                # PATH). Don't swallow as a per-job capture failure -- this
+                # will fail every job, and the operator needs to fix the host.
+                # Propagate to the outer pipeline handler which surfaces a
+                # "failed" status and a clear Telegram error notification.
+                raise
             except Exception:
                 log.exception(
                     "Session capture failed for %s, extraction unaffected", job.id,

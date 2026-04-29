@@ -852,6 +852,49 @@ class TestPipelineCaptureWiring:
         assert "Devlog capture pass crashed" in msg
 
     @pytest.mark.asyncio
+    async def test_config_error_propagates_to_outer_handler(self, tmp_path) -> None:
+        """A daemon-wide config error (missing OBSIDIAN_MCP_SERVER_PATH, no
+        node on PATH) must NOT be swallowed as a per-job capture failure.
+
+        Pre-fix, the inner `except Exception` caught it; the operator only
+        saw a per-job warning despite the underlying defect failing every
+        recording. Post-fix, AgentInfraConfigError propagates to the outer
+        pipeline handler which marks the job failed and sends a clearer
+        Telegram error notification.
+        """
+        from agent_infra import AgentInfraConfigError
+        from audio_ingest.pipeline import process_recording
+
+        config = _make_config(tmp_path, capture=True)
+        status = AsyncMock()
+        with (
+            patch("audio_ingest.pipeline.create_forum_topic", new_callable=AsyncMock, return_value=99),
+            patch("audio_ingest.pipeline.write_raw_transcript", return_value=Path("/tmp/t.md")),
+            patch(
+                "audio_ingest.pipeline.agent_extract_and_route",
+                new_callable=AsyncMock, return_value=_make_routing_success(),
+            ),
+            patch("audio_ingest.pipeline.send_routing_summary", new_callable=AsyncMock),
+            patch(
+                "audio_ingest.pipeline.agent_capture_session",
+                new_callable=AsyncMock,
+                side_effect=AgentInfraConfigError("OBSIDIAN_MCP_SERVER_PATH not set"),
+            ),
+            patch("audio_ingest.pipeline.send_transcription_error", new_callable=AsyncMock) as mock_err,
+        ):
+            await process_recording(_make_job(), config, status=status)
+
+        # Outer handler ran: status -> failed, transcription error sent.
+        last_call = status.update.call_args_list[-1]
+        assert last_call.args[0] == "failed", (
+            f"expected last status update to be 'failed' (config error escalated), "
+            f"got {last_call.args}"
+        )
+        mock_err.assert_called_once()
+        err_msg = mock_err.call_args.args[1]
+        assert "OBSIDIAN_MCP_SERVER_PATH" in err_msg
+
+    @pytest.mark.asyncio
     async def test_notify_failure_swallowed_does_not_break_pipeline(
         self, tmp_path,
     ) -> None:
