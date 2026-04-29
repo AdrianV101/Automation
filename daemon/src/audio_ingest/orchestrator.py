@@ -291,8 +291,6 @@ async def _setup_pipeline_topic_email(
 
 
 async def _run_news_ingest_path(config: DaemonConfig) -> None:
-    """News listener: a second IDLE listener on the configured Proton folder
-    that captures newsletters into the vault and pings a dedicated topic."""
     db = NewsIngestStateDB(config.email_ingest_state_db_path)
     await db.init_db()
 

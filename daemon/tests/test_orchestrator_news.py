@@ -65,3 +65,49 @@ async def test_run_daemon_exits_when_no_path_enabled(tmp_path, caplog):
     )
     from audio_ingest.orchestrator import run_daemon
     await run_daemon(cfg)  # should return cleanly without trying to connect
+
+
+@pytest.mark.asyncio
+async def test_run_daemon_starts_both_paths_when_both_enabled(tmp_path):
+    """The actual production config: both ingestion paths active. Guards
+    against a regression dropping one of the two tg.create_task lines."""
+    cfg = DaemonConfig(
+        telegram_bot_token="tok",
+        telegram_chat_id="chat",
+        pkm_vault_path=tmp_path,
+        email_ingest_enabled=True,
+        news_ingest_enabled=True,
+        news_imap_folder="News",
+        news_telegram_topic_id=99,
+        email_ingest_state_db_path=tmp_path / "state.db",
+        imap_user="u",
+        imap_password="p",
+    )
+
+    started_paths: list[str] = []
+
+    async def fake_email_path(_config):
+        started_paths.append("email")
+        await asyncio.sleep(3600)
+
+    async def fake_news_path(_config):
+        started_paths.append("news")
+        await asyncio.sleep(3600)
+
+    with patch("audio_ingest.orchestrator._run_email_ingest_path", fake_email_path), \
+         patch("audio_ingest.orchestrator._run_news_ingest_path", fake_news_path):
+        from audio_ingest.orchestrator import run_daemon
+        task = asyncio.create_task(run_daemon(cfg))
+        try:
+            for _ in range(50):
+                if {"email", "news"} <= set(started_paths):
+                    break
+                await asyncio.sleep(0.02)
+            assert "email" in started_paths
+            assert "news" in started_paths
+        finally:
+            task.cancel()
+            try:
+                await task
+            except (asyncio.CancelledError, BaseExceptionGroup):
+                pass

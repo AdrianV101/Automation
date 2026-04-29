@@ -1,8 +1,4 @@
-"""Newsletter email adapter for news@veraz.dev capture.
-
-Lives in the daemon (not libs/email-ingest/) because it depends on vault
-layout and Telegram conventions. Sibling to plaud_email_adapter.py.
-"""
+"""Newsletter email adapter — vault + Telegram capture for the news folder."""
 from __future__ import annotations
 
 import hashlib
@@ -35,9 +31,7 @@ _VIEW_IN_BROWSER_RE = re.compile(
 
 
 def slugify_subject(subject: str, *, message_id: str) -> str:
-    """Filename-safe slug from an email subject, with a 6-char Message-ID hash
-    appended so distinct emails that happen to share a subject line still
-    produce distinct filenames."""
+    """Hash suffix prevents collisions across emails sharing a subject."""
     normalised = unicodedata.normalize("NFKD", subject)
     ascii_only = normalised.encode("ascii", "ignore").decode("ascii")
     cleaned = _SLUG_NONALPHA.sub("-", ascii_only.lower()).strip("-")
@@ -101,9 +95,10 @@ def _parse_received_at(date_header: str) -> datetime:
     except (TypeError, ValueError):
         dt = None
     if dt is None:
-        # Real production mail always has a Date header; this branch exists
-        # only so the parser is total.
-        return datetime.fromtimestamp(0, tz=timezone.utc)
+        # Falling back to "now" so a missing Date header doesn't bury the
+        # note under 1970-01-01/ where it'd be invisible to the daily digest.
+        log.warning("Unparseable Date header %r — using current UTC time", date_header)
+        return datetime.now(tz=timezone.utc)
     if dt.tzinfo is None:
         dt = dt.replace(tzinfo=timezone.utc)
     return dt
@@ -124,9 +119,7 @@ def email_to_news_note(parsed: ParsedEmail) -> NewsNotePayload:
 
 
 def render_body(parsed: ParsedEmail) -> str:
-    """Render the email body to markdown. Prefer text/html (best fidelity for
-    modern newsletter senders); fall back to text/plain when no HTML part
-    exists. Raises MalformedEmailError when both parts are missing or empty."""
+    """HTML→MD when present (Substack/Beehiiv plaintext is usually a stub); plaintext otherwise."""
     if parsed.html_body and parsed.html_body.strip():
         cleaned_html = _strip_html_noise(parsed.html_body)
         md = _markdownify(cleaned_html, heading_style="ATX")
@@ -163,11 +156,6 @@ def write_news_note(
     body_md: str,
     vault_root: Path,
 ) -> Path:
-    """Write `<vault_root>/00-Inbox/news/YYYY-MM-DD/<slug>.md` and return the path.
-
-    Idempotent: re-writing the same payload+body produces an identical file.
-    Date folder is derived from received_at in UTC.
-    """
     date_folder = payload.received_at.astimezone(timezone.utc).date().isoformat()
     slug = slugify_subject(payload.subject, message_id=payload.message_id)
     folder = vault_root / "00-Inbox" / "news" / date_folder
@@ -213,12 +201,6 @@ async def handle_news_email(
     telegram_notifier: TelegramNotifier,
     news_topic_id: int | None,
 ) -> None:
-    """ImapIdleListener callback. Captures one newsletter email end-to-end.
-
-    The state row is inserted with status='received' BEFORE parsing/rendering/
-    writing, so a crash in any later step transitions the row to 'failed'
-    rather than being silently lost.
-    """
     parsed = parse_email(raw)
     message_id = parsed.message_id
     if not message_id:
@@ -231,6 +213,8 @@ async def handle_news_email(
 
     sender_for_log = parsed.headers.get("From")
     subject_for_log = parsed.headers.get("Subject")
+    # Insert before any processing so an unexpected crash leaves a 'received'
+    # row that the catch-all below will transition to 'failed'.
     await db.insert_event(
         message_id=message_id, uid=uid,
         sender=sender_for_log, subject=subject_for_log,
@@ -242,23 +226,60 @@ async def handle_news_email(
         vault_path = write_news_note(
             payload, body_md=body_md, vault_root=vault_root,
         )
-    except (MalformedEmailError, OSError) as exc:
+    except Exception as exc:
         log.exception("Failed to capture news email %s", message_id)
-        await db.update_status(message_id, "failed", error=str(exc))
-        await _safe_notify(
-            telegram_notifier, news_topic_id,
-            f"⚠️ News capture failed\n\n"
-            f"From: {sender_for_log}\n"
-            f"Subject: {subject_for_log}\n"
-            f"Message-ID: {message_id}\n"
-            f"Error: {exc}",
+        await _mark_failed(
+            db, message_id, exc,
+            telegram_notifier=telegram_notifier, news_topic_id=news_topic_id,
+            sender=sender_for_log, subject=subject_for_log,
         )
         return
 
     rel_vault_path = vault_path.relative_to(vault_root)
-    await db.update_status(
-        message_id, "written", vault_note_path=str(rel_vault_path),
-    )
+
+    # Vault note is the durable record. If the post-write DB update or the
+    # Telegram send fails, the message must NOT stay deduped at 'received' —
+    # the row would be skipped on every future run and the user would never
+    # learn the note exists.
+    try:
+        await db.update_status(
+            message_id, "written", vault_note_path=str(rel_vault_path),
+        )
+    except Exception as exc:
+        log.exception(
+            "Vault note %s written but DB update failed for %s",
+            rel_vault_path, message_id,
+        )
+        await _safe_notify(
+            telegram_notifier, news_topic_id,
+            f"⚠️ News capture partial\n\n"
+            f"Vault note written but DB status update failed.\n"
+            f"From: {sender_for_log}\nSubject: {subject_for_log}\n"
+            f"Path: {rel_vault_path}\nError: {exc}",
+        )
+        return
 
     msg = _build_telegram_message(payload, body_md, rel_vault_path)
     await _safe_notify(telegram_notifier, news_topic_id, msg)
+
+
+async def _mark_failed(
+    db: NewsIngestStateDB,
+    message_id: str,
+    exc: BaseException,
+    *,
+    telegram_notifier: TelegramNotifier,
+    news_topic_id: int | None,
+    sender: str | None,
+    subject: str | None,
+) -> None:
+    try:
+        await db.update_status(message_id, "failed", error=str(exc))
+    except Exception:
+        log.exception("Failed to mark news row %s failed", message_id)
+    await _safe_notify(
+        telegram_notifier, news_topic_id,
+        f"⚠️ News capture failed\n\n"
+        f"From: {sender}\nSubject: {subject}\n"
+        f"Message-ID: {message_id}\nError: {exc}",
+    )

@@ -257,3 +257,115 @@ async def test_handle_news_email_telegram_failure_does_not_revert_state(tmp_path
     event = await db.get_event("html-newsletter-001@example-news.com")
     # Vault was written successfully; status stays 'written' even though Telegram raised.
     assert event["status"] == "written"
+
+
+@pytest.mark.asyncio
+async def test_handle_news_email_unexpected_exception_marks_failed(tmp_path):
+    """Catch-all: any exception from the inner pipeline must mark the row failed.
+
+    Without the outer except, exceptions from yaml/bs4/markdownify would
+    leave the row stuck in 'received' and dedup-skipped on subsequent runs.
+    """
+    db = NewsIngestStateDB(tmp_path / "state.db")
+    await db.init_db()
+    raw = (FIXTURES / "html_newsletter.eml").read_bytes()
+    notifier = AsyncMock()
+
+    from unittest.mock import patch
+    with patch(
+        "audio_ingest.news_email_adapter.render_body",
+        side_effect=RuntimeError("simulated bs4 explosion"),
+    ):
+        await handle_news_email(
+            uid=1, raw=raw, headers={},
+            db=db, vault_root=tmp_path,
+            telegram_notifier=notifier, news_topic_id=None,
+        )
+
+    event = await db.get_event("html-newsletter-001@example-news.com")
+    assert event["status"] == "failed"
+    assert "simulated bs4 explosion" in (event["error"] or "")
+    notifier.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_handle_news_email_no_message_id_skips_silently(tmp_path):
+    """No Message-ID → skip without writing a row or notifying. Common in spam.
+
+    Without this branch, an empty-string PRIMARY KEY would dedupe every
+    future no-Message-ID email after the first.
+    """
+    raw = b"From: x@y.com\r\nSubject: hi\r\n\r\nbody"
+    db = NewsIngestStateDB(tmp_path / "state.db")
+    await db.init_db()
+    notifier = AsyncMock()
+
+    await handle_news_email(
+        uid=1, raw=raw, headers={},
+        db=db, vault_root=tmp_path,
+        telegram_notifier=notifier, news_topic_id=None,
+    )
+
+    notifier.assert_not_awaited()
+    assert await db.is_processed("") is False
+
+
+@pytest.mark.asyncio
+async def test_handle_news_email_oserror_on_write_marks_failed(tmp_path):
+    """OSError during vault write (disk full, perms) → status='failed'."""
+    db = NewsIngestStateDB(tmp_path / "state.db")
+    await db.init_db()
+    raw = (FIXTURES / "html_newsletter.eml").read_bytes()
+    notifier = AsyncMock()
+
+    # Make the vault root un-mkdir-able by pointing at a path whose parent
+    # is a regular file (not a directory).
+    blocker = tmp_path / "blocker"
+    blocker.write_text("not a dir")
+    bad_vault = blocker / "vault"
+
+    await handle_news_email(
+        uid=1, raw=raw, headers={},
+        db=db, vault_root=bad_vault,
+        telegram_notifier=notifier, news_topic_id=None,
+    )
+
+    event = await db.get_event("html-newsletter-001@example-news.com")
+    assert event["status"] == "failed"
+    assert event["error"]  # populated
+    notifier.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_handle_news_email_post_write_db_failure_alerts(tmp_path):
+    """If the post-write update_status fails, the user must be notified —
+    otherwise the vault has the file, the DB still says 'received', and
+    dedup will skip it forever."""
+    db = NewsIngestStateDB(tmp_path / "state.db")
+    await db.init_db()
+    raw = (FIXTURES / "html_newsletter.eml").read_bytes()
+    notifier = AsyncMock()
+
+    real_update = db.update_status
+    call_count = {"n": 0}
+
+    async def flaky_update(message_id, status, **fields):
+        call_count["n"] += 1
+        # First call (the 'received' insert is via insert_event, not
+        # update_status) — the FIRST update_status call is the 'written'
+        # transition. Make it fail.
+        if call_count["n"] == 1 and status == "written":
+            raise RuntimeError("simulated DB write failure")
+        await real_update(message_id, status, **fields)
+
+    db.update_status = flaky_update  # type: ignore[method-assign]
+
+    await handle_news_email(
+        uid=1, raw=raw, headers={},
+        db=db, vault_root=tmp_path,
+        telegram_notifier=notifier, news_topic_id=None,
+    )
+
+    notifier.assert_awaited_once()
+    args, _ = notifier.await_args
+    assert "partial" in args[0].lower() or "failed" in args[0].lower()

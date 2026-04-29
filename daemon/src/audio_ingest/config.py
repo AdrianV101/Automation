@@ -32,9 +32,8 @@ class DaemonConfig:
     imap_password: str = ""
     email_ingest_state_db_path: Path = Path("./email_ingest_state.db")
     vault_attachments_subdir: str = "99-Attachments/plaud"
-    # News ingestion (parallel listener on a Proton-routed `News/` folder).
-    # Shares the same Bridge connection and state DB file; uses a parallel
-    # `news_ingest_events` table and the `uidnext:news` settings key.
+    # News ingestion: separate IMAP IDLE connection to the same Bridge,
+    # parallel `news_ingest_events` table, `uidnext:news` settings key.
     news_ingest_enabled: bool = False
     news_imap_folder: str = "News"
     news_telegram_topic_id: int | None = None

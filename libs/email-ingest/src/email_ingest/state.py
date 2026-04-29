@@ -163,11 +163,6 @@ _NEWS_TERMINAL_STATUSES = frozenset({"written", "failed", "dropped"})
 
 
 class NewsIngestStateDB:
-    """State store for newsletter ingestion. Coexists with EmailIngestStateDB
-    in the same SQLite file by using a parallel `news_ingest_events` table
-    and a namespaced settings key for UIDNEXT (so two listeners on the same
-    file don't clobber each other's checkpoint)."""
-
     SETTINGS_KEY_UIDNEXT = "uidnext:news"
 
     def __init__(self, db_path: str | Path) -> None:
@@ -177,8 +172,7 @@ class NewsIngestStateDB:
         async with aiosqlite.connect(self._path) as db:
             await db.execute("PRAGMA journal_mode=WAL")
             await db.execute("PRAGMA synchronous=NORMAL")
-            # Both schemas coexist in this file. Run both idempotently so a
-            # news-only deployment still gets the shared settings table.
+            # Both scripts run so a news-only deployment still has the shared settings table.
             await db.executescript(_SCHEMA)
             await db.executescript(_NEWS_SCHEMA)
             await db.commit()
