@@ -185,3 +185,13 @@ async def test_news_uidnext_isolated_from_email_uidnext(tmp_path: Path) -> None:
     await news_db.set_uidnext_checkpoint(900)
     assert await email_db.get_uidnext_checkpoint() == 50
     assert await news_db.get_uidnext_checkpoint() == 900
+
+
+def test_news_state_db_is_exported_from_package() -> None:
+    from email_ingest import NewsIngestStateDB as Re
+    assert Re is NewsIngestStateDB
+
+
+def test_uidnext_checkpoint_db_protocol_is_exported() -> None:
+    from email_ingest import UidnextCheckpointDB
+    assert UidnextCheckpointDB is not None

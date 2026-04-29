@@ -8,9 +8,13 @@ from .errors import (
     ImapConnectionError,
     MalformedEmailError,
 )
-from .listener import ImapIdleListener, OnNewEmail, OnPersistentFailure
+from .listener import (
+    ImapIdleListener, OnNewEmail, OnPersistentFailure, UidnextCheckpointDB,
+)
 from .mime import Attachment, ParsedEmail, parse_email
-from .state import EmailIngestStateDB, EmailIngestStatusTracker
+from .state import (
+    EmailIngestStateDB, EmailIngestStatusTracker, NewsIngestStateDB,
+)
 
 __all__ = [
     "Attachment",
@@ -26,9 +30,11 @@ __all__ = [
     "ImapConnectionError",
     "ImapIdleListener",
     "MalformedEmailError",
+    "NewsIngestStateDB",
     "OnNewEmail",
     "OnPersistentFailure",
     "ParsedEmail",
+    "UidnextCheckpointDB",
     "parse_email",
     "verify_dkim",
 ]
