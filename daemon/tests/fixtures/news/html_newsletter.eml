@@ -1,0 +1,26 @@
+From: "Newsletter HQ" <weekly@example-news.com>
+To: news@veraz.dev
+Subject: Weekly Roundup #42 — AI infrastructure
+Date: Wed, 29 Apr 2026 08:14:32 +0000
+Message-ID: <html-newsletter-001@example-news.com>
+MIME-Version: 1.0
+Content-Type: multipart/alternative; boundary="boundary42"
+
+--boundary42
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 7bit
+
+View this email in your browser: https://example-news.com/web/42
+
+Issue 42 - Plain text fallback
+--boundary42
+Content-Type: text/html; charset="utf-8"
+Content-Transfer-Encoding: 7bit
+
+<html><body>
+<h1>Weekly Roundup #42</h1>
+<p>This week we look at <a href="https://example.com/post1">AI infrastructure trends</a>.</p>
+<ul><li>Item one</li><li>Item two</li></ul>
+<p>Thanks for reading.</p>
+</body></html>
+--boundary42--

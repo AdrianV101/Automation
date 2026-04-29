@@ -1,0 +1,23 @@
+From: "Substack Author" <author@substack.example>
+To: news@veraz.dev
+Subject: Three reasons to care about RISC-V
+Date: Wed, 29 Apr 2026 10:30:00 +0000
+Message-ID: <substack-001@substack.example>
+MIME-Version: 1.0
+Content-Type: multipart/alternative; boundary="bz"
+
+--bz
+Content-Type: text/plain; charset="utf-8"
+
+View in browser
+--bz
+Content-Type: text/html; charset="utf-8"
+
+<html><body>
+<a href="https://substack.example/p/risc-v">View this email in your browser</a>
+<style>.foo { color: red; }</style>
+<h1>Three reasons to care about RISC-V</h1>
+<img src="https://track.example/p?id=abc" width="1" height="1" />
+<p>Reason one. Reason two. Reason three.</p>
+</body></html>
+--bz--
