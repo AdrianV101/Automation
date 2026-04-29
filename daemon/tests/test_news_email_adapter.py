@@ -168,3 +168,92 @@ def test_write_news_note_creates_date_folder(tmp_path):
     path = write_news_note(payload, body_md=body_md, vault_root=tmp_path)
     assert path.parent.is_dir()
     assert path.parent.name == "2026-04-29"
+
+
+# --- handle_news_email -----------------------------------------------------
+
+from unittest.mock import AsyncMock
+from email_ingest import NewsIngestStateDB
+from audio_ingest.news_email_adapter import handle_news_email
+
+
+@pytest.mark.asyncio
+async def test_handle_news_email_happy_path(tmp_path):
+    db = NewsIngestStateDB(tmp_path / "state.db")
+    await db.init_db()
+    raw = (FIXTURES / "html_newsletter.eml").read_bytes()
+    notifier = AsyncMock()
+
+    await handle_news_email(
+        uid=1, raw=raw, headers={},
+        db=db, vault_root=tmp_path,
+        telegram_notifier=notifier, news_topic_id=42,
+    )
+
+    event = await db.get_event("html-newsletter-001@example-news.com")
+    assert event["status"] == "written"
+    assert event["vault_note_path"]
+    assert (tmp_path / "00-Inbox" / "news" / "2026-04-29").is_dir()
+    notifier.assert_awaited_once()
+    args, kwargs = notifier.await_args
+    assert kwargs.get("thread_id") == 42
+    assert "Newsletter HQ" in args[0]
+    assert "Weekly Roundup #42" in args[0]
+
+
+@pytest.mark.asyncio
+async def test_handle_news_email_idempotent_skip(tmp_path):
+    db = NewsIngestStateDB(tmp_path / "state.db")
+    await db.init_db()
+    raw = (FIXTURES / "html_newsletter.eml").read_bytes()
+    notifier = AsyncMock()
+
+    await handle_news_email(
+        uid=1, raw=raw, headers={},
+        db=db, vault_root=tmp_path,
+        telegram_notifier=notifier, news_topic_id=None,
+    )
+    notifier.reset_mock()
+    await handle_news_email(
+        uid=2, raw=raw, headers={},
+        db=db, vault_root=tmp_path,
+        telegram_notifier=notifier, news_topic_id=None,
+    )
+    notifier.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_handle_news_email_malformed_marks_failed(tmp_path):
+    db = NewsIngestStateDB(tmp_path / "state.db")
+    await db.init_db()
+    raw = (FIXTURES / "empty_body.eml").read_bytes()
+    notifier = AsyncMock()
+
+    await handle_news_email(
+        uid=1, raw=raw, headers={},
+        db=db, vault_root=tmp_path,
+        telegram_notifier=notifier, news_topic_id=None,
+    )
+
+    event = await db.get_event("empty-001@example.com")
+    assert event["status"] == "failed"
+    assert "no usable body" in (event["error"] or "")
+    notifier.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_handle_news_email_telegram_failure_does_not_revert_state(tmp_path):
+    db = NewsIngestStateDB(tmp_path / "state.db")
+    await db.init_db()
+    raw = (FIXTURES / "html_newsletter.eml").read_bytes()
+    notifier = AsyncMock(side_effect=RuntimeError("network down"))
+
+    await handle_news_email(
+        uid=1, raw=raw, headers={},
+        db=db, vault_root=tmp_path,
+        telegram_notifier=notifier, news_topic_id=None,
+    )
+
+    event = await db.get_event("html-newsletter-001@example-news.com")
+    # Vault was written successfully; status stays 'written' even though Telegram raised.
+    assert event["status"] == "written"

@@ -9,6 +9,7 @@ import hashlib
 import logging
 import re
 import unicodedata
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from email.utils import parseaddr, parsedate_to_datetime
@@ -16,8 +17,13 @@ from pathlib import Path
 
 import yaml
 from bs4 import BeautifulSoup
-from email_ingest import MalformedEmailError, ParsedEmail
+from email_ingest import (
+    MalformedEmailError, NewsIngestStateDB, ParsedEmail, parse_email,
+)
 from markdownify import markdownify as _markdownify
+
+TelegramNotifier = Callable[..., Awaitable[None]]
+_PREVIEW_CHARS = 200
 
 log = logging.getLogger(__name__)
 
@@ -170,3 +176,89 @@ def write_news_note(
     content = f"---\n{_frontmatter(payload)}---\n\n{body_md.rstrip()}\n"
     path.write_text(content, encoding="utf-8")
     return path
+
+
+def _build_telegram_message(
+    payload: NewsNotePayload, body_md: str, vault_path: Path,
+) -> str:
+    preview_lines = [line.strip() for line in body_md.splitlines() if line.strip()]
+    text_preview = " ".join(preview_lines)[:_PREVIEW_CHARS]
+    return (
+        f"📰 {payload.sender_display}\n"
+        f"{payload.subject}\n\n"
+        f"{text_preview}\n\n"
+        f"🔗 {vault_path}"
+    )
+
+
+async def _safe_notify(
+    notifier: TelegramNotifier, topic_id: int | None, text: str,
+) -> None:
+    try:
+        if topic_id is None:
+            await notifier(text)
+        else:
+            await notifier(text, thread_id=topic_id)
+    except Exception:
+        log.exception("News Telegram notify failed; vault note already persisted")
+
+
+async def handle_news_email(
+    uid: int,
+    raw: bytes,
+    headers: dict[str, str],
+    *,
+    db: NewsIngestStateDB,
+    vault_root: Path,
+    telegram_notifier: TelegramNotifier,
+    news_topic_id: int | None,
+) -> None:
+    """ImapIdleListener callback. Captures one newsletter email end-to-end.
+
+    The state row is inserted with status='received' BEFORE parsing/rendering/
+    writing, so a crash in any later step transitions the row to 'failed'
+    rather than being silently lost.
+    """
+    parsed = parse_email(raw)
+    message_id = parsed.message_id
+    if not message_id:
+        log.warning("News email at UID %d has no Message-ID — skipping", uid)
+        return
+
+    if await db.is_processed(message_id):
+        log.debug("News email %s already processed — skipping", message_id)
+        return
+
+    sender_for_log = parsed.headers.get("From")
+    subject_for_log = parsed.headers.get("Subject")
+    await db.insert_event(
+        message_id=message_id, uid=uid,
+        sender=sender_for_log, subject=subject_for_log,
+    )
+
+    try:
+        payload = email_to_news_note(parsed)
+        body_md = render_body(parsed)
+        vault_path = write_news_note(
+            payload, body_md=body_md, vault_root=vault_root,
+        )
+    except (MalformedEmailError, OSError) as exc:
+        log.exception("Failed to capture news email %s", message_id)
+        await db.update_status(message_id, "failed", error=str(exc))
+        await _safe_notify(
+            telegram_notifier, news_topic_id,
+            f"⚠️ News capture failed\n\n"
+            f"From: {sender_for_log}\n"
+            f"Subject: {subject_for_log}\n"
+            f"Message-ID: {message_id}\n"
+            f"Error: {exc}",
+        )
+        return
+
+    rel_vault_path = vault_path.relative_to(vault_root)
+    await db.update_status(
+        message_id, "written", vault_note_path=str(rel_vault_path),
+    )
+
+    msg = _build_telegram_message(payload, body_md, rel_vault_path)
+    await _safe_notify(telegram_notifier, news_topic_id, msg)
