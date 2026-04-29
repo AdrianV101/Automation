@@ -9,6 +9,9 @@ import hashlib
 import logging
 import re
 import unicodedata
+from dataclasses import dataclass
+from datetime import datetime, timezone
+from email.utils import parseaddr, parsedate_to_datetime
 
 from bs4 import BeautifulSoup
 from email_ingest import MalformedEmailError, ParsedEmail
@@ -61,6 +64,55 @@ def _strip_leading_view_in_browser(md: str) -> str:
 
 def _collapse_blank_lines(md: str) -> str:
     return re.sub(r"\n{3,}", "\n\n", md)
+
+
+@dataclass(frozen=True)
+class NewsNotePayload:
+    message_id: str
+    sender_display: str   # human-readable name, falling back to domain
+    sender_address: str   # full email address
+    subject: str
+    received_at: datetime # always tz-aware
+    html_body: str | None
+    text_body: str | None
+
+
+def _parse_sender(from_header: str) -> tuple[str, str]:
+    display, address = parseaddr(from_header or "")
+    if not address:
+        return ("", "")
+    if not display:
+        domain = address.split("@", 1)[-1] if "@" in address else address
+        return (domain, address)
+    return (display, address)
+
+
+def _parse_received_at(date_header: str) -> datetime:
+    try:
+        dt = parsedate_to_datetime(date_header or "")
+    except (TypeError, ValueError):
+        dt = None
+    if dt is None:
+        # Real production mail always has a Date header; this branch exists
+        # only so the parser is total.
+        return datetime.fromtimestamp(0, tz=timezone.utc)
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return dt
+
+
+def email_to_news_note(parsed: ParsedEmail) -> NewsNotePayload:
+    headers = parsed.headers
+    display, address = _parse_sender(headers.get("From") or "")
+    return NewsNotePayload(
+        message_id=parsed.message_id,
+        sender_display=display,
+        sender_address=address,
+        subject=headers.get("Subject") or "",
+        received_at=_parse_received_at(headers.get("Date") or ""),
+        html_body=parsed.html_body,
+        text_body=parsed.text_body,
+    )
 
 
 def render_body(parsed: ParsedEmail) -> str:

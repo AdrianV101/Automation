@@ -88,3 +88,30 @@ def test_render_body_drops_style_block():
 def test_render_body_no_body_raises_malformed():
     with pytest.raises(MalformedEmailError):
         render_body(_load("empty_body.eml"))
+
+
+# --- email_to_news_note ----------------------------------------------------
+
+from datetime import datetime, timezone
+from audio_ingest.news_email_adapter import NewsNotePayload, email_to_news_note
+
+
+def test_email_to_news_note_extracts_sender_display():
+    payload = email_to_news_note(_load("html_newsletter.eml"))
+    assert isinstance(payload, NewsNotePayload)
+    assert payload.sender_display == "Newsletter HQ"
+    assert payload.sender_address == "weekly@example-news.com"
+    assert payload.subject == "Weekly Roundup #42 — AI infrastructure"
+    assert payload.message_id == "html-newsletter-001@example-news.com"
+    assert payload.received_at == datetime(2026, 4, 29, 8, 14, 32, tzinfo=timezone.utc)
+
+
+def test_email_to_news_note_falls_back_to_domain_when_no_display_name():
+    payload = email_to_news_note(_load("plaintext_newsletter.eml"))
+    assert payload.sender_display == "plaintext-news.org"
+    assert payload.sender_address == "hello@plaintext-news.org"
+
+
+def test_email_to_news_note_no_subject_falls_back_to_empty():
+    payload = email_to_news_note(_load("no_subject.eml"))
+    assert payload.subject == ""
