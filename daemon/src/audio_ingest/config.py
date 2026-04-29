@@ -41,7 +41,8 @@ class DaemonConfig:
     dkim_trusted_authserv_id: str = "mail.protonmail.ch"
     dkim_required_domain: str = "plaud.ai"
     # Session capture: append a devlog entry after each successful extraction.
-    # OFF by default. Doubles per-recording agent-loop cost when enabled.
+    # OFF by default. Adds a second SDK pass per recording -- collect dogfood
+    # cost data before keeping this on long-term.
     enable_session_capture: bool = False
     # Agent runtime safety
     agent_inactivity_timeout_s: float = 600.0

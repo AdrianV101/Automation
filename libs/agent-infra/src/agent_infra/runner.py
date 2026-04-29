@@ -20,6 +20,22 @@ from .utils import extract_file_path
 
 log = logging.getLogger(__name__)
 
+_TOOL_ERRORS_CAP = 4
+
+
+def _record_tool_error(result: AgentLoopResult, content: str) -> None:
+    """Track an SDK tool-call rejection or MCP error on the result.
+
+    Truncates the content to 500 chars and bounds the list to the last
+    _TOOL_ERRORS_CAP entries so a runaway agent looping on the same rejection
+    doesn't grow memory unboundedly.
+    """
+    snippet = content[:500] if content else ""
+    log.warning("Agent tool call returned error: %s", snippet)
+    result.tool_errors.append(snippet)
+    if len(result.tool_errors) > _TOOL_ERRORS_CAP:
+        del result.tool_errors[0 : len(result.tool_errors) - _TOOL_ERRORS_CAP]
+
 
 async def run_agent_loop(
     user_prompt: str, options: ClaudeAgentOptions,
@@ -38,6 +54,11 @@ async def run_agent_loop(
                         path = extract_file_path(block.name, block.input)
                         if path and path not in result.files_written:
                             result.files_written.append(path)
+            elif isinstance(message, UserMessage):
+                for block in message.content:
+                    if isinstance(block, ToolResultBlock) and getattr(block, "is_error", False):
+                        content = block.content if isinstance(block.content, str) else str(block.content)
+                        _record_tool_error(result, content)
             elif isinstance(message, ResultMessage):
                 turns = getattr(message, "num_turns", result.turns_used)
                 result.turns_used = turns
@@ -90,9 +111,12 @@ async def run_agent_loop_streaming(
                 for block in message.content:
                     if isinstance(block, ToolResultBlock):
                         content = block.content if isinstance(block.content, str) else str(block.content)
+                        if getattr(block, "is_error", False):
+                            _record_tool_error(result, content)
                         await _emit(TraceEvent(kind="tool_result", content=content))
             elif isinstance(message, ResultMessage):
                 turns = getattr(message, "num_turns", result.turns_used)
+                result.turns_used = turns
                 cost = getattr(message, "total_cost_usd", None)
                 if getattr(message, "stop_reason", None) == "max_turns":
                     result.error = f"Agent hit turn limit ({turns} turns)"

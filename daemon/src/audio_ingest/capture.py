@@ -81,6 +81,7 @@ async def agent_capture_session(
     user_prompt = _build_user_prompt(routing_result, transcript_path)
     options = build_agent_options(
         CAPTURE_SYSTEM_PROMPT, pkm_vault_path, allowed_tools=TOOLS_CAPTURE,
+        max_turns=15,
     )
     sender = TelegramStreamSender(tg, thread_id) if tg else None
     on_event = sender.handle if sender else None
@@ -94,19 +95,33 @@ async def agent_capture_session(
     summary = "\n".join(loop_result.text_parts).strip()
 
     if loop_result.error:
+        error_msg = loop_result.error
+        if loop_result.tool_errors:
+            error_msg = f"{error_msg}; tool_errors={loop_result.tool_errors[-2:]}"
         return CaptureResult(
             success=False,
             summary=summary,
-            error=loop_result.error,
+            error=error_msg,
             turns_used=loop_result.turns_used,
         )
 
     if not loop_result.files_written:
-        log.info("Capture pass wrote nothing (turns=%d)", loop_result.turns_used)
+        # The agent ran without raising and without hitting max_turns, but
+        # never appended. Most likely cause: a forbidden tool attempt that the
+        # SDK rejected (TOOLS_CAPTURE excludes vault_write/edit/etc), or an
+        # MCP error against the devlog path. Surface the rejection content if
+        # we have it -- without this, the failure is indistinguishable from
+        # "agent decided no devlog needed."
+        detail = (
+            f"; tool_errors={loop_result.tool_errors[-2:]}"
+            if loop_result.tool_errors else ""
+        )
+        msg = f"Capture pass appended no devlog entry (turns={loop_result.turns_used}){detail}"
+        log.info(msg)
         return CaptureResult(
             success=False,
             summary=summary,
-            error="Capture pass appended no devlog entry",
+            error=msg,
             turns_used=loop_result.turns_used,
         )
 

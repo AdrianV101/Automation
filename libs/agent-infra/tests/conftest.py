@@ -57,13 +57,20 @@ class MockResultMessage:
 def make_user_message(tool_results=None):
     """Create a mock UserMessage with ToolResultBlocks.
 
-    tool_results: list of (tool_use_id, content_str) tuples.
+    tool_results: list of (tool_use_id, content_str) or
+                  (tool_use_id, content_str, is_error) tuples.
     """
     content = []
-    for tool_use_id, result_content in (tool_results or []):
+    for entry in (tool_results or []):
+        if len(entry) == 3:
+            tool_use_id, result_content, is_error = entry
+        else:
+            tool_use_id, result_content = entry
+            is_error = False
         block = MagicMock()
         block.tool_use_id = tool_use_id
         block.content = result_content
+        block.is_error = is_error
         block.__class__ = MockToolResultBlock
         content.append(block)
     msg = MagicMock()

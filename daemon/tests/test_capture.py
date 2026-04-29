@@ -277,6 +277,84 @@ class TestAgentCaptureSession:
         assert result.success is False
         assert result.error is not None
 
+    async def test_no_files_branch_surfaces_tool_errors(
+        self, pkm_vault_path, routing_result_success, transcript_path,
+    ) -> None:
+        """Forbidden-tool rejection -> capture surfaces it in the error string.
+
+        Without this, the operator sees "Capture pass appended no devlog entry"
+        with no breadcrumb to the actual cause (silent-failure-hunter C1).
+        """
+        loop_result = AgentLoopResult(
+            text_parts=["I tried to vault_write but it was rejected."],
+            files_written=[],
+            turns_used=4,
+            error=None,
+            tool_errors=["Tool 'vault_write' is not in allowed_tools list"],
+        )
+        with patch(
+            "audio_ingest.capture.run_agent_loop_streaming",
+            new=AsyncMock(return_value=loop_result),
+        ):
+            result = await agent_capture_session(
+                routing_result_success, transcript_path, pkm_vault_path,
+            )
+
+        assert result.success is False
+        assert "vault_write" in result.error
+        assert "tool_errors" in result.error
+        assert "turns=4" in result.error
+
+    async def test_error_branch_surfaces_tool_errors(
+        self, pkm_vault_path, routing_result_success, transcript_path,
+    ) -> None:
+        """When max_turns fires AND tool errors were observed, both are surfaced."""
+        loop_result = AgentLoopResult(
+            text_parts=["partial"],
+            files_written=[],
+            turns_used=15,
+            error="Agent hit turn limit (15 turns)",
+            tool_errors=["MCP error: vault path not found"],
+        )
+        with patch(
+            "audio_ingest.capture.run_agent_loop_streaming",
+            new=AsyncMock(return_value=loop_result),
+        ):
+            result = await agent_capture_session(
+                routing_result_success, transcript_path, pkm_vault_path,
+            )
+
+        assert result.success is False
+        assert "Agent hit turn limit" in result.error
+        assert "MCP error" in result.error
+
+    async def test_capture_options_pass_max_turns_15(
+        self, pkm_vault_path, routing_result_success, transcript_path,
+    ) -> None:
+        """Capture must run with a hard turn cap so a misbehaving agent can't spin."""
+        captured = {}
+
+        async def mock_query(prompt, options):
+            captured["options"] = options
+            yield make_assistant_message(
+                tool_blocks=[(
+                    "mcp__obsidian-pkm__vault_append",
+                    {"path": "01-Projects/Automation/development/devlog.md", "content": "x"},
+                )],
+            )
+
+        with (
+            patch("agent_infra.runner.query", side_effect=mock_query),
+            patch("agent_infra.runner.AssistantMessage", MockAssistantMessage),
+            patch("agent_infra.runner.TextBlock", MockTextBlock),
+            patch("agent_infra.runner.ToolUseBlock", MockToolUseBlock),
+        ):
+            await agent_capture_session(
+                routing_result_success, transcript_path, pkm_vault_path,
+            )
+
+        assert captured["options"].max_turns == 15
+
 
 # ---------------------------------------------------------------------------
 # Pipeline wiring: (a) flag off, (b) no files, (c) extraction failed, (d) happy path

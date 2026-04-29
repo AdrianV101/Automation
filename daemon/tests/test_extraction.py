@@ -144,6 +144,60 @@ class TestAgentExtractAndRoute:
         assert result.success is False
         assert "Agent SDK query failed" in result.error
 
+    async def test_no_files_branch_surfaces_tool_errors(
+        self, pkm_vault_path, transcript, transcript_path,
+    ):
+        """When agent finishes with no files written but tool errors were
+        observed, the breadcrumbs must surface in the result error message
+        (silent-failure-hunter C1)."""
+        from unittest.mock import AsyncMock
+        loop_result = AgentLoopResult(
+            text_parts=["I gave up."],
+            files_written=[],
+            turns_used=20,
+            error=None,
+            tool_errors=[
+                "MCP error: vault frontmatter validation failed",
+                "MCP error: path 00-Inbox/audio-ingestion/2026-04-26.md not writable",
+            ],
+        )
+        with patch(
+            "audio_ingest.extraction.run_agent_loop_streaming",
+            new=AsyncMock(return_value=loop_result),
+        ):
+            result = await agent_extract_and_route(transcript, transcript_path, pkm_vault_path)
+
+        assert result.success is False
+        assert "wrote no files" in result.error
+        assert "turns=20" in result.error
+        assert "MCP error" in result.error
+
+    async def test_extraction_options_pass_max_turns_150(
+        self, pkm_vault_path, transcript, transcript_path,
+    ):
+        """Extraction's turn cap must be sized for the multi-stage prompt
+        (Stage 0 + Stage 1 + per-item write protocol)."""
+        captured = {}
+
+        async def mock_query(prompt, options):
+            captured["options"] = options
+            yield make_assistant_message(
+                tool_blocks=[(
+                    "mcp__obsidian-pkm__vault_write",
+                    {"path": "00-Inbox/audio-ingestion/x.md"},
+                )],
+            )
+
+        with (
+            patch("agent_infra.runner.query", side_effect=mock_query),
+            patch("agent_infra.runner.AssistantMessage", MockAssistantMessage),
+            patch("agent_infra.runner.TextBlock", MockTextBlock),
+            patch("agent_infra.runner.ToolUseBlock", MockToolUseBlock),
+        ):
+            await agent_extract_and_route(transcript, transcript_path, pkm_vault_path)
+
+        assert captured["options"].max_turns == 150
+
     async def test_deduplicates_file_paths(self, pkm_vault_path, transcript, transcript_path):
         """Same file written twice should appear once in files_written."""
         msg = make_assistant_message(
@@ -191,7 +245,7 @@ class TestAgentExtractAndRoute:
 
         opts = captured_options["options"]
         assert opts.permission_mode == "bypassPermissions"
-        assert opts.max_turns == 100
+        assert opts.max_turns == 150
         assert opts.model == "claude-opus-4-6"
         assert "obsidian-pkm" in opts.mcp_servers
         assert opts.mcp_servers["obsidian-pkm"]["type"] == "stdio"

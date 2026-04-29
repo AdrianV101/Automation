@@ -118,7 +118,17 @@ async def agent_extract_and_route(
     user_prompt = _build_user_prompt(
         transcript, transcript_path, source_metadata=source_metadata,
     )
-    options = build_agent_options(build_extraction_system_prompt(pkm_vault_path), pkm_vault_path, allowed_tools=TOOLS_EXTRACTION, max_turns=100)
+    # Turn cap sized for the multi-stage prompt: Stage 0 dedup (~2) + Stage 1
+    # context sweep across topics (~10) + always-on inbox summary (~5) +
+    # per-item write protocol (~6 turns/item, typically 5-10 items) +
+    # bidirectional linking on structured templates. A moderate transcript
+    # lower-bounds at ~75 turns; 150 gives headroom without going unbounded.
+    options = build_agent_options(
+        build_extraction_system_prompt(pkm_vault_path),
+        pkm_vault_path,
+        allowed_tools=TOOLS_EXTRACTION,
+        max_turns=150,
+    )
     sender = TelegramStreamSender(tg, thread_id) if tg else None
     on_event = sender.handle if sender else None
     loop_result = await run_agent_loop_streaming(user_prompt, options, on_event=on_event)
@@ -132,19 +142,31 @@ async def agent_extract_and_route(
     summary_path = _find_summary_path(loop_result.files_written)
 
     if loop_result.error:
+        error_msg = loop_result.error
+        if loop_result.tool_errors:
+            error_msg = f"{error_msg}; tool_errors={loop_result.tool_errors[-2:]}"
         return AgentRoutingResult(
             success=False,
             summary="",
-            error=loop_result.error,
+            error=error_msg,
             turns_used=loop_result.turns_used,
         )
 
     if not loop_result.files_written:
-        log.warning("Agent completed but wrote no files (turns=%d)", loop_result.turns_used)
+        # Agent finished cleanly but wrote nothing. With the per-item dedup
+        # protocol, this is more often "everything was a duplicate" than a
+        # bug. Include any tool_errors so an operator can tell "agent gave up
+        # after MCP rejection" from "agent saw zero routable items."
+        detail = (
+            f"; tool_errors={loop_result.tool_errors[-2:]}"
+            if loop_result.tool_errors else ""
+        )
+        msg = f"Agent completed but wrote no files (turns={loop_result.turns_used}){detail}"
+        log.warning(msg)
         return AgentRoutingResult(
             success=False,
             summary=summary,
-            error="Agent completed but wrote no files",
+            error=msg,
             turns_used=loop_result.turns_used,
         )
 

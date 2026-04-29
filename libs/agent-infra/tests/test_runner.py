@@ -288,3 +288,122 @@ class TestRunAgentLoopStreaming:
         # Both text blocks should still be collected even though callback failed on first
         assert result.text_parts == ["text1", "text2"]
         assert result.error is None
+
+
+class TestToolErrorCollection:
+    """Tool-call rejections / MCP errors are collected on AgentLoopResult.tool_errors.
+
+    Without this, an agent that gives up after a rejection looks identical to
+    "agent did nothing" -- see PR #2 review (silent-failure-hunter C1).
+    """
+
+    @pytest.mark.asyncio
+    async def test_streaming_records_is_error_tool_results(self, tmp_path) -> None:
+        assistant_msg = make_assistant_message(
+            tool_blocks=[("mcp__obsidian-pkm__vault_write", {"path": "x.md"})],
+        )
+        user_msg = make_user_message(tool_results=[
+            ("tool-1", "Tool 'vault_write' is not in allowed_tools list", True),
+        ])
+        result_msg = make_result_message(num_turns=1)
+
+        async def mock_query(prompt, options):
+            yield assistant_msg
+            yield user_msg
+            yield result_msg
+
+        with _patch_runner(mock_query):
+            opts = build_agent_options("sys", tmp_path)
+            result = await run_agent_loop_streaming("prompt", opts)
+
+        assert result.tool_errors == ["Tool 'vault_write' is not in allowed_tools list"]
+        # error stays None -- the runner only collects, the consumer interprets
+        assert result.error is None
+
+    @pytest.mark.asyncio
+    async def test_streaming_ignores_successful_tool_results(self, tmp_path) -> None:
+        assistant_msg = make_assistant_message(
+            tool_blocks=[("mcp__obsidian-pkm__vault_read", {"path": "x.md"})],
+        )
+        user_msg = make_user_message(tool_results=[("tool-1", "file contents", False)])
+        result_msg = make_result_message(num_turns=1)
+
+        async def mock_query(prompt, options):
+            yield assistant_msg
+            yield user_msg
+            yield result_msg
+
+        with _patch_runner(mock_query):
+            opts = build_agent_options("sys", tmp_path)
+            result = await run_agent_loop_streaming("prompt", opts)
+
+        assert result.tool_errors == []
+
+    @pytest.mark.asyncio
+    async def test_non_streaming_records_is_error_tool_results(self, tmp_path) -> None:
+        assistant_msg = make_assistant_message(
+            tool_blocks=[("mcp__obsidian-pkm__vault_trash", {"path": "x.md"})],
+        )
+        user_msg = make_user_message(tool_results=[
+            ("tool-1", "Tool not allowed", True),
+        ])
+        result_msg = make_result_message(num_turns=1)
+
+        async def mock_query(prompt, options):
+            yield assistant_msg
+            yield user_msg
+            yield result_msg
+
+        with _patch_runner(mock_query):
+            opts = build_agent_options("sys", tmp_path)
+            result = await run_agent_loop(
+                "prompt", opts,
+            )
+
+        assert result.tool_errors == ["Tool not allowed"]
+
+    @pytest.mark.asyncio
+    async def test_tool_errors_capped_at_4(self, tmp_path) -> None:
+        """Bound the list so a runaway agent looping on the same rejection
+        can't unbounded-grow memory."""
+        assistant_msg = make_assistant_message(
+            tool_blocks=[("mcp__obsidian-pkm__vault_write", {"path": "x.md"})],
+        )
+        # 6 errors -> only last 4 kept
+        user_msg = make_user_message(tool_results=[
+            (f"tool-{i}", f"err-{i}", True) for i in range(6)
+        ])
+        result_msg = make_result_message(num_turns=1)
+
+        async def mock_query(prompt, options):
+            yield assistant_msg
+            yield user_msg
+            yield result_msg
+
+        with _patch_runner(mock_query):
+            opts = build_agent_options("sys", tmp_path)
+            result = await run_agent_loop_streaming("prompt", opts)
+
+        assert result.tool_errors == ["err-2", "err-3", "err-4", "err-5"]
+
+    @pytest.mark.asyncio
+    async def test_streaming_assigns_canonical_turns_used_from_result_message(self, tmp_path) -> None:
+        """Streaming runner must persist ResultMessage.num_turns into result.turns_used.
+
+        Pre-fix bug: streaming only read num_turns into a local for the max_turns
+        error message and the 'complete' trace event; result.turns_used kept the
+        message-counter value, which can drift from the SDK's authoritative count.
+        """
+        assistant_msg = make_assistant_message(text_blocks=["a"])
+        result_msg = make_result_message(num_turns=42)
+
+        async def mock_query(prompt, options):
+            yield assistant_msg
+            yield result_msg
+
+        with _patch_runner(mock_query):
+            opts = build_agent_options("sys", tmp_path)
+            result = await run_agent_loop_streaming("prompt", opts)
+
+        # Message counter saw 1 AssistantMessage; SDK reported 42; canonical wins.
+        assert result.turns_used == 42
