@@ -146,3 +146,61 @@ class TestNotificationThreadId:
         call_kwargs = mock_client.post.call_args[1]
         body = call_kwargs["json"]
         assert "message_thread_id" not in body
+
+
+class TestRoutingSummaryDedupFooter:
+    """The Telegram routing-summary message exposes dedup-skip metrics so
+    the user can audit per-recording how often the agent appended/edited an
+    existing note instead of creating a new one. The footer is suppressed
+    when the agent did no aux work (the typical case)."""
+
+    @respx.mock
+    @pytest.mark.asyncio
+    async def test_includes_dedup_footer_when_aux_work_done(self):
+        from audio_ingest.extraction import AgentRoutingResult
+
+        route = respx.post(f"{_API}/sendMessage").mock(
+            return_value=httpx.Response(
+                200, json={"ok": True, "result": {"message_id": 1}},
+            ),
+        )
+        result = AgentRoutingResult(
+            success=True,
+            summary="routed roadmap discussion",
+            files_written=["00-Inbox/audio-ingestion/2026-04-29-roadmap.md"],
+            summary_path="00-Inbox/audio-ingestion/2026-04-29-roadmap.md",
+            turns_used=42,
+            frontmatter_updated=["01-Projects/Automation/research/topic.md"],
+            links_added=[
+                "01-Projects/Automation/research/topic.md",
+                "01-Projects/Automation/_index.md",
+            ],
+        )
+
+        await send_routing_summary(result, _TG)
+
+        payload = json.loads(route.calls[0].request.content)
+        text = payload["text"]
+        assert "Dedup-hit updates" in text
+        assert "1 frontmatter" in text
+        assert "2 backlinks" in text
+
+    @respx.mock
+    @pytest.mark.asyncio
+    async def test_no_footer_when_no_aux_work(self):
+        from audio_ingest.extraction import AgentRoutingResult
+
+        route = respx.post(f"{_API}/sendMessage").mock(
+            return_value=httpx.Response(
+                200, json={"ok": True, "result": {"message_id": 1}},
+            ),
+        )
+        result = AgentRoutingResult(
+            success=True, summary="routed", files_written=["00-Inbox/x.md"],
+            turns_used=10,
+        )
+
+        await send_routing_summary(result, _TG)
+
+        payload = json.loads(route.calls[0].request.content)
+        assert "Dedup-hit updates" not in payload["text"]

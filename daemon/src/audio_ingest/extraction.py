@@ -52,6 +52,14 @@ class AgentRoutingResult:
     summary_path: str | None = None
     error: str | None = None
     turns_used: int = 0
+    # Auxiliary mutations: notes whose frontmatter was edited via
+    # vault_update_frontmatter, and notes that received link additions via
+    # vault_add_links. These are how the per-item write protocol's dedup-hit
+    # branch (similarity > 0.8 -> append/edit/update_frontmatter on the
+    # existing note + bidirectional link insertion) shows up in the result.
+    # Surfaced so dedup-skip decisions can be audited from the daemon log.
+    frontmatter_updated: list[str] = field(default_factory=list)
+    links_added: list[str] = field(default_factory=list)
 
 
 def _build_user_prompt(
@@ -150,17 +158,26 @@ async def agent_extract_and_route(
             summary="",
             error=error_msg,
             turns_used=loop_result.turns_used,
+            frontmatter_updated=list(loop_result.frontmatter_updated),
+            links_added=list(loop_result.links_added),
         )
 
     if not loop_result.files_written:
-        # Agent finished cleanly but wrote nothing. With the per-item dedup
-        # protocol, this is more often "everything was a duplicate" than a
-        # bug. Include any tool_errors so an operator can tell "agent gave up
-        # after MCP rejection" from "agent saw zero routable items."
+        # The always-on inbox summary should always be in files_written --
+        # the prompt excludes it from the dedup gate. Empty files_written
+        # therefore means even the inbox write didn't happen, regardless of
+        # whether aux mutations did. Surface tool_errors so an operator can
+        # distinguish "agent gave up after MCP rejection" from "agent saw
+        # zero routable items and silently violated protocol."
         detail = (
             f"; tool_errors={loop_result.tool_errors[-2:]}"
             if loop_result.tool_errors else ""
         )
+        if loop_result.frontmatter_updated or loop_result.links_added:
+            detail += (
+                f"; frontmatter_updated={len(loop_result.frontmatter_updated)}"
+                f", links_added={len(loop_result.links_added)}"
+            )
         msg = f"Agent completed but wrote no files (turns={loop_result.turns_used}){detail}"
         log.warning(msg)
         return AgentRoutingResult(
@@ -168,11 +185,17 @@ async def agent_extract_and_route(
             summary=summary,
             error=msg,
             turns_used=loop_result.turns_used,
+            frontmatter_updated=list(loop_result.frontmatter_updated),
+            links_added=list(loop_result.links_added),
         )
 
     log.info(
-        "Agent routing complete: %d files written, %d turns used",
-        len(loop_result.files_written), loop_result.turns_used,
+        "Agent routing complete: %d files written, %d frontmatter updated, "
+        "%d links added, %d turns used",
+        len(loop_result.files_written),
+        len(loop_result.frontmatter_updated),
+        len(loop_result.links_added),
+        loop_result.turns_used,
     )
     return AgentRoutingResult(
         success=True,
@@ -180,4 +203,6 @@ async def agent_extract_and_route(
         files_written=loop_result.files_written,
         summary_path=summary_path,
         turns_used=loop_result.turns_used,
+        frontmatter_updated=list(loop_result.frontmatter_updated),
+        links_added=list(loop_result.links_added),
     )

@@ -16,7 +16,7 @@ from claude_agent_sdk import (
 
 from .events import TraceEvent
 from .results import AgentLoopResult
-from .utils import extract_file_path
+from .utils import extract_aux_path, extract_file_path
 
 log = logging.getLogger(__name__)
 
@@ -37,6 +37,26 @@ def _record_tool_error(result: AgentLoopResult, content: str) -> None:
         del result.tool_errors[0 : len(result.tool_errors) - _TOOL_ERRORS_CAP]
 
 
+def _record_tool_use(result: AgentLoopResult, tool_name: str, tool_input: dict) -> None:
+    """Classify a tool-use call and track its target path on the result.
+
+    Primary writes (vault_write/append/edit) populate `files_written`; aux
+    mutations (vault_update_frontmatter/vault_add_links) populate
+    `frontmatter_updated`/`links_added` so dedup-skip decisions are auditable.
+    """
+    path = extract_file_path(tool_name, tool_input)
+    if path and path not in result.files_written:
+        result.files_written.append(path)
+        return
+    aux = extract_aux_path(tool_name, tool_input)
+    if aux is None:
+        return
+    kind, aux_path = aux
+    target = result.frontmatter_updated if kind == "frontmatter" else result.links_added
+    if aux_path not in target:
+        target.append(aux_path)
+
+
 async def run_agent_loop(
     user_prompt: str, options: ClaudeAgentOptions,
 ) -> AgentLoopResult:
@@ -51,9 +71,7 @@ async def run_agent_loop(
                     if isinstance(block, TextBlock):
                         result.text_parts.append(block.text)
                     elif isinstance(block, ToolUseBlock):
-                        path = extract_file_path(block.name, block.input)
-                        if path and path not in result.files_written:
-                            result.files_written.append(path)
+                        _record_tool_use(result, block.name, block.input)
             elif isinstance(message, UserMessage):
                 for block in message.content:
                     if isinstance(block, ToolResultBlock) and getattr(block, "is_error", False):
@@ -99,9 +117,7 @@ async def run_agent_loop_streaming(
                         result.text_parts.append(block.text)
                         await _emit(TraceEvent(kind="text", content=block.text))
                     elif isinstance(block, ToolUseBlock):
-                        path = extract_file_path(block.name, block.input)
-                        if path and path not in result.files_written:
-                            result.files_written.append(path)
+                        _record_tool_use(result, block.name, block.input)
                         await _emit(TraceEvent(
                             kind="tool_start",
                             tool_name=block.name,

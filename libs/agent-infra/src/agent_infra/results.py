@@ -15,6 +15,13 @@ class AgentLoopResult:
     # identical to "agent did nothing." Truncated to last 4 to bound memory
     # if an agent loops on the same rejection.
     tool_errors: list[str] = field(default_factory=list)
+    # Auxiliary path mutations: notes whose frontmatter was updated, and
+    # notes that received link additions. Tracked separately from
+    # files_written so dedup-skip decisions are auditable -- without these,
+    # "agent skipped 4 items as duplicates" looks identical to "agent
+    # silently dropped 4 items."
+    frontmatter_updated: list[str] = field(default_factory=list)
+    links_added: list[str] = field(default_factory=list)
 
 
 @dataclass(frozen=True)

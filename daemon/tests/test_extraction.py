@@ -198,6 +198,37 @@ class TestAgentExtractAndRoute:
 
         assert captured["options"].max_turns == 150
 
+    async def test_routing_result_propagates_aux_path_lists(
+        self, pkm_vault_path, transcript, transcript_path,
+    ):
+        """Frontmatter and link aux mutations from the dedup-hit branch must
+        survive the trip from AgentLoopResult to AgentRoutingResult so the
+        pipeline can audit them.
+        """
+        from unittest.mock import AsyncMock
+        loop_result = AgentLoopResult(
+            text_parts=["routed"],
+            files_written=["00-Inbox/audio-ingestion/x.md"],
+            turns_used=20,
+            frontmatter_updated=["01-Projects/A/research/topic.md"],
+            links_added=[
+                "01-Projects/A/research/topic.md",
+                "01-Projects/A/_index.md",
+            ],
+        )
+        with patch(
+            "audio_ingest.extraction.run_agent_loop_streaming",
+            new=AsyncMock(return_value=loop_result),
+        ):
+            result = await agent_extract_and_route(transcript, transcript_path, pkm_vault_path)
+
+        assert result.success is True
+        assert result.frontmatter_updated == ["01-Projects/A/research/topic.md"]
+        assert result.links_added == [
+            "01-Projects/A/research/topic.md",
+            "01-Projects/A/_index.md",
+        ]
+
     async def test_deduplicates_file_paths(self, pkm_vault_path, transcript, transcript_path):
         """Same file written twice should appear once in files_written."""
         msg = make_assistant_message(

@@ -3,11 +3,15 @@ from __future__ import annotations
 import json as json_mod
 import logging
 from pathlib import Path
+from typing import TYPE_CHECKING
 from urllib.parse import quote
 
 import httpx
 
 from telegram_interface import BotConfig, TELEGRAM_API, send_message, send_message_return_id
+
+if TYPE_CHECKING:
+    from .extraction import AgentRoutingResult
 
 log = logging.getLogger(__name__)
 
@@ -31,7 +35,7 @@ def format_file_list(files: list[str], vault_name: str = "PKM") -> str:
 
 
 async def send_routing_summary(
-    routing_result: object | None, tg: BotConfig,
+    routing_result: "AgentRoutingResult | None", tg: BotConfig,
     *, thread_id: int | None = None,
 ) -> None:
     """Notify about agent routing results. Accepts AgentRoutingResult or None."""
@@ -43,31 +47,41 @@ async def send_routing_summary(
         await send_message(text, tg, thread_id=thread_id)
         return
 
-    files = getattr(routing_result, "files_written", [])
-    summary = getattr(routing_result, "summary", "")
-    success = getattr(routing_result, "success", False)
-    turns = getattr(routing_result, "turns_used", 0)
-    error = getattr(routing_result, "error", None)
-
-    if not success:
+    if not routing_result.success:
         text = (
             "\U0001f399 New recording processed\n\n"
-            f"Agent routing failed: {error or 'unknown error'}\n"
+            f"Agent routing failed: {routing_result.error or 'unknown error'}\n"
             "Raw transcript preserved."
         )
         await send_message(text, tg, thread_id=thread_id)
         return
 
+    files = routing_result.files_written
     file_lines = "\n".join(f"  * {obsidian_link(f)}" for f in files) if files else "  (none)"
 
     # Truncate summary for Telegram
+    summary = routing_result.summary
     summary_display = summary[:500] + "..." if len(summary) > 500 else summary
+
+    # Dedup-skip footer: only render if the agent did meaningful aux work, so
+    # the typical case (no dedup hits) doesn't add visual noise. Empty footer
+    # = empty extra newlines path.
+    aux_count = (
+        len(routing_result.frontmatter_updated) + len(routing_result.links_added)
+    )
+    aux_footer = (
+        f"\n\nDedup-hit updates: "
+        f"{len(routing_result.frontmatter_updated)} frontmatter, "
+        f"{len(routing_result.links_added)} backlinks."
+        if aux_count else ""
+    )
 
     text = (
         f"\U0001f399 New recording processed\n\n"
         f"{summary_display}\n\n"
-        f"Files written ({len(files)}):\n{file_lines}\n\n"
-        f"Agent used {turns} turn(s)."
+        f"Files written ({len(files)}):\n{file_lines}"
+        f"{aux_footer}\n\n"
+        f"Agent used {routing_result.turns_used} turn(s)."
     )
 
     await send_message(text, tg, thread_id=thread_id)

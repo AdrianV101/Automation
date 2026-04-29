@@ -407,3 +407,89 @@ class TestToolErrorCollection:
 
         # Message counter saw 1 AssistantMessage; SDK reported 42; canonical wins.
         assert result.turns_used == 42
+
+
+class TestAuxPathTracking:
+    """vault_update_frontmatter and vault_add_links populate separate fields.
+
+    Without separate tracking, the per-item write protocol's dedup-hit branch
+    (similarity > 0.8 -> append/edit/update_frontmatter on the existing note +
+    bidirectional link insertion) is invisible to the daemon: a successful
+    routing that touched 5 notes via aux mutations would look identical to
+    "agent only wrote the inbox summary." See PR #2 review C3.
+    """
+
+    @pytest.mark.asyncio
+    async def test_streaming_records_frontmatter_update(self, tmp_path) -> None:
+        msg = make_assistant_message(tool_blocks=[
+            ("mcp__obsidian-pkm__vault_write", {"path": "00-Inbox/note.md"}),
+            ("mcp__obsidian-pkm__vault_update_frontmatter",
+             {"path": "01-Projects/X/_index.md", "fields": {"updated": "2026-04-29"}}),
+        ])
+
+        async def mock_query(prompt, options):
+            yield msg
+
+        with _patch_runner(mock_query):
+            opts = build_agent_options("sys", tmp_path)
+            result = await run_agent_loop_streaming("prompt", opts)
+
+        assert result.files_written == ["00-Inbox/note.md"]
+        assert result.frontmatter_updated == ["01-Projects/X/_index.md"]
+        assert result.links_added == []
+
+    @pytest.mark.asyncio
+    async def test_streaming_records_link_additions(self, tmp_path) -> None:
+        msg = make_assistant_message(tool_blocks=[
+            ("mcp__obsidian-pkm__vault_write", {"path": "00-Inbox/note.md"}),
+            ("mcp__obsidian-pkm__vault_add_links",
+             {"path": "01-Projects/X/_index.md", "links": ["[[00-Inbox/note]]"]}),
+        ])
+
+        async def mock_query(prompt, options):
+            yield msg
+
+        with _patch_runner(mock_query):
+            opts = build_agent_options("sys", tmp_path)
+            result = await run_agent_loop_streaming("prompt", opts)
+
+        assert result.files_written == ["00-Inbox/note.md"]
+        assert result.frontmatter_updated == []
+        assert result.links_added == ["01-Projects/X/_index.md"]
+
+    @pytest.mark.asyncio
+    async def test_aux_paths_are_deduplicated(self, tmp_path) -> None:
+        """If the agent calls vault_add_links twice on the same note, the path
+        appears once. Same dedup invariant as files_written."""
+        msg = make_assistant_message(tool_blocks=[
+            ("mcp__obsidian-pkm__vault_add_links", {"path": "01-Projects/X/_index.md"}),
+            ("mcp__obsidian-pkm__vault_add_links", {"path": "01-Projects/X/_index.md"}),
+        ])
+
+        async def mock_query(prompt, options):
+            yield msg
+
+        with _patch_runner(mock_query):
+            opts = build_agent_options("sys", tmp_path)
+            result = await run_agent_loop_streaming("prompt", opts)
+
+        assert result.links_added == ["01-Projects/X/_index.md"]
+
+    @pytest.mark.asyncio
+    async def test_non_streaming_records_aux_paths(self, tmp_path) -> None:
+        msg = make_assistant_message(tool_blocks=[
+            ("mcp__obsidian-pkm__vault_update_frontmatter",
+             {"path": "01-Projects/X/_index.md", "fields": {}}),
+            ("mcp__obsidian-pkm__vault_add_links",
+             {"path": "00-Inbox/note.md", "links": []}),
+        ])
+
+        async def mock_query(prompt, options):
+            yield msg
+
+        with _patch_runner(mock_query):
+            opts = build_agent_options("sys", tmp_path)
+            result = await run_agent_loop("prompt", opts)
+
+        assert result.frontmatter_updated == ["01-Projects/X/_index.md"]
+        assert result.links_added == ["00-Inbox/note.md"]
