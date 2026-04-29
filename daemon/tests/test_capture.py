@@ -736,8 +736,105 @@ class TestPipelineCaptureWiring:
                 "audio_ingest.pipeline.agent_capture_session",
                 new_callable=AsyncMock, side_effect=RuntimeError("capture broke"),
             ),
+            patch("audio_ingest.pipeline.send_message", new_callable=AsyncMock),
         ):
             # Should not raise
+            await process_recording(_make_job(), config, status=status)
+
+        last_call = status.update.call_args_list[-1]
+        assert last_call.args[0] == "completed"
+
+    @pytest.mark.asyncio
+    async def test_capture_returning_unsuccess_notifies_telegram(self, tmp_path) -> None:
+        """When capture returns success=False, the user must see a one-line
+        notification in the same forum thread that has the routing summary.
+        Without this, a user who opted into capture has no signal that the
+        feature failed (silent-failure-hunter C2)."""
+        from audio_ingest.pipeline import process_recording
+
+        config = _make_config(tmp_path, capture=True)
+        unsuccess = CaptureResult(
+            success=False, summary="", error="no devlog appended (turns=4)",
+            turns_used=4,
+        )
+        with (
+            patch("audio_ingest.pipeline.create_forum_topic", new_callable=AsyncMock, return_value=99),
+            patch("audio_ingest.pipeline.write_raw_transcript", return_value=Path("/tmp/t.md")),
+            patch(
+                "audio_ingest.pipeline.agent_extract_and_route",
+                new_callable=AsyncMock, return_value=_make_routing_success(),
+            ),
+            patch("audio_ingest.pipeline.send_routing_summary", new_callable=AsyncMock),
+            patch(
+                "audio_ingest.pipeline.agent_capture_session",
+                new_callable=AsyncMock, return_value=unsuccess,
+            ),
+            patch("audio_ingest.pipeline.send_message", new_callable=AsyncMock) as mock_send,
+        ):
+            await process_recording(_make_job(), config, status=AsyncMock())
+
+        mock_send.assert_called_once()
+        msg, _bot = mock_send.call_args.args[:2]
+        assert "Devlog capture pass failed" in msg
+        assert "no devlog appended" in msg
+        assert mock_send.call_args.kwargs.get("thread_id") == 99
+
+    @pytest.mark.asyncio
+    async def test_capture_exception_notifies_telegram(self, tmp_path) -> None:
+        """When capture raises, the user must still see a one-line
+        notification (silent-failure-hunter C2)."""
+        from audio_ingest.pipeline import process_recording
+
+        config = _make_config(tmp_path, capture=True)
+        with (
+            patch("audio_ingest.pipeline.create_forum_topic", new_callable=AsyncMock, return_value=99),
+            patch("audio_ingest.pipeline.write_raw_transcript", return_value=Path("/tmp/t.md")),
+            patch(
+                "audio_ingest.pipeline.agent_extract_and_route",
+                new_callable=AsyncMock, return_value=_make_routing_success(),
+            ),
+            patch("audio_ingest.pipeline.send_routing_summary", new_callable=AsyncMock),
+            patch(
+                "audio_ingest.pipeline.agent_capture_session",
+                new_callable=AsyncMock, side_effect=RuntimeError("kaboom"),
+            ),
+            patch("audio_ingest.pipeline.send_message", new_callable=AsyncMock) as mock_send,
+        ):
+            await process_recording(_make_job(), config, status=AsyncMock())
+
+        mock_send.assert_called_once()
+        msg = mock_send.call_args.args[0]
+        assert "Devlog capture pass crashed" in msg
+
+    @pytest.mark.asyncio
+    async def test_notify_failure_swallowed_does_not_break_pipeline(
+        self, tmp_path,
+    ) -> None:
+        """If even the notification call fails, the pipeline still completes."""
+        from audio_ingest.pipeline import process_recording
+
+        config = _make_config(tmp_path, capture=True)
+        status = AsyncMock()
+        unsuccess = CaptureResult(
+            success=False, summary="", error="no devlog", turns_used=1,
+        )
+        with (
+            patch("audio_ingest.pipeline.create_forum_topic", new_callable=AsyncMock, return_value=None),
+            patch("audio_ingest.pipeline.write_raw_transcript", return_value=Path("/tmp/t.md")),
+            patch(
+                "audio_ingest.pipeline.agent_extract_and_route",
+                new_callable=AsyncMock, return_value=_make_routing_success(),
+            ),
+            patch("audio_ingest.pipeline.send_routing_summary", new_callable=AsyncMock),
+            patch(
+                "audio_ingest.pipeline.agent_capture_session",
+                new_callable=AsyncMock, return_value=unsuccess,
+            ),
+            patch(
+                "audio_ingest.pipeline.send_message",
+                new_callable=AsyncMock, side_effect=RuntimeError("telegram down"),
+            ),
+        ):
             await process_recording(_make_job(), config, status=status)
 
         last_call = status.update.call_args_list[-1]
