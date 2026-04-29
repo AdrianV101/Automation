@@ -134,6 +134,19 @@ class TestToolsCaptureSubset:
                 f"{tool} must not be in TOOLS_CAPTURE -- capture cannot reorganise vault"
             )
 
+    def test_excludes_codebase_and_web_tools(self) -> None:
+        """Capture must not be able to read source code or fetch from the web.
+
+        Without this, a refactor like `TOOLS_CAPTURE = TOOLS_EXTRACTION` (or any
+        copy-paste from a broader profile) would silently expand the safety
+        boundary. The vault_write/edit/admin exclusions above don't catch this.
+        """
+        for tool in ("Read", "Glob", "Grep", "WebSearch", "WebFetch"):
+            assert tool not in TOOLS_CAPTURE, (
+                f"{tool} must not be in TOOLS_CAPTURE -- capture is append-only "
+                f"and has no business reading source or fetching from the web"
+            )
+
 
 # ---------------------------------------------------------------------------
 # (e) CAPTURE_SYSTEM_PROMPT contents
@@ -355,6 +368,95 @@ class TestAgentCaptureSession:
 
         assert captured["options"].max_turns == 15
 
+    async def test_streams_when_tg_provided(
+        self, pkm_vault_path, routing_result_success, transcript_path,
+    ) -> None:
+        """When tg config is provided, TelegramStreamSender is wired up.
+
+        Mirrors test_extraction.py::test_streams_when_tg_provided so capture's
+        Telegram tracing is regression-protected to the same standard.
+        """
+        from telegram_interface import BotConfig
+
+        mock_result = AgentLoopResult(
+            text_parts=["devlog updated"],
+            files_written=["01-Projects/Automation/development/devlog.md"],
+            turns_used=3,
+        )
+
+        async def mock_streaming(prompt, options, on_event=None):
+            return mock_result
+
+        with patch("audio_ingest.capture.run_agent_loop_streaming", side_effect=mock_streaming):
+            with patch("audio_ingest.capture.TelegramStreamSender") as MockSender:
+                mock_sender = MockSender.return_value
+                mock_sender.handle = AsyncMock()
+                mock_sender.flush = AsyncMock()
+
+                tg = BotConfig(bot_token="fake", chat_id="123")
+                result = await agent_capture_session(
+                    routing_result_success, transcript_path, pkm_vault_path,
+                    tg=tg, thread_id=42,
+                )
+
+                MockSender.assert_called_once_with(tg, 42)
+                mock_sender.flush.assert_awaited_once()
+
+        assert result.success
+
+    async def test_no_streaming_without_tg(
+        self, pkm_vault_path, routing_result_success, transcript_path,
+    ) -> None:
+        """When tg is None, no TelegramStreamSender is created and on_event=None."""
+        mock_result = AgentLoopResult(
+            text_parts=["devlog updated"],
+            files_written=["01-Projects/Automation/development/devlog.md"],
+            turns_used=3,
+        )
+
+        async def mock_streaming(prompt, options, on_event=None):
+            assert on_event is None
+            return mock_result
+
+        with patch("audio_ingest.capture.run_agent_loop_streaming", side_effect=mock_streaming):
+            result = await agent_capture_session(
+                routing_result_success, transcript_path, pkm_vault_path,
+            )
+
+        assert result.success
+
+    async def test_flush_failure_does_not_break_capture(
+        self, pkm_vault_path, routing_result_success, transcript_path,
+    ) -> None:
+        """A Telegram flush failure must not regress the in-process capture
+        result. Loses the trace tail; preserves the devlog append outcome."""
+        from telegram_interface import BotConfig
+
+        mock_result = AgentLoopResult(
+            text_parts=["devlog updated"],
+            files_written=["01-Projects/Automation/development/devlog.md"],
+            turns_used=3,
+        )
+
+        async def mock_streaming(prompt, options, on_event=None):
+            return mock_result
+
+        with patch("audio_ingest.capture.run_agent_loop_streaming", side_effect=mock_streaming):
+            with patch("audio_ingest.capture.TelegramStreamSender") as MockSender:
+                mock_sender = MockSender.return_value
+                mock_sender.handle = AsyncMock()
+                mock_sender.flush = AsyncMock(side_effect=RuntimeError("telegram down"))
+
+                tg = BotConfig(bot_token="fake", chat_id="123")
+                result = await agent_capture_session(
+                    routing_result_success, transcript_path, pkm_vault_path,
+                    tg=tg, thread_id=42,
+                )
+
+        # Capture result is still success even though the trace flush blew up.
+        assert result.success is True
+        assert "01-Projects/Automation/development/devlog.md" in result.files_appended
+
 
 # ---------------------------------------------------------------------------
 # Pipeline wiring: (a) flag off, (b) no files, (c) extraction failed, (d) happy path
@@ -423,19 +525,76 @@ class TestPipelineCaptureWiring:
         mock_cap.assert_not_called()
 
     @pytest.mark.asyncio
-    async def test_b_no_files_written_no_capture(self, tmp_path) -> None:
+    async def test_b1_success_false_no_capture(self, tmp_path) -> None:
+        """success=False alone (with files_written non-empty) skips capture."""
         from audio_ingest.pipeline import process_recording
 
         config = _make_config(tmp_path, capture=True)
-        empty_routing = AgentRoutingResult(
-            success=False, summary="", files_written=[], error="no files",
+        success_false = AgentRoutingResult(
+            success=False, summary="",
+            files_written=["00-Inbox/audio-ingestion/x.md"],
+            error="agent reported failure",
         )
         with (
             patch("audio_ingest.pipeline.create_forum_topic", new_callable=AsyncMock, return_value=None),
             patch("audio_ingest.pipeline.write_raw_transcript", return_value=Path("/tmp/t.md")),
             patch(
                 "audio_ingest.pipeline.agent_extract_and_route",
-                new_callable=AsyncMock, return_value=empty_routing,
+                new_callable=AsyncMock, return_value=success_false,
+            ),
+            patch("audio_ingest.pipeline.send_routing_summary", new_callable=AsyncMock),
+            patch("audio_ingest.pipeline.agent_capture_session", new_callable=AsyncMock) as mock_cap,
+        ):
+            await process_recording(_make_job(), config, status=AsyncMock())
+
+        mock_cap.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_b2_success_true_empty_files_no_capture(self, tmp_path) -> None:
+        """success=True with empty files_written still skips capture.
+
+        The pipeline gate trusts neither flag in isolation -- it AND-conjoins
+        success and files_written so a hypothetical type-invariant violation
+        (extraction.py is supposed to set success=False if files_written is
+        empty) cannot accidentally fire capture against nothing.
+        """
+        from audio_ingest.pipeline import process_recording
+
+        config = _make_config(tmp_path, capture=True)
+        # Construct a deliberately-inconsistent result: success=True but no files.
+        # This SHOULD NOT happen via agent_extract_and_route, but the gate should
+        # be defensive against it.
+        inconsistent = AgentRoutingResult(
+            success=True, summary="claimed routing", files_written=[],
+            summary_path=None,
+        )
+        with (
+            patch("audio_ingest.pipeline.create_forum_topic", new_callable=AsyncMock, return_value=None),
+            patch("audio_ingest.pipeline.write_raw_transcript", return_value=Path("/tmp/t.md")),
+            patch(
+                "audio_ingest.pipeline.agent_extract_and_route",
+                new_callable=AsyncMock, return_value=inconsistent,
+            ),
+            patch("audio_ingest.pipeline.send_routing_summary", new_callable=AsyncMock),
+            patch("audio_ingest.pipeline.agent_capture_session", new_callable=AsyncMock) as mock_cap,
+        ):
+            await process_recording(_make_job(), config, status=AsyncMock())
+
+        mock_cap.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_b3_routing_result_none_no_capture(self, tmp_path) -> None:
+        """When agent_extract_and_route raises, pipeline rebinds routing_result
+        to None. Capture must not fire against None."""
+        from audio_ingest.pipeline import process_recording
+
+        config = _make_config(tmp_path, capture=True)
+        with (
+            patch("audio_ingest.pipeline.create_forum_topic", new_callable=AsyncMock, return_value=None),
+            patch("audio_ingest.pipeline.write_raw_transcript", return_value=Path("/tmp/t.md")),
+            patch(
+                "audio_ingest.pipeline.agent_extract_and_route",
+                new_callable=AsyncMock, side_effect=RuntimeError("extraction blew up"),
             ),
             patch("audio_ingest.pipeline.send_routing_summary", new_callable=AsyncMock),
             patch("audio_ingest.pipeline.agent_capture_session", new_callable=AsyncMock) as mock_cap,
@@ -474,12 +633,14 @@ class TestPipelineCaptureWiring:
         from audio_ingest.pipeline import process_recording
 
         config = _make_config(tmp_path, capture=True)
+        routing_result = _make_routing_success()
+        transcript_path = Path("/tmp/t.md")
         with (
             patch("audio_ingest.pipeline.create_forum_topic", new_callable=AsyncMock, return_value=None),
-            patch("audio_ingest.pipeline.write_raw_transcript", return_value=Path("/tmp/t.md")),
+            patch("audio_ingest.pipeline.write_raw_transcript", return_value=transcript_path),
             patch(
                 "audio_ingest.pipeline.agent_extract_and_route",
-                new_callable=AsyncMock, return_value=_make_routing_success(),
+                new_callable=AsyncMock, return_value=routing_result,
             ),
             patch("audio_ingest.pipeline.send_routing_summary", new_callable=AsyncMock),
             patch("audio_ingest.pipeline.agent_capture_session", new_callable=AsyncMock) as mock_cap,
@@ -487,6 +648,24 @@ class TestPipelineCaptureWiring:
             await process_recording(_make_job(), config, status=AsyncMock())
 
         mock_cap.assert_called_once()
+        # Pin argument forwarding so a swap of routing_result/transcript_path/
+        # vault_path (all dataclass-or-Path) doesn't pass type-check but breaks
+        # the capture call. routing_result is identity-pinned; the rest are
+        # checked structurally.
+        call_args = mock_cap.call_args
+        assert call_args.args[0] is routing_result, (
+            "capture must receive the exact AgentRoutingResult from extraction"
+        )
+        assert call_args.args[1] == transcript_path, (
+            "capture must receive transcript_path as its second positional arg"
+        )
+        assert call_args.args[2] == config.pkm_vault_path, (
+            "capture must receive pkm_vault_path as its third positional arg"
+        )
+        # Telegram bot config and forum thread must be forwarded so the
+        # capture trace mirrors to the same Telegram thread as extraction.
+        assert "tg" in call_args.kwargs and call_args.kwargs["tg"] is not None
+        assert "thread_id" in call_args.kwargs
 
     @pytest.mark.asyncio
     async def test_capture_returning_unsuccess_logs_warning(

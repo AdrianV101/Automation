@@ -301,3 +301,29 @@ class TestLinkDiscoveryRecipeConsistency:
         # The EXTRACTION prompt's prohibition is preserved through the shared
         # LINK_DISCOVERY_RECIPE constant interpolation.
         assert prohibition in build_extraction_system_prompt(tmp_path)
+
+    def test_recipe_comes_from_shared_constant_not_copy_paste(self, tmp_path) -> None:
+        """The recipe must be sourced from LINK_DISCOVERY_RECIPE, not copy-pasted.
+
+        The verbatim-discriminator test above would still pass if a developer
+        "fixed" the recipe in NOTE only by editing the prompt body directly
+        (bypassing the constant). This test imports the constant and asserts
+        each builder produces output that contains the constant rendered with
+        the appropriate path_label -- so a copy-paste that drifted from the
+        constant would fail here.
+        """
+        from audio_ingest.prompts import LINK_DISCOVERY_RECIPE
+
+        note_recipe = LINK_DISCOVERY_RECIPE.format(path_label="note path")
+        task_recipe = LINK_DISCOVERY_RECIPE.format(path_label="task path")
+        extraction_recipe = LINK_DISCOVERY_RECIPE.format(path_label="new note path")
+
+        assert note_recipe in build_note_system_prompt(tmp_path), (
+            "NOTE prompt's recipe diverges from LINK_DISCOVERY_RECIPE constant"
+        )
+        assert task_recipe in build_task_system_prompt(tmp_path), (
+            "TASK prompt's recipe diverges from LINK_DISCOVERY_RECIPE constant"
+        )
+        assert extraction_recipe in build_extraction_system_prompt(tmp_path), (
+            "EXTRACTION prompt's recipe diverges from LINK_DISCOVERY_RECIPE constant"
+        )

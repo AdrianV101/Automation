@@ -424,3 +424,50 @@ class TestSystemPromptContents:
             phrase in lowered
             for phrase in ("before routing", "existing vault state", "existing notes")
         ), "expected Stage 1 phrasing (before routing / existing vault state / existing notes)"
+
+    def test_per_item_write_protocol_has_five_steps_in_order(self, prompt) -> None:
+        """All 5 steps of the per-item write protocol must be present in order.
+
+        Without this, a regression that dropped step 5 (bidirectional linking)
+        entirely or that flipped which template families get backlinks would
+        not fail any other test. Step markers are the literal '1. **',
+        '2. **', etc. that the prompt emits as Markdown bullets.
+        """
+        markers = [
+            "1. **Dedup check.**",
+            "2. **Pick the template**",
+            "3. **Create the note**",
+            "4. **Discover, annotate, and insert links.**",
+            "5. **Bidirectional linking.**",
+        ]
+        positions: list[int] = []
+        for marker in markers:
+            idx = prompt.find(marker)
+            assert idx != -1, f"per-item write protocol missing marker: {marker!r}"
+            positions.append(idx)
+        assert positions == sorted(positions), (
+            f"per-item write protocol steps out of order: {positions}"
+        )
+
+    def test_bidirectional_linking_carve_out_pinned(self, prompt) -> None:
+        """Step 5's template-family carve-out must list the structured templates
+        that get backlinks, AND must explicitly skip ephemeral templates.
+
+        A regression that dropped 'ADRs' from the backlink list (or added
+        'task' to it) would not be caught by the in-order check above.
+        """
+        # Templates that MUST get backlinks
+        for template in ("ADRs", "research-notes", "meeting-notes",
+                         "troubleshooting-logs", "permanent-notes"):
+            assert template in prompt, (
+                f"step 5 (bidirectional linking) must list {template!r} "
+                f"as receiving backlinks"
+            )
+        # Templates that MUST be skipped
+        skip_section_start = prompt.find("Skip this step for")
+        assert skip_section_start != -1, "expected 'Skip this step for' carve-out in step 5"
+        skip_section = prompt[skip_section_start : skip_section_start + 200]
+        for ephemeral in ("fleeting-note", "daily-note", "task"):
+            assert ephemeral in skip_section, (
+                f"step 5 must explicitly skip {ephemeral!r}"
+            )
