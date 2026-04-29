@@ -115,3 +115,56 @@ def test_email_to_news_note_falls_back_to_domain_when_no_display_name():
 def test_email_to_news_note_no_subject_falls_back_to_empty():
     payload = email_to_news_note(_load("no_subject.eml"))
     assert payload.subject == ""
+
+
+# --- write_news_note -------------------------------------------------------
+
+import yaml
+from audio_ingest.news_email_adapter import write_news_note
+
+
+def test_write_news_note_writes_to_date_folder(tmp_path):
+    payload = email_to_news_note(_load("html_newsletter.eml"))
+    body_md = render_body(_load("html_newsletter.eml"))
+    path = write_news_note(payload, body_md=body_md, vault_root=tmp_path)
+    assert path.is_file()
+    assert path.parent == tmp_path / "00-Inbox" / "news" / "2026-04-29"
+    assert path.name.startswith("weekly-roundup-42-")
+    assert path.suffix == ".md"
+
+
+def test_write_news_note_frontmatter_shape(tmp_path):
+    payload = email_to_news_note(_load("html_newsletter.eml"))
+    body_md = render_body(_load("html_newsletter.eml"))
+    path = write_news_note(payload, body_md=body_md, vault_root=tmp_path)
+    content = path.read_text()
+    assert content.startswith("---\n")
+    fm_end = content.index("\n---\n", 4)
+    fm = yaml.safe_load(content[4:fm_end])
+    assert fm["type"] == "news-item"
+    assert fm["source-type"] == "newsletter"
+    assert fm["source"] == "Newsletter HQ"
+    assert fm["source-address"] == "weekly@example-news.com"
+    assert fm["message-id"] == "html-newsletter-001@example-news.com"
+    assert fm["received-at"] == "2026-04-29T08:14:32+00:00"
+    assert fm["created"] == "2026-04-29"
+    assert fm["tags"] == ["news", "source-newsletter"]
+    body = content[fm_end + len("\n---\n"):].strip()
+    assert body == body_md.rstrip()
+
+
+def test_write_news_note_idempotent(tmp_path):
+    payload = email_to_news_note(_load("html_newsletter.eml"))
+    body_md = render_body(_load("html_newsletter.eml"))
+    p1 = write_news_note(payload, body_md=body_md, vault_root=tmp_path)
+    p2 = write_news_note(payload, body_md=body_md, vault_root=tmp_path)
+    assert p1 == p2
+    assert p1.read_text() == p2.read_text()
+
+
+def test_write_news_note_creates_date_folder(tmp_path):
+    payload = email_to_news_note(_load("plaintext_newsletter.eml"))
+    body_md = render_body(_load("plaintext_newsletter.eml"))
+    path = write_news_note(payload, body_md=body_md, vault_root=tmp_path)
+    assert path.parent.is_dir()
+    assert path.parent.name == "2026-04-29"

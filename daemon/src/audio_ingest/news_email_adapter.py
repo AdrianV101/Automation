@@ -12,7 +12,9 @@ import unicodedata
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from email.utils import parseaddr, parsedate_to_datetime
+from pathlib import Path
 
+import yaml
 from bs4 import BeautifulSoup
 from email_ingest import MalformedEmailError, ParsedEmail
 from markdownify import markdownify as _markdownify
@@ -129,3 +131,42 @@ def render_body(parsed: ParsedEmail) -> str:
     raise MalformedEmailError(
         f"email {parsed.message_id} has no usable body (html or text/plain)",
     )
+
+
+def _frontmatter(payload: NewsNotePayload) -> str:
+    received_utc = payload.received_at.astimezone(timezone.utc)
+    data = {
+        "type": "news-item",
+        "created": received_utc.date().isoformat(),
+        "received-at": received_utc.isoformat(),
+        "source": payload.sender_display,
+        "source-type": "newsletter",
+        "source-address": payload.sender_address,
+        "subject": payload.subject,
+        "message-id": payload.message_id,
+        "tags": ["news", "source-newsletter"],
+    }
+    return yaml.safe_dump(
+        data, sort_keys=False, allow_unicode=True, default_flow_style=False,
+    )
+
+
+def write_news_note(
+    payload: NewsNotePayload,
+    *,
+    body_md: str,
+    vault_root: Path,
+) -> Path:
+    """Write `<vault_root>/00-Inbox/news/YYYY-MM-DD/<slug>.md` and return the path.
+
+    Idempotent: re-writing the same payload+body produces an identical file.
+    Date folder is derived from received_at in UTC.
+    """
+    date_folder = payload.received_at.astimezone(timezone.utc).date().isoformat()
+    slug = slugify_subject(payload.subject, message_id=payload.message_id)
+    folder = vault_root / "00-Inbox" / "news" / date_folder
+    folder.mkdir(parents=True, exist_ok=True)
+    path = folder / f"{slug}.md"
+    content = f"---\n{_frontmatter(payload)}---\n\n{body_md.rstrip()}\n"
+    path.write_text(content, encoding="utf-8")
+    return path
