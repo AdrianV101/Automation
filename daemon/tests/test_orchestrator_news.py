@@ -1,0 +1,67 @@
+"""Verify run_daemon starts the news listener when only news is enabled."""
+from __future__ import annotations
+
+import asyncio
+from unittest.mock import AsyncMock, patch
+
+import pytest
+
+from audio_ingest.config import DaemonConfig
+
+
+@pytest.mark.asyncio
+async def test_run_daemon_starts_news_listener_when_enabled(tmp_path):
+    cfg = DaemonConfig(
+        telegram_bot_token="tok",
+        telegram_chat_id="chat",
+        pkm_vault_path=tmp_path,
+        email_ingest_enabled=False,
+        news_ingest_enabled=True,
+        news_imap_folder="News",
+        news_telegram_topic_id=99,
+        email_ingest_state_db_path=tmp_path / "state.db",
+        imap_user="u",
+        imap_password="p",
+    )
+
+    started = asyncio.Event()
+    captured_folder: list[str] = []
+
+    async def fake_run(self):
+        captured_folder.append(self.folder)
+        started.set()
+        await asyncio.sleep(3600)
+
+    # Patch listener.run to avoid real Bridge connection; patch supervise to
+    # call the factory once (no restart loop) so the test exits cleanly when
+    # we cancel; patch check_topics_enabled to avoid real Telegram API call.
+    async def fake_supervise(name, factory, **kw):
+        await factory()
+
+    with patch("audio_ingest.orchestrator.ImapIdleListener.run", fake_run), \
+         patch("audio_ingest.orchestrator.check_topics_enabled", AsyncMock(return_value=True)), \
+         patch("audio_ingest.orchestrator.supervise", side_effect=fake_supervise):
+        from audio_ingest.orchestrator import run_daemon
+        task = asyncio.create_task(run_daemon(cfg))
+        try:
+            await asyncio.wait_for(started.wait(), timeout=2.0)
+            assert captured_folder == ["News"]
+        finally:
+            task.cancel()
+            try:
+                await task
+            except (asyncio.CancelledError, BaseExceptionGroup):
+                pass
+
+
+@pytest.mark.asyncio
+async def test_run_daemon_exits_when_no_path_enabled(tmp_path, caplog):
+    cfg = DaemonConfig(
+        telegram_bot_token="tok",
+        telegram_chat_id="chat",
+        pkm_vault_path=tmp_path,
+        email_ingest_enabled=False,
+        news_ingest_enabled=False,
+    )
+    from audio_ingest.orchestrator import run_daemon
+    await run_daemon(cfg)  # should return cleanly without trying to connect

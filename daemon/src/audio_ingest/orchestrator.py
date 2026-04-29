@@ -9,6 +9,7 @@ from email_ingest import (
     EmailIngestStateDB,
     EmailIngestStatusTracker,
     ImapIdleListener,
+    NewsIngestStateDB,
     parse_email,
     verify_dkim,
 )
@@ -18,6 +19,7 @@ from .command_config import build_daemon_commands
 from .supervisor import supervise
 from .models import RecordingJob, StatusTracker
 from .notifications import format_file_list
+from .news_email_adapter import handle_news_email
 from .pipeline import process_recording
 from .plaud_email_adapter import MalformedPlaudEmailError, recording_job_from_email
 from agent_infra import SessionManager
@@ -42,13 +44,18 @@ class ProcessRecording(Protocol):
 async def run_daemon(config: DaemonConfig) -> None:
     log.info("Daemon started")
 
-    if not config.email_ingest_enabled:
+    if not (config.email_ingest_enabled or config.news_ingest_enabled):
         log.error(
-            "Email ingestion not enabled. Set EMAIL_INGEST_ENABLED=true. Exiting.",
+            "No ingestion path enabled. Set EMAIL_INGEST_ENABLED=true and/or "
+            "NEWS_INGEST_ENABLED=true. Exiting.",
         )
         return
 
-    await _run_email_ingest_path(config)
+    async with asyncio.TaskGroup() as tg:
+        if config.email_ingest_enabled:
+            tg.create_task(_run_email_ingest_path(config), name="email-ingest")
+        if config.news_ingest_enabled:
+            tg.create_task(_run_news_ingest_path(config), name="news-ingest")
 
 
 async def handle_incoming_email(
@@ -281,3 +288,65 @@ async def _setup_pipeline_topic_email(
         except Exception:
             log.exception("Failed to create Pipeline forum topic, using general channel")
     return pipeline_thread
+
+
+async def _run_news_ingest_path(config: DaemonConfig) -> None:
+    """News listener: a second IDLE listener on the configured Proton folder
+    that captures newsletters into the vault and pings a dedicated topic."""
+    db = NewsIngestStateDB(config.email_ingest_state_db_path)
+    await db.init_db()
+
+    bot = BotConfig(
+        bot_token=config.telegram_bot_token, chat_id=config.telegram_chat_id,
+    )
+
+    async def telegram_notifier(text: str, *, thread_id: int | None = None) -> None:
+        await send_message(text, bot, thread_id=thread_id)
+
+    async def on_new_email(uid: int, raw: bytes, headers: dict[str, str]) -> None:
+        await handle_news_email(
+            uid, raw, headers,
+            db=db,
+            vault_root=config.pkm_vault_path,
+            telegram_notifier=telegram_notifier,
+            news_topic_id=config.news_telegram_topic_id,
+        )
+
+    async def on_persistent_failure() -> None:
+        try:
+            await send_message(
+                "⚠️ News Bridge Disconnected\n\n"
+                "Unable to connect to IMAP bridge for the News folder for "
+                "3 consecutive attempts. Will keep retrying.",
+                bot, thread_id=config.news_telegram_topic_id,
+            )
+        except Exception:
+            log.exception("Failed to send news persistent-failure alert")
+
+    async def on_supervised_crashloop(task_name: str, failures: int) -> None:
+        try:
+            await send_message(
+                f"⚠️ Daemon task crash-looping\n\n"
+                f"Task: {task_name}\nConsecutive failures: {failures}\n"
+                f"Will keep restarting with backoff. Check daemon logs.",
+                bot, thread_id=config.news_telegram_topic_id,
+            )
+        except Exception:
+            log.exception("Failed to send news crash-loop alert")
+
+    bridge_cfg = BridgeConfig(
+        host=config.imap_host, port=config.imap_port,
+        user=config.imap_user, password=config.imap_password,
+        use_starttls=config.imap_use_starttls,
+        ssl_verify=config.imap_ssl_verify,
+    )
+    listener = ImapIdleListener(
+        cfg=bridge_cfg, db=db,
+        on_new_email=on_new_email,
+        on_persistent_failure=on_persistent_failure,
+        folder=config.news_imap_folder,
+    )
+    await supervise(
+        "news-imap-listener", listener.run,
+        on_persistent_failure=on_supervised_crashloop,
+    )
