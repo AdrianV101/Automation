@@ -141,3 +141,101 @@ class EmailIngestStatusTracker:
 
     async def update(self, status: str, **kwargs: str | None) -> None:
         await self._db.update_status(self._id, status, **kwargs)
+
+
+_NEWS_SCHEMA = """
+CREATE TABLE IF NOT EXISTS news_ingest_events (
+    message_id TEXT PRIMARY KEY,
+    uid INTEGER NOT NULL,
+    received_at TEXT NOT NULL,
+    sender TEXT,
+    subject TEXT,
+    vault_note_path TEXT,
+    status TEXT NOT NULL DEFAULT 'received',
+    error TEXT,
+    completed_at TEXT
+);
+"""
+
+NEWS_VALID_STATUSES = frozenset({"received", "written", "failed", "dropped"})
+_NEWS_UPDATABLE_COLUMNS = frozenset({"vault_note_path", "error"})
+_NEWS_TERMINAL_STATUSES = frozenset({"written", "failed", "dropped"})
+
+
+class NewsIngestStateDB:
+    """State store for newsletter ingestion. Coexists with EmailIngestStateDB
+    in the same SQLite file by using a parallel `news_ingest_events` table
+    and a namespaced settings key for UIDNEXT (so two listeners on the same
+    file don't clobber each other's checkpoint)."""
+
+    SETTINGS_KEY_UIDNEXT = "uidnext:news"
+
+    def __init__(self, db_path: str | Path) -> None:
+        self._path = str(db_path)
+
+    async def init_db(self) -> None:
+        async with aiosqlite.connect(self._path) as db:
+            await db.execute("PRAGMA journal_mode=WAL")
+            await db.execute("PRAGMA synchronous=NORMAL")
+            # Both schemas coexist in this file. Run both idempotently so a
+            # news-only deployment still gets the shared settings table.
+            await db.executescript(_SCHEMA)
+            await db.executescript(_NEWS_SCHEMA)
+            await db.commit()
+
+    async def insert_event(
+        self, message_id: str, uid: int,
+        sender: str | None = None, subject: str | None = None,
+    ) -> None:
+        async with aiosqlite.connect(self._path) as db:
+            await db.execute(
+                "INSERT OR IGNORE INTO news_ingest_events "
+                "(message_id, uid, received_at, sender, subject, status) "
+                "VALUES (?, ?, ?, ?, ?, 'received')",
+                (message_id, uid, _now_iso(), sender, subject),
+            )
+            await db.commit()
+
+    async def is_processed(self, message_id: str) -> bool:
+        async with aiosqlite.connect(self._path) as db:
+            async with db.execute(
+                "SELECT 1 FROM news_ingest_events WHERE message_id = ?",
+                (message_id,),
+            ) as cur:
+                return (await cur.fetchone()) is not None
+
+    async def get_event(self, message_id: str) -> dict[str, Any] | None:
+        async with aiosqlite.connect(self._path) as db:
+            db.row_factory = aiosqlite.Row
+            async with db.execute(
+                "SELECT * FROM news_ingest_events WHERE message_id = ?",
+                (message_id,),
+            ) as cur:
+                row = await cur.fetchone()
+                return dict(row) if row else None
+
+    async def update_status(
+        self, message_id: str, status: str, **fields: str | None,
+    ) -> None:
+        if status not in NEWS_VALID_STATUSES:
+            raise ValueError(f"invalid status {status!r}")
+        bad = set(fields) - _NEWS_UPDATABLE_COLUMNS
+        if bad:
+            raise ValueError(f"unknown columns: {sorted(bad)}")
+        cols = ["status = ?"]
+        params: list[Any] = [status]
+        for key, value in fields.items():
+            cols.append(f"{key} = ?")
+            params.append(value)
+        if status in _NEWS_TERMINAL_STATUSES:
+            cols.append("completed_at = ?")
+            params.append(_now_iso())
+        params.append(message_id)
+        async with aiosqlite.connect(self._path) as db:
+            cur = await db.execute(
+                f"UPDATE news_ingest_events SET {', '.join(cols)} WHERE message_id = ?",
+                params,
+            )
+            await db.commit()
+            if cur.rowcount == 0:
+                raise KeyError(f"no event row for message_id={message_id!r}")

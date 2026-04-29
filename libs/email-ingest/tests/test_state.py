@@ -2,9 +2,12 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import aiosqlite
 import pytest
 
-from email_ingest.state import EmailIngestStateDB, EmailIngestStatusTracker
+from email_ingest.state import (
+    EmailIngestStateDB, EmailIngestStatusTracker, NewsIngestStateDB,
+)
 
 
 @pytest.fixture
@@ -93,3 +96,71 @@ async def test_update_status_raises_keyerror_on_missing_row(db: EmailIngestState
     # if a caller updates a row that was never inserted, the bug surfaces loudly.
     with pytest.raises(KeyError):
         await db.update_status("<never-inserted@x>", "failed", error="boom")
+
+
+# --- NewsIngestStateDB ----------------------------------------------------
+
+
+async def test_news_state_db_init_creates_table(tmp_path: Path) -> None:
+    path = tmp_path / "state.db"
+    db = NewsIngestStateDB(path)
+    await db.init_db()
+    async with aiosqlite.connect(str(path)) as conn:
+        async with conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='table' AND name='news_ingest_events'",
+        ) as cur:
+            row = await cur.fetchone()
+    assert row is not None
+
+
+async def test_news_state_db_insert_and_dedupe(tmp_path: Path) -> None:
+    db = NewsIngestStateDB(tmp_path / "state.db")
+    await db.init_db()
+    await db.insert_event("msg1", uid=10, sender="a@x.com", subject="hi")
+    assert await db.is_processed("msg1") is True
+    assert await db.is_processed("msg2") is False
+    # second insert with same id is a no-op (INSERT OR IGNORE)
+    await db.insert_event("msg1", uid=99, sender="other@x.com", subject="other")
+    event = await db.get_event("msg1")
+    assert event is not None
+    assert event["uid"] == 10
+    assert event["sender"] == "a@x.com"
+    assert event["status"] == "received"
+
+
+async def test_news_state_db_update_status_writes_completed_at(tmp_path: Path) -> None:
+    db = NewsIngestStateDB(tmp_path / "state.db")
+    await db.init_db()
+    await db.insert_event("msg1", uid=1)
+    await db.update_status(
+        "msg1", "written", vault_note_path="00-Inbox/news/2026-04-29/foo.md",
+    )
+    event = await db.get_event("msg1")
+    assert event is not None
+    assert event["status"] == "written"
+    assert event["vault_note_path"] == "00-Inbox/news/2026-04-29/foo.md"
+    assert event["completed_at"] is not None  # 'written' is terminal
+
+
+async def test_news_state_db_rejects_invalid_status(tmp_path: Path) -> None:
+    db = NewsIngestStateDB(tmp_path / "state.db")
+    await db.init_db()
+    await db.insert_event("msg1", uid=1)
+    with pytest.raises(ValueError, match="invalid status"):
+        await db.update_status("msg1", "bogus")
+
+
+async def test_news_state_db_rejects_unknown_column(tmp_path: Path) -> None:
+    db = NewsIngestStateDB(tmp_path / "state.db")
+    await db.init_db()
+    await db.insert_event("msg1", uid=1)
+    with pytest.raises(ValueError, match="unknown columns"):
+        # transcript_path belongs on EmailIngestStateDB, not on news.
+        await db.update_status("msg1", "written", transcript_path="x")
+
+
+async def test_news_state_db_update_status_raises_keyerror_on_missing(tmp_path: Path) -> None:
+    db = NewsIngestStateDB(tmp_path / "state.db")
+    await db.init_db()
+    with pytest.raises(KeyError):
+        await db.update_status("never-inserted", "failed", error="boom")
