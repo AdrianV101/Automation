@@ -95,8 +95,7 @@ def _parse_received_at(date_header: str) -> datetime:
     except (TypeError, ValueError):
         dt = None
     if dt is None:
-        # Falling back to "now" so a missing Date header doesn't bury the
-        # note under 1970-01-01/ where it'd be invisible to the daily digest.
+        # Fallback to "now" so a missing Date doesn't bury the note under 1970-01-01/.
         log.warning("Unparseable Date header %r — using current UTC time", date_header)
         return datetime.now(tz=timezone.utc)
     if dt.tzinfo is None:
@@ -194,7 +193,6 @@ async def _safe_notify(
 async def handle_news_email(
     uid: int,
     raw: bytes,
-    headers: dict[str, str],
     *,
     db: NewsIngestStateDB,
     vault_root: Path,
@@ -211,13 +209,12 @@ async def handle_news_email(
         log.debug("News email %s already processed — skipping", message_id)
         return
 
-    sender_for_log = parsed.headers.get("From")
-    subject_for_log = parsed.headers.get("Subject")
-    # Insert before any processing so an unexpected crash leaves a 'received'
-    # row that the catch-all below will transition to 'failed'.
+    sender_header = parsed.headers.get("From")
+    subject_header = parsed.headers.get("Subject")
+    # Insert first so a crash leaves a 'received' row the catch-all can transition to 'failed'.
     await db.insert_event(
         message_id=message_id, uid=uid,
-        sender=sender_for_log, subject=subject_for_log,
+        sender=sender_header, subject=subject_header,
     )
 
     try:
@@ -231,16 +228,13 @@ async def handle_news_email(
         await _mark_failed(
             db, message_id, exc,
             telegram_notifier=telegram_notifier, news_topic_id=news_topic_id,
-            sender=sender_for_log, subject=subject_for_log,
+            sender=sender_header, subject=subject_header,
         )
         return
 
     rel_vault_path = vault_path.relative_to(vault_root)
 
-    # Vault note is the durable record. If the post-write DB update or the
-    # Telegram send fails, the message must NOT stay deduped at 'received' —
-    # the row would be skipped on every future run and the user would never
-    # learn the note exists.
+    # Vault is the durable record; if status stays 'received' dedup hides the note forever.
     try:
         await db.update_status(
             message_id, "written", vault_note_path=str(rel_vault_path),
@@ -252,10 +246,12 @@ async def handle_news_email(
         )
         await _safe_notify(
             telegram_notifier, news_topic_id,
-            f"⚠️ News capture partial\n\n"
+            f"⚠️ News capture partial — manual fix required\n\n"
             f"Vault note written but DB status update failed.\n"
-            f"From: {sender_for_log}\nSubject: {subject_for_log}\n"
-            f"Path: {rel_vault_path}\nError: {exc}",
+            f"From: {payload.sender_display}\nSubject: {payload.subject}\n"
+            f"Path: {rel_vault_path}\nError: {exc}\n\n"
+            f"Row is stuck at 'received' — delete from news_ingest_events to re-process, "
+            f"or manually update status='written'.",
         )
         return
 
@@ -273,13 +269,29 @@ async def _mark_failed(
     sender: str | None,
     subject: str | None,
 ) -> None:
+    db_update_failed: Exception | None = None
     try:
         await db.update_status(message_id, "failed", error=str(exc))
-    except Exception:
+    except Exception as db_exc:
+        # If we can't even mark the row failed, the row is stuck at 'received' and
+        # dedupe will skip it forever. The Telegram alert MUST surface this so the
+        # operator can manually delete the row.
         log.exception("Failed to mark news row %s failed", message_id)
-    await _safe_notify(
-        telegram_notifier, news_topic_id,
-        f"⚠️ News capture failed\n\n"
-        f"From: {sender}\nSubject: {subject}\n"
-        f"Message-ID: {message_id}\nError: {exc}",
-    )
+        db_update_failed = db_exc
+
+    if db_update_failed is None:
+        text = (
+            f"⚠️ News capture failed\n\n"
+            f"From: {sender}\nSubject: {subject}\n"
+            f"Message-ID: {message_id}\nError: {exc}"
+        )
+    else:
+        text = (
+            f"⚠️ News capture failed AND state DB update failed\n\n"
+            f"From: {sender}\nSubject: {subject}\n"
+            f"Message-ID: {message_id}\n"
+            f"Capture error: {exc}\n"
+            f"DB error: {db_update_failed}\n\n"
+            f"Row is stuck at 'received' — delete from news_ingest_events to re-process."
+        )
+    await _safe_notify(telegram_notifier, news_topic_id, text)

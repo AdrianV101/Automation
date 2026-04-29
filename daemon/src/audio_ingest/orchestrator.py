@@ -303,7 +303,7 @@ async def _run_news_ingest_path(config: DaemonConfig) -> None:
 
     async def on_new_email(uid: int, raw: bytes, headers: dict[str, str]) -> None:
         await handle_news_email(
-            uid, raw, headers,
+            uid, raw,
             db=db,
             vault_root=config.pkm_vault_path,
             telegram_notifier=telegram_notifier,

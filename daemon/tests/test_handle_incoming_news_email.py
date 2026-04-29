@@ -21,7 +21,7 @@ async def test_full_capture_loop_html_newsletter(tmp_path):
 
     raw = (FIXTURES / "html_newsletter.eml").read_bytes()
     await handle_news_email(
-        uid=1, raw=raw, headers={},
+        uid=1, raw=raw,
         db=db, vault_root=tmp_path,
         telegram_notifier=notifier, news_topic_id=42,
     )

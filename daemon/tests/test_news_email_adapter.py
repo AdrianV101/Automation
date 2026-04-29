@@ -185,7 +185,7 @@ async def test_handle_news_email_happy_path(tmp_path):
     notifier = AsyncMock()
 
     await handle_news_email(
-        uid=1, raw=raw, headers={},
+        uid=1, raw=raw,
         db=db, vault_root=tmp_path,
         telegram_notifier=notifier, news_topic_id=42,
     )
@@ -209,13 +209,13 @@ async def test_handle_news_email_idempotent_skip(tmp_path):
     notifier = AsyncMock()
 
     await handle_news_email(
-        uid=1, raw=raw, headers={},
+        uid=1, raw=raw,
         db=db, vault_root=tmp_path,
         telegram_notifier=notifier, news_topic_id=None,
     )
     notifier.reset_mock()
     await handle_news_email(
-        uid=2, raw=raw, headers={},
+        uid=2, raw=raw,
         db=db, vault_root=tmp_path,
         telegram_notifier=notifier, news_topic_id=None,
     )
@@ -230,7 +230,7 @@ async def test_handle_news_email_malformed_marks_failed(tmp_path):
     notifier = AsyncMock()
 
     await handle_news_email(
-        uid=1, raw=raw, headers={},
+        uid=1, raw=raw,
         db=db, vault_root=tmp_path,
         telegram_notifier=notifier, news_topic_id=None,
     )
@@ -249,7 +249,7 @@ async def test_handle_news_email_telegram_failure_does_not_revert_state(tmp_path
     notifier = AsyncMock(side_effect=RuntimeError("network down"))
 
     await handle_news_email(
-        uid=1, raw=raw, headers={},
+        uid=1, raw=raw,
         db=db, vault_root=tmp_path,
         telegram_notifier=notifier, news_topic_id=None,
     )
@@ -277,7 +277,7 @@ async def test_handle_news_email_unexpected_exception_marks_failed(tmp_path):
         side_effect=RuntimeError("simulated bs4 explosion"),
     ):
         await handle_news_email(
-            uid=1, raw=raw, headers={},
+            uid=1, raw=raw,
             db=db, vault_root=tmp_path,
             telegram_notifier=notifier, news_topic_id=None,
         )
@@ -301,7 +301,7 @@ async def test_handle_news_email_no_message_id_skips_silently(tmp_path):
     notifier = AsyncMock()
 
     await handle_news_email(
-        uid=1, raw=raw, headers={},
+        uid=1, raw=raw,
         db=db, vault_root=tmp_path,
         telegram_notifier=notifier, news_topic_id=None,
     )
@@ -325,7 +325,7 @@ async def test_handle_news_email_oserror_on_write_marks_failed(tmp_path):
     bad_vault = blocker / "vault"
 
     await handle_news_email(
-        uid=1, raw=raw, headers={},
+        uid=1, raw=raw,
         db=db, vault_root=bad_vault,
         telegram_notifier=notifier, news_topic_id=None,
     )
@@ -361,7 +361,7 @@ async def test_handle_news_email_post_write_db_failure_alerts(tmp_path):
     db.update_status = flaky_update  # type: ignore[method-assign]
 
     await handle_news_email(
-        uid=1, raw=raw, headers={},
+        uid=1, raw=raw,
         db=db, vault_root=tmp_path,
         telegram_notifier=notifier, news_topic_id=None,
     )
