@@ -77,6 +77,20 @@ class TestBuildAgentOptions:
         opts = build_agent_options("sys", tmp_path)
         assert opts.max_turns is None
 
+    def test_setting_sources_default_is_none(self, tmp_path: Path) -> None:
+        opts = build_agent_options("sys", tmp_path)
+        assert opts.setting_sources is None
+
+    def test_setting_sources_passed_through(self, tmp_path: Path) -> None:
+        opts = build_agent_options("sys", tmp_path, setting_sources=["project"])
+        assert opts.setting_sources == ["project"]
+
+    def test_setting_sources_user_and_project(self, tmp_path: Path) -> None:
+        opts = build_agent_options(
+            "sys", tmp_path, setting_sources=["user", "project"],
+        )
+        assert opts.setting_sources == ["user", "project"]
+
     def test_openai_api_key_included_when_set(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setenv("OPENAI_API_KEY", "sk-test-key")
         opts = build_agent_options("sys", tmp_path)

@@ -30,6 +30,7 @@ def build_agent_options(
     allowed_tools: list[str] | None = None,
     mcp_server_path: str | None = None,
     max_turns: int | None = None,
+    setting_sources: list[str] | None = None,
 ) -> ClaudeAgentOptions:
     """Build standard ClaudeAgentOptions with Obsidian MCP config."""
     server_path = mcp_server_path or os.environ.get("OBSIDIAN_MCP_SERVER_PATH")
@@ -63,5 +64,6 @@ def build_agent_options(
         disallowed_tools=DISALLOWED_NATIVE_TOOLS,
         permission_mode="bypassPermissions",
         model=model,
+        setting_sources=setting_sources,
         env={"ANTHROPIC_API_KEY": ""},
     )
