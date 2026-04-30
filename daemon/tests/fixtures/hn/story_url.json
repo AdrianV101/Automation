@@ -1,0 +1,10 @@
+{
+  "id": 42000001,
+  "type": "story",
+  "by": "alice",
+  "time": 1746086400,
+  "score": 350,
+  "descendants": 87,
+  "title": "Show HN: A new way to do X",
+  "url": "https://example.com/foo"
+}
