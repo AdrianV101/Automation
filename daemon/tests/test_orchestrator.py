@@ -190,3 +190,35 @@ class TestSetupPipelineTopicEmail:
             result = await _setup_pipeline_topic_email(email_db, bot)
 
         assert result is None
+
+
+@pytest.mark.asyncio
+async def test_run_daemon_starts_news_daily_master_when_enabled(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+) -> None:
+    """Smoke test: news_daily_master_enabled creates the scheduler task."""
+    from audio_ingest.orchestrator import run_daemon
+    from audio_ingest.config import DaemonConfig
+    from datetime import time
+
+    cfg = DaemonConfig(
+        telegram_bot_token="x", telegram_chat_id="y",
+        pkm_vault_path=tmp_path,
+        email_ingest_enabled=False,
+        news_ingest_enabled=False,
+        news_daily_master_enabled=True,
+        news_daily_master_local_time="06:00",
+        email_ingest_state_db_path=tmp_path / "state.db",
+    )
+
+    started = []
+    async def fake_run_news_daily(c):
+        started.append("news-daily")
+        # Return immediately so TaskGroup completes.
+
+    monkeypatch.setattr(
+        "audio_ingest.orchestrator._run_news_daily_master_path",
+        fake_run_news_daily,
+    )
+    await run_daemon(cfg)
+    assert started == ["news-daily"]
