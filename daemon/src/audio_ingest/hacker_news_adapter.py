@@ -71,3 +71,29 @@ def _to_news_item(hn_item: dict[str, Any]) -> NewsItem:
             "hn-author": hn_item.get("by") or "",
         },
     )
+
+
+def _filter_items(
+    items: list[dict[str, Any]],
+    *,
+    min_points: int,
+    max_items: int,
+) -> list[dict[str, Any]]:
+    eligible: list[dict[str, Any]] = []
+    for it in items:
+        if it.get("dead") or it.get("deleted"):
+            continue
+        if it.get("type") != "story":
+            continue
+        score = it.get("score") or 0
+        if score < min_points:
+            continue
+        eligible.append(it)
+    eligible.sort(
+        key=lambda x: (
+            -(x.get("score") or 0),    # score desc
+            -(x.get("time") or 0),     # time desc (newer first)
+            int(x.get("id") or 0),     # id asc (deterministic)
+        ),
+    )
+    return eligible[:max_items]
