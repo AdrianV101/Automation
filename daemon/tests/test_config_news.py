@@ -18,9 +18,23 @@ def test_news_config_defaults_to_disabled(monkeypatch):
     monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "tok")
     monkeypatch.setenv("TELEGRAM_CHAT_ID", "chat")
     monkeypatch.setenv("PKM_VAULT_PATH", "/tmp/vault")
-    monkeypatch.delenv("NEWS_INGEST_ENABLED", raising=False)
-    monkeypatch.delenv("NEWS_TELEGRAM_TOPIC_ID", raising=False)
+    # Explicit setenv (not delenv) so a developer's local .env can't bleed in.
+    monkeypatch.setenv("NEWS_INGEST_ENABLED", "false")
+    monkeypatch.setenv("NEWS_IMAP_FOLDER", "News")
+    monkeypatch.setenv("NEWS_TELEGRAM_TOPIC_ID", "")
+    monkeypatch.setenv("NEWS_IMAP_USER", "")
     cfg = DaemonConfig.from_env()
     assert cfg.news_ingest_enabled is False
     assert cfg.news_telegram_topic_id is None
     assert cfg.news_imap_folder == "News"
+    assert cfg.news_imap_user == ""
+
+
+def test_news_imap_user_loads_from_env(monkeypatch):
+    """Proton Bridge split-mode gives each address its own IMAP user."""
+    monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "tok")
+    monkeypatch.setenv("TELEGRAM_CHAT_ID", "chat")
+    monkeypatch.setenv("PKM_VAULT_PATH", "/tmp/vault")
+    monkeypatch.setenv("NEWS_IMAP_USER", "news@veraz.dev")
+    cfg = DaemonConfig.from_env()
+    assert cfg.news_imap_user == "news@veraz.dev"

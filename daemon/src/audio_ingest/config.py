@@ -37,6 +37,9 @@ class DaemonConfig:
     news_ingest_enabled: bool = False
     news_imap_folder: str = "News"
     news_telegram_topic_id: int | None = None
+    # Proton Bridge "split" mode gives each address its own IMAP user; set this
+    # to news@<domain> in that case. Empty falls back to imap_user (combined mode).
+    news_imap_user: str = ""
     # Proton Mail Bridge on localhost requires STARTTLS upgrade and uses a
     # self-signed cert; defaults match that canonical deployment.
     imap_use_starttls: bool = True
@@ -104,6 +107,7 @@ class DaemonConfig:
         news_telegram_topic_id: int | None = (
             int(raw_news_topic) if raw_news_topic else None
         )
+        news_imap_user = os.environ.get("NEWS_IMAP_USER", "")
 
         return cls(
             telegram_bot_token=require("TELEGRAM_BOT_TOKEN"),
@@ -132,6 +136,7 @@ class DaemonConfig:
             news_ingest_enabled=news_ingest_enabled,
             news_imap_folder=news_imap_folder,
             news_telegram_topic_id=news_telegram_topic_id,
+            news_imap_user=news_imap_user,
         )
 
     def __post_init__(self) -> None:
