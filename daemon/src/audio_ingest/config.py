@@ -46,6 +46,10 @@ class DaemonConfig:
     news_daily_master_local_time: str = "06:00"
     news_daily_master_backfill_days: int = 3
     news_daily_master_model: str = "claude-opus-4-7"
+    # IANA tz (e.g. "Europe/London"). Empty falls back to system localtime,
+    # then UTC. Set explicitly when running on hosts without /etc/localtime
+    # or to override for testing.
+    news_daily_master_tz: str = ""
     news_daily_telegram_topic_id: int | None = None
     # Proton Mail Bridge on localhost requires STARTTLS upgrade and uses a
     # self-signed cert; defaults match that canonical deployment.
@@ -139,6 +143,7 @@ class DaemonConfig:
         news_daily_master_model = os.environ.get(
             "NEWS_DAILY_MASTER_MODEL", "claude-opus-4-7",
         )
+        news_daily_master_tz = os.environ.get("NEWS_DAILY_MASTER_TZ", "")
         raw_news_daily_topic = os.environ.get("NEWS_DAILY_TELEGRAM_TOPIC_ID")
         news_daily_telegram_topic_id: int | None = (
             int(raw_news_daily_topic) if raw_news_daily_topic else None
@@ -176,6 +181,7 @@ class DaemonConfig:
             news_daily_master_local_time=news_daily_master_local_time,
             news_daily_master_backfill_days=news_daily_master_backfill_days,
             news_daily_master_model=news_daily_master_model,
+            news_daily_master_tz=news_daily_master_tz,
             news_daily_telegram_topic_id=news_daily_telegram_topic_id,
         )
 

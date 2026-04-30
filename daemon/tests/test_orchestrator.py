@@ -222,3 +222,32 @@ async def test_run_daemon_starts_news_daily_master_when_enabled(
     )
     await run_daemon(cfg)
     assert started == ["news-daily"]
+
+
+class TestResolveNewsDailyTz:
+    """Coverage for the tz fallback chain: configured → localtime → UTC."""
+
+    def test_explicit_iana_zone_used_when_set(self) -> None:
+        from audio_ingest.orchestrator import _resolve_news_daily_tz
+        from zoneinfo import ZoneInfo
+        tz = _resolve_news_daily_tz("Europe/London")
+        assert isinstance(tz, ZoneInfo)
+        assert str(tz) == "Europe/London"
+
+    def test_invalid_iana_zone_falls_back_with_warning(
+        self, caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        from audio_ingest.orchestrator import _resolve_news_daily_tz
+        import logging
+        with caplog.at_level(logging.WARNING):
+            tz = _resolve_news_daily_tz("Not/A_Real_Zone")
+        assert tz is not None
+        # Either localtime or UTC, depending on host — but a warning was emitted.
+        assert any("Not/A_Real_Zone" in r.message for r in caplog.records)
+
+    def test_empty_string_uses_localtime_or_utc_fallback(self) -> None:
+        from audio_ingest.orchestrator import _resolve_news_daily_tz
+        tz = _resolve_news_daily_tz("")
+        # Don't pin to a specific zone — host-dependent. Just confirm we got
+        # something callable.
+        assert tz is not None

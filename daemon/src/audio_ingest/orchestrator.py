@@ -400,12 +400,7 @@ async def _run_news_daily_master_path(config: DaemonConfig) -> None:
 
     h, m = config.news_daily_master_local_time.split(":", 1)
     fire = _time(int(h), int(m))
-    # Use system local tz: zoneinfo.ZoneInfo(time.tzname[0]) is unreliable;
-    # let zoneinfo pick from /etc/localtime via ZoneInfo("localtime") fallback.
-    try:
-        tz = ZoneInfo("localtime")
-    except Exception:
-        tz = ZoneInfo("UTC")
+    tz = _resolve_news_daily_tz(config.news_daily_master_tz)
 
     sched = NewsDailyScheduler(
         db=db, run_for_date_fn=run_for_date_fn, notify=notify,
@@ -413,3 +408,33 @@ async def _run_news_daily_master_path(config: DaemonConfig) -> None:
         backfill_window_days=config.news_daily_master_backfill_days,
     )
     await sched.run_forever()
+
+
+def _resolve_news_daily_tz(configured_tz: str):
+    """Resolve the timezone for the news daily scheduler.
+
+    Order of preference: explicit `NEWS_DAILY_MASTER_TZ` (e.g. "Europe/London"),
+    then `localtime` (works on macOS/Linux where /etc/localtime is set), then
+    UTC as a last-resort fallback. Each fallback step is logged at WARNING so
+    operators see in startup logs why the scheduler may not be firing at the
+    wall-clock hour they expect.
+    """
+    from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
+
+    if configured_tz:
+        try:
+            return ZoneInfo(configured_tz)
+        except ZoneInfoNotFoundError:
+            log.warning(
+                "NEWS_DAILY_MASTER_TZ=%r is not a valid IANA zone; "
+                "falling back to system localtime",
+                configured_tz,
+            )
+    try:
+        return ZoneInfo("localtime")
+    except ZoneInfoNotFoundError:
+        log.warning(
+            "Could not resolve system localtime via ZoneInfo (no tzdata?); "
+            "falling back to UTC. Set NEWS_DAILY_MASTER_TZ to override.",
+        )
+        return ZoneInfo("UTC")
