@@ -334,7 +334,8 @@ async def _run_news_ingest_path(config: DaemonConfig) -> None:
 
     bridge_cfg = BridgeConfig(
         host=config.imap_host, port=config.imap_port,
-        user=config.imap_user, password=config.imap_password,
+        user=config.news_imap_user or config.imap_user,
+        password=config.imap_password,
         use_starttls=config.imap_use_starttls,
         ssl_verify=config.imap_ssl_verify,
     )
