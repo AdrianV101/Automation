@@ -154,6 +154,19 @@ async def run_for_date(
                 )
                 return
 
+        # Verification: agent's own self-check reports any skipped items.
+        if output.skipped_items:
+            await db.update_run(
+                target_date, status="failed_verification",
+                error="agent skipped items: " + "; ".join(output.skipped_items),
+            )
+            await notify(
+                f"⚠️ News master doc for {target_date.isoformat()} "
+                f"completed with skipped items:\n"
+                + "\n".join(f"- {s}" for s in output.skipped_items),
+            )
+            return
+
         await db.update_run(
             target_date, status="completed",
             master_path=str(master_path.relative_to(config.vault_root)),

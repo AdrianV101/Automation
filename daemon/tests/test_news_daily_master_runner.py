@@ -250,3 +250,42 @@ async def test_run_for_date_detects_notes_clobber(
     notifier.assert_awaited()
     msg = notifier.await_args.args[0]
     assert "notes" in msg.lower()
+
+
+@pytest.mark.asyncio
+async def test_run_for_date_verification_failure_when_agent_skipped_items(
+    db_path: Path, vault_root: Path, runner_cfg: RunnerConfig,
+) -> None:
+    db = NewsDailyMasterStateDB(db_path)
+    await db.init_db()
+    _seed_source_item(vault_root, date(2026, 4, 29), "item-a")
+    _seed_source_item(vault_root, date(2026, 4, 29), "item-b")
+
+    async def partial_agent(inp: AgentRunInput) -> AgentRunOutput:
+        # Agent reports success but skipped one item — represents a
+        # verification-failure mode (item-b was unparseable, etc.).
+        master_path = (
+            inp.vault_root / "01-Projects" / "News" / "daily"
+            / f"{inp.target_date.isoformat()}-master.md"
+        )
+        master_path.parent.mkdir(parents=True, exist_ok=True)
+        master_path.write_text(
+            f"# News Daily Master — {inp.target_date.isoformat()}\n\n"
+            "## AI\n- one item\n\n## Notes\n",
+        )
+        return AgentRunOutput(
+            success=True, item_count=1, categories=["AI"],
+            skipped_items=["item-b: unparseable body"],
+        )
+
+    notifier = AsyncMock()
+    await run_for_date(
+        date(2026, 4, 29),
+        db=db, config=runner_cfg,
+        run_agent=partial_agent, notify=notifier,
+    )
+
+    row = await db.get_run(date(2026, 4, 29))
+    assert row["status"] == "failed_verification"
+    assert "item-b" in (row["error"] or "")
+    notifier.assert_awaited()
