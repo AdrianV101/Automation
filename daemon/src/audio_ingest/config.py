@@ -35,7 +35,7 @@ class DaemonConfig:
     # News ingestion: separate IMAP IDLE connection to the same Bridge,
     # parallel `news_ingest_events` table, `uidnext:news` settings key.
     news_ingest_enabled: bool = False
-    news_imap_folder: str = "News"
+    news_imap_folder: str = "Folders/News"
     news_telegram_topic_id: int | None = None
     # Proton Bridge "split" mode gives each address its own IMAP user; set this
     # to news@<domain> in that case. Empty falls back to imap_user (combined mode).
@@ -102,7 +102,7 @@ class DaemonConfig:
         news_ingest_enabled = os.environ.get(
             "NEWS_INGEST_ENABLED", "false",
         ).lower() == "true"
-        news_imap_folder = os.environ.get("NEWS_IMAP_FOLDER", "News")
+        news_imap_folder = os.environ.get("NEWS_IMAP_FOLDER", "Folders/News")
         raw_news_topic = os.environ.get("NEWS_TELEGRAM_TOPIC_ID")
         news_telegram_topic_id: int | None = (
             int(raw_news_topic) if raw_news_topic else None
