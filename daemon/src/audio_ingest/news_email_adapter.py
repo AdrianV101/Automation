@@ -17,10 +17,17 @@ from email_ingest import (
     MalformedEmailError, NewsIngestStateDB, ParsedEmail, parse_email,
 )
 from markdownify import markdownify as _markdownify
-from news_pipeline import NewsItem, write_news_item
+from news_pipeline import NewsItem, SourceType, write_news_item
 
 TelegramNotifier = Callable[..., Awaitable[None]]
 _PREVIEW_CHARS = 200
+
+# Sender registered-domain → source_type. Subdomain matches walk to the
+# parent (`firstft@email.ft.com` resolves via `ft.com`). Anything not in
+# this map falls through to `"newsletter"`.
+_DOMAIN_SOURCE_TYPES: dict[str, SourceType] = {
+    "ft.com": "financial-times",
+}
 
 log = logging.getLogger(__name__)
 
@@ -54,6 +61,17 @@ def _strip_leading_view_in_browser(md: str) -> str:
 
 def _collapse_blank_lines(md: str) -> str:
     return re.sub(r"\n{3,}", "\n\n", md)
+
+
+def _classify_source_type(address: str) -> SourceType:
+    if "@" not in address:
+        return "newsletter"
+    domain = address.rsplit("@", 1)[-1].lower()
+    while "." in domain:
+        if domain in _DOMAIN_SOURCE_TYPES:
+            return _DOMAIN_SOURCE_TYPES[domain]
+        domain = domain.split(".", 1)[1]
+    return _DOMAIN_SOURCE_TYPES.get(domain, "newsletter")
 
 
 def _parse_sender(from_header: str) -> tuple[str, str]:
@@ -100,7 +118,7 @@ def email_to_news_item(parsed: ParsedEmail, body_md: str) -> NewsItem:
     return NewsItem(
         message_id=parsed.message_id,
         source=display,
-        source_type="newsletter",
+        source_type=_classify_source_type(address),
         source_address=address,
         subject=headers.get("Subject") or "",
         received_at=_parse_received_at(headers.get("Date") or ""),
