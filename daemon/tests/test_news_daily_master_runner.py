@@ -289,3 +289,86 @@ async def test_run_for_date_verification_failure_when_agent_skipped_items(
     assert row["status"] == "failed_verification"
     assert "item-b" in (row["error"] or "")
     notifier.assert_awaited()
+
+
+# ---------------------------------------------------------------------------
+# Task K: run_agent_via_agent_infra adapter tests
+# ---------------------------------------------------------------------------
+
+import json as _json_test
+from unittest.mock import patch
+
+from conftest import (
+    make_assistant_message,
+    MockAssistantMessage,
+    MockTextBlock,
+    MockToolUseBlock,
+)
+
+
+@pytest.mark.asyncio
+async def test_run_agent_via_agent_infra_parses_structured_summary(
+    tmp_path: Path,
+) -> None:
+    """Agent emits a JSON summary in its final text block; we parse it."""
+    from audio_ingest.news_daily_master.runner import run_agent_via_agent_infra
+
+    summary = {
+        "success": True,
+        "item_count": 3,
+        "categories": ["AI", "Tech"],
+        "new_categories": ["Climate"],
+        "skipped_items": [],
+    }
+    msg = make_assistant_message(text_blocks=[
+        "Working...",
+        f"```json\n{_json_test.dumps(summary)}\n```",
+    ])
+
+    async def fake_query(prompt, options):
+        yield msg
+
+    with (
+        patch("agent_infra.runner.query", side_effect=fake_query),
+        patch("agent_infra.runner.AssistantMessage", MockAssistantMessage),
+        patch("agent_infra.runner.TextBlock", MockTextBlock),
+        patch("agent_infra.runner.ToolUseBlock", MockToolUseBlock),
+    ):
+        inp = AgentRunInput(
+            target_date=date(2026, 4, 29),
+            vault_root=tmp_path,
+            model="claude-opus-4-7",
+        )
+        output = await run_agent_via_agent_infra(inp)
+
+    assert output.success is True
+    assert output.item_count == 3
+    assert output.categories == ["AI", "Tech"]
+    assert output.new_categories == ["Climate"]
+
+
+@pytest.mark.asyncio
+async def test_run_agent_via_agent_infra_handles_missing_summary(
+    tmp_path: Path,
+) -> None:
+    from audio_ingest.news_daily_master.runner import run_agent_via_agent_infra
+    msg = make_assistant_message(text_blocks=["I did stuff but no JSON."])
+
+    async def fake_query(prompt, options):
+        yield msg
+
+    with (
+        patch("agent_infra.runner.query", side_effect=fake_query),
+        patch("agent_infra.runner.AssistantMessage", MockAssistantMessage),
+        patch("agent_infra.runner.TextBlock", MockTextBlock),
+        patch("agent_infra.runner.ToolUseBlock", MockToolUseBlock),
+    ):
+        inp = AgentRunInput(
+            target_date=date(2026, 4, 29),
+            vault_root=tmp_path, model="claude-opus-4-7",
+        )
+        output = await run_agent_via_agent_infra(inp)
+
+    assert output.success is False
+    assert output.error is not None
+    assert "summary" in output.error.lower()

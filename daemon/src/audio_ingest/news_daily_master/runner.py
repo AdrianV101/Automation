@@ -9,6 +9,12 @@ from dataclasses import dataclass, field
 from datetime import date
 from pathlib import Path
 
+import json as _json
+import re as _re
+
+from agent_infra import build_agent_options, run_agent_loop_streaming
+
+from .prompt import build_runner_prompt
 from .state import NewsDailyMasterStateDB
 
 log = logging.getLogger(__name__)
@@ -190,3 +196,73 @@ async def run_for_date(
     await notify(
         f"⚠️ News daily master failed for {target_date.isoformat()}: {last_error}",
     )
+
+
+# ---------------------------------------------------------------------------
+# Concrete AgentRunFn — wires agent_infra to the news-daily-master skill
+# ---------------------------------------------------------------------------
+
+_JSON_BLOCK_RE = _re.compile(r"```json\s*(\{.*?\})\s*```", _re.DOTALL)
+
+
+def _parse_agent_summary(text_parts: list[str]) -> AgentRunOutput:
+    """Pull a structured summary out of the agent's text blocks.
+
+    Looks for the LAST fenced ```json``` block in the concatenated text.
+    The skill instructs the agent to emit one as its final action.
+    """
+    joined = "\n".join(text_parts)
+    matches = _JSON_BLOCK_RE.findall(joined)
+    if not matches:
+        return AgentRunOutput(
+            success=False, item_count=0,
+            error="no JSON summary block in agent output",
+            text=joined,
+        )
+    try:
+        data = _json.loads(matches[-1])
+    except _json.JSONDecodeError as exc:
+        return AgentRunOutput(
+            success=False, item_count=0,
+            error=f"invalid JSON summary: {exc}", text=joined,
+        )
+    return AgentRunOutput(
+        success=bool(data.get("success", False)),
+        item_count=int(data.get("item_count", 0)),
+        categories=list(data.get("categories", [])),
+        new_categories=list(data.get("new_categories", [])),
+        skipped_items=list(data.get("skipped_items", [])),
+        text=joined,
+        error=data.get("error"),
+    )
+
+
+async def run_agent_via_agent_infra(
+    inp: AgentRunInput,
+    *,
+    mcp_server_path: str | None = None,
+) -> AgentRunOutput:
+    """Concrete AgentRunFn that invokes the news-daily-master skill via Agent SDK.
+
+    System prompt is intentionally minimal: the procedural detail lives in
+    the skill, loaded via setting_sources=["project"].
+    """
+    options = build_agent_options(
+        system_prompt=(
+            "You are the news daily master agent. Follow the "
+            "news-daily-master skill exactly."
+        ),
+        pkm_vault_path=inp.vault_root,
+        model=inp.model,
+        setting_sources=["project"],
+        allow_skill_tool=True,
+        mcp_server_path=mcp_server_path,
+    )
+    prompt = build_runner_prompt(inp.target_date)
+    result = await run_agent_loop_streaming(prompt, options)
+    if result.error:
+        return AgentRunOutput(
+            success=False, item_count=0, error=result.error,
+            text="\n".join(result.text_parts),
+        )
+    return _parse_agent_summary(result.text_parts)
