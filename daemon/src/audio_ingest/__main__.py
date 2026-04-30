@@ -15,6 +15,12 @@ logging.basicConfig(
     format="%(asctime)s %(levelname)s %(name)s: %(message)s",
 )
 
+# httpx/httpcore log every request URL at INFO, which leaks the Telegram bot
+# token (embedded as a path component in api.telegram.org/bot<TOKEN>/...).
+# Bump them to WARNING so credentials don't end up in log files or backups.
+logging.getLogger("httpx").setLevel(logging.WARNING)
+logging.getLogger("httpcore").setLevel(logging.WARNING)
+
 log = logging.getLogger(__name__)
 
 
