@@ -1,0 +1,13 @@
+---
+type: news-item
+created: '2026-04-29'
+received-at: '2026-04-29T08:14:32+00:00'
+source: Newsletter HQ
+source-type: newsletter
+source-address: weekly@example-news.com
+subject: 'Weekly Roundup #42 — AI infrastructure'
+message-id: html-newsletter-001@example-news.com
+tags:
+- news
+- source-newsletter
+---

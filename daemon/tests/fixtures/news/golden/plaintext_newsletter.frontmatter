@@ -1,0 +1,13 @@
+---
+type: news-item
+created: '2026-04-29'
+received-at: '2026-04-29T09:00:00+00:00'
+source: plaintext-news.org
+source-type: newsletter
+source-address: hello@plaintext-news.org
+subject: Plaintext Daily 29 April
+message-id: plain-001@plaintext-news.org
+tags:
+- news
+- source-newsletter
+---
