@@ -102,3 +102,45 @@ class NewsDailyMasterStateDB:
             await db.commit()
             if cur.rowcount == 0:
                 raise KeyError(f"no run row for target_date={target_date.isoformat()!r}")
+
+    async def get_last_completed(self) -> date | None:
+        """Most recent target_date with a successful run.
+
+        'completed' and 'skipped_empty' both count — skipped_empty represents
+        a successful 'no items to digest' decision, not a failure.
+        """
+        async with aiosqlite.connect(self._path) as db:
+            async with db.execute(
+                "SELECT target_date FROM news_daily_master_runs "
+                "WHERE status IN ('completed', 'skipped_empty') "
+                "ORDER BY target_date DESC LIMIT 1",
+            ) as cur:
+                row = await cur.fetchone()
+                if row is None:
+                    return None
+                return date.fromisoformat(row[0])
+
+    async def get_missing_in_window(
+        self, start: date, end: date,
+    ) -> list[date]:
+        """Dates in [start, end] (inclusive) with no completed/skipped_empty run.
+
+        Returned in ascending order. Used for backfill on daemon boot.
+        """
+        if start > end:
+            return []
+        async with aiosqlite.connect(self._path) as db:
+            async with db.execute(
+                "SELECT target_date FROM news_daily_master_runs "
+                "WHERE status IN ('completed', 'skipped_empty') "
+                "AND target_date BETWEEN ? AND ?",
+                (_date_key(start), _date_key(end)),
+            ) as cur:
+                done = {date.fromisoformat(r[0]) for r in await cur.fetchall()}
+        result: list[date] = []
+        cur_date = start
+        while cur_date <= end:
+            if cur_date not in done:
+                result.append(cur_date)
+            cur_date = date.fromordinal(cur_date.toordinal() + 1)
+        return result

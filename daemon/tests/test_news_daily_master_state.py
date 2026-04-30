@@ -112,3 +112,57 @@ async def test_update_run_missing_row_raises(db_path: Path) -> None:
     await db.init_db()
     with pytest.raises(KeyError):
         await db.update_run(date(2026, 4, 29), status="completed")
+
+
+@pytest.mark.asyncio
+async def test_get_last_completed_none_when_empty(db_path: Path) -> None:
+    db = NewsDailyMasterStateDB(db_path)
+    await db.init_db()
+    assert await db.get_last_completed() is None
+
+
+@pytest.mark.asyncio
+async def test_get_last_completed_returns_most_recent(db_path: Path) -> None:
+    db = NewsDailyMasterStateDB(db_path)
+    await db.init_db()
+    for d in [date(2026, 4, 27), date(2026, 4, 28), date(2026, 4, 29)]:
+        await db.insert_run(d)
+        await db.update_run(d, status="completed", master_path=f"x/{d}.md")
+    assert await db.get_last_completed() == date(2026, 4, 29)
+
+
+@pytest.mark.asyncio
+async def test_get_last_completed_ignores_non_completed(db_path: Path) -> None:
+    """failed must not count as 'completed' for backfill purposes."""
+    db = NewsDailyMasterStateDB(db_path)
+    await db.init_db()
+    await db.insert_run(date(2026, 4, 29))
+    await db.update_run(date(2026, 4, 29), status="failed", error="x")
+    assert await db.get_last_completed() is None
+
+
+@pytest.mark.asyncio
+async def test_get_last_completed_includes_skipped_empty(db_path: Path) -> None:
+    """skipped_empty IS a successful 'nothing to do' — counts for backfill cursor."""
+    db = NewsDailyMasterStateDB(db_path)
+    await db.init_db()
+    await db.insert_run(date(2026, 4, 29))
+    await db.update_run(date(2026, 4, 29), status="skipped_empty")
+    assert await db.get_last_completed() == date(2026, 4, 29)
+
+
+@pytest.mark.asyncio
+async def test_get_missing_in_window_returns_dates_with_no_completed_run(db_path: Path) -> None:
+    db = NewsDailyMasterStateDB(db_path)
+    await db.init_db()
+    # Mark one date as completed.
+    await db.insert_run(date(2026, 4, 27))
+    await db.update_run(date(2026, 4, 27), status="completed", master_path="x")
+    # Mark one as failed (still missing).
+    await db.insert_run(date(2026, 4, 28))
+    await db.update_run(date(2026, 4, 28), status="failed", error="x")
+    # 2026-04-29 not yet attempted.
+    missing = await db.get_missing_in_window(
+        start=date(2026, 4, 27), end=date(2026, 4, 29),
+    )
+    assert missing == [date(2026, 4, 28), date(2026, 4, 29)]
