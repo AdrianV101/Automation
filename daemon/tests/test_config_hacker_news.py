@@ -1,7 +1,9 @@
+import pytest
+
 from audio_ingest.config import DaemonConfig
 
 
-def _base_env(monkeypatch):
+def _base_env(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "tok")
     monkeypatch.setenv("TELEGRAM_CHAT_ID", "chat")
     monkeypatch.setenv("PKM_VAULT_PATH", "/tmp/vault")
@@ -37,6 +39,5 @@ def test_hacker_news_invalid_local_time_raises(monkeypatch):
     _base_env(monkeypatch)
     monkeypatch.setenv("HACKER_NEWS_ENABLED", "true")
     monkeypatch.setenv("HACKER_NEWS_LOCAL_TIME", "25:99")
-    import pytest
     with pytest.raises(ValueError, match="HACKER_NEWS_LOCAL_TIME"):
         DaemonConfig.from_env()
