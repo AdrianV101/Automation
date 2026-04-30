@@ -129,3 +129,106 @@ class TestComputeOlderThanWindow:
             last_completed=date(2026, 4, 28), today=today, window_days=3,
         )
         assert out == []
+
+
+# ---------------------------------------------------------------------------
+# NewsDailyScheduler tests
+# ---------------------------------------------------------------------------
+
+import asyncio
+from unittest.mock import AsyncMock
+
+from audio_ingest.news_daily_master.scheduler import NewsDailyScheduler
+from audio_ingest.news_daily_master.state import NewsDailyMasterStateDB
+
+
+@pytest.fixture
+def state_db_path(tmp_path):
+    return tmp_path / "state.db"
+
+
+@pytest.mark.asyncio
+async def test_scheduler_run_once_executes_yesterday(
+    monkeypatch: pytest.MonkeyPatch, state_db_path,
+) -> None:
+    """Manual single-shot helper: runs `run_for_date(yesterday)` once."""
+    db = NewsDailyMasterStateDB(state_db_path)
+    await db.init_db()
+
+    runs: list[date] = []
+    async def fake_run(d: date) -> None:
+        runs.append(d)
+
+    sched = NewsDailyScheduler(
+        db=db, run_for_date_fn=fake_run,
+        notify=AsyncMock(),
+        fire_time=time(6, 0), tz=ZoneInfo("UTC"),
+        backfill_window_days=3,
+    )
+
+    fixed_now = datetime(2026, 4, 30, 6, 1, tzinfo=ZoneInfo("UTC"))
+    await sched.run_once(now=fixed_now)
+    assert runs == [date(2026, 4, 29)]
+
+
+@pytest.mark.asyncio
+async def test_scheduler_backfill_runs_missing_dates_in_order(
+    state_db_path,
+) -> None:
+    db = NewsDailyMasterStateDB(state_db_path)
+    await db.init_db()
+
+    runs: list[date] = []
+    async def fake_run(d: date) -> None:
+        runs.append(d)
+        await db.insert_run(d)
+        await db.update_run(d, status="completed", master_path=str(d))
+
+    sched = NewsDailyScheduler(
+        db=db, run_for_date_fn=fake_run,
+        notify=AsyncMock(),
+        fire_time=time(6, 0), tz=ZoneInfo("UTC"),
+        backfill_window_days=3,
+    )
+
+    fixed_now = datetime(2026, 4, 30, 6, 1, tzinfo=ZoneInfo("UTC"))
+    await sched.run_backfill(now=fixed_now)
+    # Cold start: backfill 27, 28, 29 (window=3), in ascending order.
+    assert runs == [date(2026, 4, 27), date(2026, 4, 28), date(2026, 4, 29)]
+
+
+@pytest.mark.asyncio
+async def test_scheduler_backfill_emits_older_than_window_notice(
+    state_db_path,
+) -> None:
+    db = NewsDailyMasterStateDB(state_db_path)
+    await db.init_db()
+    # last_completed = 2026-04-20 — 9 days behind today (2026-04-30).
+    await db.insert_run(date(2026, 4, 20))
+    await db.update_run(
+        date(2026, 4, 20), status="completed", master_path="x",
+    )
+
+    runs: list[date] = []
+    async def fake_run(d: date) -> None:
+        runs.append(d)
+        await db.insert_run(d)
+        await db.update_run(d, status="completed", master_path=str(d))
+
+    notifier = AsyncMock()
+    sched = NewsDailyScheduler(
+        db=db, run_for_date_fn=fake_run, notify=notifier,
+        fire_time=time(6, 0), tz=ZoneInfo("UTC"),
+        backfill_window_days=3,
+    )
+
+    fixed_now = datetime(2026, 4, 30, 6, 1, tzinfo=ZoneInfo("UTC"))
+    await sched.run_backfill(now=fixed_now)
+
+    # Backfilled within window: 27, 28, 29 (3 days).
+    assert runs == [date(2026, 4, 27), date(2026, 4, 28), date(2026, 4, 29)]
+    # Notifier called once with the older-than-window list.
+    notifier.assert_awaited_once()
+    msg = notifier.await_args.args[0]
+    assert "2026-04-21" in msg
+    assert "2026-04-26" in msg
