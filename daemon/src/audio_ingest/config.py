@@ -51,6 +51,13 @@ class DaemonConfig:
     # or to override for testing.
     news_daily_master_tz: str = ""
     news_daily_telegram_topic_id: int | None = None
+    # Hacker News source (daily HTTP poll of Firebase HN API).
+    # See 01-Projects/Automation/development/designs/2026-05-01-news-source-hacker-news-design.md.
+    hacker_news_enabled: bool = False
+    hacker_news_local_time: str = "05:30"
+    hacker_news_min_points: int = 100
+    hacker_news_max_items: int = 25
+    hacker_news_topstories_pool: int = 50
     # Proton Mail Bridge on localhost requires STARTTLS upgrade and uses a
     # self-signed cert; defaults match that canonical deployment.
     imap_use_starttls: bool = True
@@ -149,6 +156,32 @@ class DaemonConfig:
             int(raw_news_daily_topic) if raw_news_daily_topic else None
         )
 
+        hacker_news_enabled = (
+            os.environ.get("HACKER_NEWS_ENABLED", "false").lower() == "true"
+        )
+        hacker_news_local_time = os.environ.get(
+            "HACKER_NEWS_LOCAL_TIME", "05:30",
+        )
+        if hacker_news_enabled:
+            try:
+                from datetime import time as _time
+                _h, _m = hacker_news_local_time.split(":", 1)
+                _time(int(_h), int(_m))
+            except (ValueError, TypeError) as exc:
+                raise ValueError(
+                    f"HACKER_NEWS_LOCAL_TIME must be HH:MM in 24h format, "
+                    f"got {hacker_news_local_time!r}: {exc}",
+                ) from exc
+        hacker_news_min_points = typed_env(
+            "HACKER_NEWS_MIN_POINTS", "100", int,
+        )
+        hacker_news_max_items = typed_env(
+            "HACKER_NEWS_MAX_ITEMS", "25", int,
+        )
+        hacker_news_topstories_pool = typed_env(
+            "HACKER_NEWS_TOPSTORIES_POOL", "50", int,
+        )
+
         return cls(
             telegram_bot_token=require("TELEGRAM_BOT_TOKEN"),
             telegram_chat_id=require("TELEGRAM_CHAT_ID"),
@@ -183,6 +216,11 @@ class DaemonConfig:
             news_daily_master_model=news_daily_master_model,
             news_daily_master_tz=news_daily_master_tz,
             news_daily_telegram_topic_id=news_daily_telegram_topic_id,
+            hacker_news_enabled=hacker_news_enabled,
+            hacker_news_local_time=hacker_news_local_time,
+            hacker_news_min_points=hacker_news_min_points,
+            hacker_news_max_items=hacker_news_max_items,
+            hacker_news_topstories_pool=hacker_news_topstories_pool,
         )
 
     def __post_init__(self) -> None:
