@@ -167,3 +167,86 @@ async def test_run_for_date_agent_returns_failure(
     notifier.assert_awaited()
     err_msg = notifier.await_args.args[0]
     assert "failed" in err_msg.lower()
+
+
+import hashlib
+
+
+def _seed_master_doc_with_notes(
+    vault_root: Path, target_date: date, notes_body: str,
+) -> Path:
+    daily = vault_root / "01-Projects" / "News" / "daily"
+    daily.mkdir(parents=True, exist_ok=True)
+    p = daily / f"{target_date.isoformat()}-master.md"
+    p.write_text(
+        f"# News Daily Master — {target_date.isoformat()}\n\n"
+        "## AI\n- existing item\n\n"
+        f"## Notes\n{notes_body}\n",
+    )
+    return p
+
+
+@pytest.mark.asyncio
+async def test_run_for_date_preserves_notes_section(
+    db_path: Path, vault_root: Path, runner_cfg: RunnerConfig,
+) -> None:
+    db = NewsDailyMasterStateDB(db_path)
+    await db.init_db()
+    _seed_source_item(vault_root, date(2026, 4, 29), "item-a")
+    notes_body = "Adrian's annotation about today's items.\n"
+    master_path = _seed_master_doc_with_notes(
+        vault_root, date(2026, 4, 29), notes_body,
+    )
+
+    async def good_agent(inp: AgentRunInput) -> AgentRunOutput:
+        # Simulate agent rewriting body but leaving Notes alone.
+        master_path.write_text(
+            f"# News Daily Master — {inp.target_date.isoformat()}\n\n"
+            "## AI\n- new item\n\n"
+            f"## Notes\n{notes_body}\n",
+        )
+        return AgentRunOutput(success=True, item_count=1, categories=["AI"])
+
+    notifier = AsyncMock()
+    await run_for_date(
+        date(2026, 4, 29),
+        db=db, config=runner_cfg,
+        run_agent=good_agent, notify=notifier,
+    )
+
+    row = await db.get_run(date(2026, 4, 29))
+    assert row["status"] == "completed"
+
+
+@pytest.mark.asyncio
+async def test_run_for_date_detects_notes_clobber(
+    db_path: Path, vault_root: Path, runner_cfg: RunnerConfig,
+) -> None:
+    db = NewsDailyMasterStateDB(db_path)
+    await db.init_db()
+    _seed_source_item(vault_root, date(2026, 4, 29), "item-a")
+    master_path = _seed_master_doc_with_notes(
+        vault_root, date(2026, 4, 29), "Original annotation.\n",
+    )
+
+    async def clobbering_agent(inp: AgentRunInput) -> AgentRunOutput:
+        # Agent (incorrectly) overwrites the Notes section.
+        master_path.write_text(
+            f"# News Daily Master — {inp.target_date.isoformat()}\n\n"
+            "## AI\n- new item\n\n"
+            "## Notes\nClobbered by agent.\n",
+        )
+        return AgentRunOutput(success=True, item_count=1, categories=["AI"])
+
+    notifier = AsyncMock()
+    await run_for_date(
+        date(2026, 4, 29),
+        db=db, config=runner_cfg,
+        run_agent=clobbering_agent, notify=notifier,
+    )
+
+    row = await db.get_run(date(2026, 4, 29))
+    assert row["status"] == "failed_notes_clobbered"
+    notifier.assert_awaited()
+    msg = notifier.await_args.args[0]
+    assert "notes" in msg.lower()

@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import logging
+import re
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from datetime import date
@@ -56,6 +58,32 @@ def _master_doc_path(vault_root: Path, target_date: date) -> Path:
     )
 
 
+_NOTES_HEADING_RE = re.compile(
+    r"^##\s+Notes\s*$", re.MULTILINE,
+)
+
+
+def _extract_notes_section(master_text: str) -> str:
+    """Return the substring from '## Notes' to EOF, or '' if no such heading.
+
+    Whitespace around the heading is preserved verbatim — the SHA must change
+    if a single byte changes inside (or just before) the section.
+    """
+    match = _NOTES_HEADING_RE.search(master_text)
+    if not match:
+        return ""
+    return master_text[match.start():]
+
+
+def _hash_notes_section(master_path: Path) -> str | None:
+    """SHA256 of the '## Notes' section of the master doc, or None if no doc."""
+    if not master_path.is_file():
+        return None
+    body = master_path.read_text()
+    section = _extract_notes_section(body)
+    return hashlib.sha256(section.encode("utf-8")).hexdigest()
+
+
 def _has_source_items(vault_root: Path, target_date: date) -> bool:
     folder = _source_folder(vault_root, target_date)
     if not folder.is_dir():
@@ -84,6 +112,10 @@ async def run_for_date(
         await db.update_run(target_date, status="skipped_empty")
         return
 
+    # Snapshot Notes section BEFORE the agent run so we can detect clobbering.
+    master_path = _master_doc_path(config.vault_root, target_date)
+    notes_hash_before = _hash_notes_section(master_path)
+
     last_error: str | None = None
     backoffs = config.retry_backoff_seconds or (0.0,)
     for attempt, wait_s in enumerate(backoffs, start=1):
@@ -103,27 +135,40 @@ async def run_for_date(
             last_error = f"agent_exception: {exc}"
             continue
 
-        if output.success:
-            master_path = _master_doc_path(config.vault_root, target_date)
-            await db.update_run(
-                target_date, status="completed",
-                master_path=str(
-                    master_path.relative_to(config.vault_root),
-                ),
-                item_count=output.item_count,
-            )
-            await notify(
-                f"📰 News daily master ready — {target_date.isoformat()} "
-                f"({output.item_count} items across "
-                f"{len(output.categories)} categories)"
-                + (
-                    f"\nNew categories: {', '.join(output.new_categories)}"
-                    if output.new_categories else ""
-                ),
-            )
-            return
+        if not output.success:
+            last_error = output.error or "agent_returned_unsuccessful"
+            continue
 
-        last_error = output.error or "agent_returned_unsuccessful"
+        # Verify the Notes section if it existed before.
+        if notes_hash_before is not None:
+            notes_hash_after = _hash_notes_section(master_path)
+            if notes_hash_after != notes_hash_before:
+                await db.update_run(
+                    target_date, status="failed_notes_clobbered",
+                    error="agent modified ## Notes section",
+                )
+                await notify(
+                    f"⚠️ News master doc for {target_date.isoformat()} "
+                    "rejected: agent modified the ## Notes section. "
+                    "Master doc may need manual revert.",
+                )
+                return
+
+        await db.update_run(
+            target_date, status="completed",
+            master_path=str(master_path.relative_to(config.vault_root)),
+            item_count=output.item_count,
+        )
+        await notify(
+            f"📰 News daily master ready — {target_date.isoformat()} "
+            f"({output.item_count} items across "
+            f"{len(output.categories)} categories)"
+            + (
+                f"\nNew categories: {', '.join(output.new_categories)}"
+                if output.new_categories else ""
+            ),
+        )
+        return
 
     # All attempts exhausted.
     await db.update_run(
