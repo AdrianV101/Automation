@@ -54,3 +54,78 @@ class TestSecondsUntilNextFire:
         secs = seconds_until_next_fire(now, fire_time=time(6, 0), tz=tz)
         assert isinstance(secs, float)
         assert secs > 0
+
+
+from audio_ingest.news_daily_master.scheduler import compute_backfill_dates
+
+
+class TestComputeBackfillDates:
+    def test_no_state_backfills_nothing_in_first_window(self) -> None:
+        """With no prior runs, scheduler runs only yesterday at first fire.
+
+        Backfill is bounded by both 'after last_completed' AND 'within window'.
+        With no last_completed, we conservatively still bound to the window
+        and let the first scheduled fire handle yesterday.
+        """
+        today = date(2026, 4, 30)
+        out = compute_backfill_dates(
+            last_completed=None, today=today, window_days=3,
+        )
+        # Returns dates in [today - window_days, yesterday] that need running.
+        # With no last_completed, all of those are "missing".
+        assert out == [
+            date(2026, 4, 27), date(2026, 4, 28), date(2026, 4, 29),
+        ]
+
+    def test_skips_already_completed_dates(self) -> None:
+        today = date(2026, 4, 30)
+        out = compute_backfill_dates(
+            last_completed=date(2026, 4, 28), today=today, window_days=3,
+        )
+        # last_completed=2026-04-28 means 27 and 28 are done.
+        # Only 29 (yesterday) is missing within the 3-day window.
+        assert out == [date(2026, 4, 29)]
+
+    def test_returns_empty_when_caught_up(self) -> None:
+        today = date(2026, 4, 30)
+        out = compute_backfill_dates(
+            last_completed=date(2026, 4, 29), today=today, window_days=3,
+        )
+        assert out == []
+
+    def test_clamps_to_window(self) -> None:
+        """If daemon was offline a week, only the last 3 days are backfilled."""
+        today = date(2026, 4, 30)
+        out = compute_backfill_dates(
+            last_completed=date(2026, 4, 20), today=today, window_days=3,
+        )
+        assert out == [
+            date(2026, 4, 27), date(2026, 4, 28), date(2026, 4, 29),
+        ]
+
+
+class TestComputeOlderThanWindow:
+    def test_lists_dates_older_than_window(self) -> None:
+        from audio_ingest.news_daily_master.scheduler import (
+            compute_older_than_window,
+        )
+        today = date(2026, 4, 30)
+        out = compute_older_than_window(
+            last_completed=date(2026, 4, 20), today=today, window_days=3,
+        )
+        # Days older than window: 21..26 (between last_completed+1 and
+        # window-start-1).
+        assert out == [
+            date(2026, 4, 21), date(2026, 4, 22), date(2026, 4, 23),
+            date(2026, 4, 24), date(2026, 4, 25), date(2026, 4, 26),
+        ]
+
+    def test_returns_empty_when_within_window(self) -> None:
+        from audio_ingest.news_daily_master.scheduler import (
+            compute_older_than_window,
+        )
+        today = date(2026, 4, 30)
+        out = compute_older_than_window(
+            last_completed=date(2026, 4, 28), today=today, window_days=3,
+        )
+        assert out == []

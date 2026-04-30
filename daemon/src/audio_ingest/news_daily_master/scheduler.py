@@ -36,3 +36,48 @@ def seconds_until_next_fire(
         next_fire = today_fire
     delta = next_fire - now_local
     return delta.total_seconds()
+
+
+def compute_backfill_dates(
+    *, last_completed: date | None, today: date, window_days: int,
+) -> list[date]:
+    """Dates in [today - window_days, yesterday] that need a run.
+
+    Excludes dates <= last_completed (already done). Returned ascending.
+    """
+    yesterday = today - timedelta(days=1)
+    window_start = today - timedelta(days=window_days)
+    cursor_start = window_start
+    if last_completed is not None and last_completed >= window_start:
+        cursor_start = last_completed + timedelta(days=1)
+    if cursor_start > yesterday:
+        return []
+    out: list[date] = []
+    d = cursor_start
+    while d <= yesterday:
+        out.append(d)
+        d += timedelta(days=1)
+    return out
+
+
+def compute_older_than_window(
+    *, last_completed: date | None, today: date, window_days: int,
+) -> list[date]:
+    """Dates between (last_completed+1) and window_start-1, exclusive of window.
+
+    These are days that won't be backfilled (too old). Returned ascending.
+    Empty if last_completed is None (no notion of 'newly missed' from cold start).
+    """
+    if last_completed is None:
+        return []
+    window_start = today - timedelta(days=window_days)
+    cursor_start = last_completed + timedelta(days=1)
+    cursor_end = window_start - timedelta(days=1)
+    if cursor_start > cursor_end:
+        return []
+    out: list[date] = []
+    d = cursor_start
+    while d <= cursor_end:
+        out.append(d)
+        d += timedelta(days=1)
+    return out
