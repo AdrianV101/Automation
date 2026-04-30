@@ -56,3 +56,59 @@ def test_valid_statuses_constant() -> None:
         "running", "completed", "skipped_empty",
         "failed", "failed_verification", "failed_notes_clobbered",
     })
+
+
+@pytest.mark.asyncio
+async def test_update_run_completed_with_fields(db_path: Path) -> None:
+    db = NewsDailyMasterStateDB(db_path)
+    await db.init_db()
+    await db.insert_run(date(2026, 4, 29))
+    await db.update_run(
+        date(2026, 4, 29),
+        status="completed",
+        master_path="01-Projects/News/daily/2026-04-29-master.md",
+        item_count=14,
+    )
+    row = await db.get_run(date(2026, 4, 29))
+    assert row["status"] == "completed"
+    assert row["master_path"] == "01-Projects/News/daily/2026-04-29-master.md"
+    assert row["item_count"] == 14
+    assert row["completed_at"] is not None
+
+
+@pytest.mark.asyncio
+async def test_update_run_failed_records_error(db_path: Path) -> None:
+    db = NewsDailyMasterStateDB(db_path)
+    await db.init_db()
+    await db.insert_run(date(2026, 4, 29))
+    await db.update_run(date(2026, 4, 29), status="failed", error="model timeout")
+    row = await db.get_run(date(2026, 4, 29))
+    assert row["status"] == "failed"
+    assert row["error"] == "model timeout"
+    assert row["completed_at"] is not None
+
+
+@pytest.mark.asyncio
+async def test_update_run_invalid_status_raises(db_path: Path) -> None:
+    db = NewsDailyMasterStateDB(db_path)
+    await db.init_db()
+    await db.insert_run(date(2026, 4, 29))
+    with pytest.raises(ValueError, match="invalid status"):
+        await db.update_run(date(2026, 4, 29), status="bogus")
+
+
+@pytest.mark.asyncio
+async def test_update_run_unknown_field_raises(db_path: Path) -> None:
+    db = NewsDailyMasterStateDB(db_path)
+    await db.init_db()
+    await db.insert_run(date(2026, 4, 29))
+    with pytest.raises(ValueError, match="unknown columns"):
+        await db.update_run(date(2026, 4, 29), status="completed", bogus_field="x")
+
+
+@pytest.mark.asyncio
+async def test_update_run_missing_row_raises(db_path: Path) -> None:
+    db = NewsDailyMasterStateDB(db_path)
+    await db.init_db()
+    with pytest.raises(KeyError):
+        await db.update_run(date(2026, 4, 29), status="completed")

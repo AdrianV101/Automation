@@ -75,3 +75,30 @@ class NewsDailyMasterStateDB:
             ) as cur:
                 row = await cur.fetchone()
                 return dict(row) if row else None
+
+    async def update_run(
+        self, target_date: date, status: str, **fields: Any,
+    ) -> None:
+        if status not in NEWS_DAILY_MASTER_VALID_STATUSES:
+            raise ValueError(f"invalid status {status!r}")
+        bad = set(fields) - _UPDATABLE_COLUMNS
+        if bad:
+            raise ValueError(f"unknown columns: {sorted(bad)}")
+        cols = ["status = ?"]
+        params: list[Any] = [status]
+        for key, value in fields.items():
+            cols.append(f"{key} = ?")
+            params.append(value)
+        if status in _TERMINAL_STATUSES:
+            cols.append("completed_at = ?")
+            params.append(_now_iso())
+        params.append(_date_key(target_date))
+        async with aiosqlite.connect(self._path) as db:
+            cur = await db.execute(
+                f"UPDATE news_daily_master_runs SET {', '.join(cols)} "
+                f"WHERE target_date = ?",
+                params,
+            )
+            await db.commit()
+            if cur.rowcount == 0:
+                raise KeyError(f"no run row for target_date={target_date.isoformat()!r}")
