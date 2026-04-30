@@ -1,0 +1,9 @@
+From: nobody@example.com
+To: news@veraz.dev
+Subject: empty body test
+Date: Wed, 29 Apr 2026 11:00:00 +0000
+Message-ID: <empty-001@example.com>
+MIME-Version: 1.0
+Content-Type: text/html; charset="utf-8"
+
+

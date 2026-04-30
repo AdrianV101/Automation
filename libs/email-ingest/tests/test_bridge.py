@@ -24,8 +24,9 @@ async def test_bridge_login_and_select(fake_server: FakeImapServer) -> None:
     )
     bridge = ImapBridge(cfg)
     async with bridge.connect() as conn:
-        uidnext = await conn.select_inbox()
+        uidnext = await conn.select_folder()
         assert uidnext >= 1
+    assert fake_server.selected_folders == ["INBOX"]
 
 
 async def test_bridge_fetch_raw(fake_server: FakeImapServer) -> None:
@@ -36,9 +37,21 @@ async def test_bridge_fetch_raw(fake_server: FakeImapServer) -> None:
     )
     bridge = ImapBridge(cfg)
     async with bridge.connect() as conn:
-        await conn.select_inbox()
+        await conn.select_folder()
         raw = await conn.fetch_raw(uid=1)
         assert b"Subject: hi" in raw
+
+
+async def test_bridge_select_named_folder(fake_server: FakeImapServer) -> None:
+    cfg = BridgeConfig(
+        host="127.0.0.1", port=fake_server.port,
+        user=fake_server.username, password=fake_server.password,
+    )
+    bridge = ImapBridge(cfg)
+    async with bridge.connect() as conn:
+        uidnext = await conn.select_folder("News")
+        assert uidnext >= 1
+    assert "News" in fake_server.selected_folders
 
 
 async def test_bridge_invokes_starttls_when_configured(

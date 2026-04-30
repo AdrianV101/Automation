@@ -80,10 +80,10 @@ class _BridgeConnection:
         self._client = client
         self._uidnext: int | None = None
 
-    async def select_inbox(self) -> int:
-        result = await self._client.select("INBOX")
+    async def select_folder(self, name: str = "INBOX") -> int:
+        result = await self._client.select(name)
         if result.result != "OK":
-            raise ImapConnectionError(f"SELECT failed: {result}")
+            raise ImapConnectionError(f"SELECT {name} failed: {result}")
         for line in result.lines:
             text = line.decode() if isinstance(line, (bytes, bytearray)) else line
             if "UIDNEXT" in text:
