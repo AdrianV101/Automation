@@ -40,6 +40,13 @@ class DaemonConfig:
     # Proton Bridge "split" mode gives each address its own IMAP user; set this
     # to news@<domain> in that case. Empty falls back to imap_user (combined mode).
     news_imap_user: str = ""
+    # News daily master agent (in-daemon scheduler under launchd).
+    # See ADR-005 in 01-Projects/Automation/development/decisions/.
+    news_daily_master_enabled: bool = False
+    news_daily_master_local_time: str = "06:00"
+    news_daily_master_backfill_days: int = 3
+    news_daily_master_model: str = "claude-opus-4-7"
+    news_daily_telegram_topic_id: int | None = None
     # Proton Mail Bridge on localhost requires STARTTLS upgrade and uses a
     # self-signed cert; defaults match that canonical deployment.
     imap_use_starttls: bool = True
@@ -109,6 +116,34 @@ class DaemonConfig:
         )
         news_imap_user = os.environ.get("NEWS_IMAP_USER", "")
 
+        news_daily_master_enabled = (
+            os.environ.get("NEWS_DAILY_MASTER_ENABLED", "false").lower() == "true"
+        )
+        news_daily_master_local_time = os.environ.get(
+            "NEWS_DAILY_MASTER_LOCAL_TIME", "06:00",
+        )
+        # Validate format HH:MM with hour 0-23, minute 0-59.
+        if news_daily_master_enabled:
+            try:
+                from datetime import time as _time
+                _h, _m = news_daily_master_local_time.split(":", 1)
+                _time(int(_h), int(_m))
+            except (ValueError, TypeError) as exc:
+                raise ValueError(
+                    f"NEWS_DAILY_MASTER_LOCAL_TIME must be HH:MM in 24h "
+                    f"format, got {news_daily_master_local_time!r}: {exc}",
+                ) from exc
+        news_daily_master_backfill_days = typed_env(
+            "NEWS_DAILY_MASTER_BACKFILL_DAYS", "3", int,
+        )
+        news_daily_master_model = os.environ.get(
+            "NEWS_DAILY_MASTER_MODEL", "claude-opus-4-7",
+        )
+        raw_news_daily_topic = os.environ.get("NEWS_DAILY_TELEGRAM_TOPIC_ID")
+        news_daily_telegram_topic_id: int | None = (
+            int(raw_news_daily_topic) if raw_news_daily_topic else None
+        )
+
         return cls(
             telegram_bot_token=require("TELEGRAM_BOT_TOKEN"),
             telegram_chat_id=require("TELEGRAM_CHAT_ID"),
@@ -137,6 +172,11 @@ class DaemonConfig:
             news_imap_folder=news_imap_folder,
             news_telegram_topic_id=news_telegram_topic_id,
             news_imap_user=news_imap_user,
+            news_daily_master_enabled=news_daily_master_enabled,
+            news_daily_master_local_time=news_daily_master_local_time,
+            news_daily_master_backfill_days=news_daily_master_backfill_days,
+            news_daily_master_model=news_daily_master_model,
+            news_daily_telegram_topic_id=news_daily_telegram_topic_id,
         )
 
     def __post_init__(self) -> None:
