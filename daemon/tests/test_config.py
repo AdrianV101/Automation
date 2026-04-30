@@ -120,3 +120,41 @@ def test_daemon_config_rejects_zero_concurrent_dispatch() -> None:
             pkm_vault_path=Path("/tmp"),
             max_concurrent_dispatch=0,
         )
+
+
+def _set_required_env(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "x")
+    monkeypatch.setenv("TELEGRAM_CHAT_ID", "y")
+    monkeypatch.setenv("PKM_VAULT_PATH", str(tmp_path))
+
+
+class TestNewsDailyMasterConfig:
+    def test_defaults_when_unset(self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+        _set_required_env(monkeypatch, tmp_path)
+        cfg = DaemonConfig.from_env()
+        assert cfg.news_daily_master_enabled is False
+        assert cfg.news_daily_master_local_time == "06:00"
+        assert cfg.news_daily_master_backfill_days == 3
+        assert cfg.news_daily_master_model == "claude-opus-4-7"
+        assert cfg.news_daily_telegram_topic_id is None
+
+    def test_reads_env_vars(self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+        _set_required_env(monkeypatch, tmp_path)
+        monkeypatch.setenv("NEWS_DAILY_MASTER_ENABLED", "true")
+        monkeypatch.setenv("NEWS_DAILY_MASTER_LOCAL_TIME", "07:30")
+        monkeypatch.setenv("NEWS_DAILY_MASTER_BACKFILL_DAYS", "5")
+        monkeypatch.setenv("NEWS_DAILY_MASTER_MODEL", "claude-opus-4-7")
+        monkeypatch.setenv("NEWS_DAILY_TELEGRAM_TOPIC_ID", "987")
+        cfg = DaemonConfig.from_env()
+        assert cfg.news_daily_master_enabled is True
+        assert cfg.news_daily_master_local_time == "07:30"
+        assert cfg.news_daily_master_backfill_days == 5
+        assert cfg.news_daily_master_model == "claude-opus-4-7"
+        assert cfg.news_daily_telegram_topic_id == 987
+
+    def test_invalid_local_time_rejected(self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+        _set_required_env(monkeypatch, tmp_path)
+        monkeypatch.setenv("NEWS_DAILY_MASTER_ENABLED", "true")
+        monkeypatch.setenv("NEWS_DAILY_MASTER_LOCAL_TIME", "25:00")
+        with pytest.raises(ValueError, match="NEWS_DAILY_MASTER_LOCAL_TIME"):
+            DaemonConfig.from_env()

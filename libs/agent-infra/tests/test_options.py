@@ -77,6 +77,20 @@ class TestBuildAgentOptions:
         opts = build_agent_options("sys", tmp_path)
         assert opts.max_turns is None
 
+    def test_setting_sources_default_is_none(self, tmp_path: Path) -> None:
+        opts = build_agent_options("sys", tmp_path)
+        assert opts.setting_sources is None
+
+    def test_setting_sources_passed_through(self, tmp_path: Path) -> None:
+        opts = build_agent_options("sys", tmp_path, setting_sources=["project"])
+        assert opts.setting_sources == ["project"]
+
+    def test_setting_sources_user_and_project(self, tmp_path: Path) -> None:
+        opts = build_agent_options(
+            "sys", tmp_path, setting_sources=["user", "project"],
+        )
+        assert opts.setting_sources == ["user", "project"]
+
     def test_openai_api_key_included_when_set(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setenv("OPENAI_API_KEY", "sk-test-key")
         opts = build_agent_options("sys", tmp_path)
@@ -88,6 +102,26 @@ class TestBuildAgentOptions:
         opts = build_agent_options("sys", tmp_path)
         mcp = opts.mcp_servers["obsidian-pkm"]
         assert "OPENAI_API_KEY" not in mcp["env"]
+
+    def test_skill_disallowed_by_default(self, tmp_path: Path) -> None:
+        opts = build_agent_options("sys", tmp_path)
+        assert "Skill" in opts.disallowed_tools
+
+    def test_allow_skill_tool_removes_from_disallowed(self, tmp_path: Path) -> None:
+        opts = build_agent_options("sys", tmp_path, allow_skill_tool=True)
+        assert "Skill" not in opts.disallowed_tools
+        # Other dangerous tools still disallowed.
+        assert "Edit" in opts.disallowed_tools
+        assert "Write" in opts.disallowed_tools
+        assert "Bash" in opts.disallowed_tools
+
+    def test_disallowed_native_tools_module_constant_unchanged(
+        self, tmp_path: Path,
+    ) -> None:
+        """allow_skill_tool=True must not mutate the module-level constant."""
+        before = list(DISALLOWED_NATIVE_TOOLS)
+        build_agent_options("sys", tmp_path, allow_skill_tool=True)
+        assert DISALLOWED_NATIVE_TOOLS == before
 
 
 class TestDisallowedNativeTools:

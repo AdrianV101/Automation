@@ -30,6 +30,8 @@ def build_agent_options(
     allowed_tools: list[str] | None = None,
     mcp_server_path: str | None = None,
     max_turns: int | None = None,
+    setting_sources: list[str] | None = None,
+    allow_skill_tool: bool = False,
 ) -> ClaudeAgentOptions:
     """Build standard ClaudeAgentOptions with Obsidian MCP config."""
     server_path = mcp_server_path or os.environ.get("OBSIDIAN_MCP_SERVER_PATH")
@@ -45,6 +47,9 @@ def build_agent_options(
             "requires node; install it or extend the daemon's PATH "
             f"(current PATH={os.environ.get('PATH', '')!r})."
         )
+    disallowed = list(DISALLOWED_NATIVE_TOOLS)  # copy — never mutate module constant
+    if allow_skill_tool:
+        disallowed.remove("Skill")
     return ClaudeAgentOptions(
         system_prompt=system_prompt,
         max_turns=max_turns,
@@ -60,8 +65,9 @@ def build_agent_options(
             },
         },
         allowed_tools=allowed_tools if allowed_tools is not None else [],
-        disallowed_tools=DISALLOWED_NATIVE_TOOLS,
+        disallowed_tools=disallowed,
         permission_mode="bypassPermissions",
         model=model,
+        setting_sources=setting_sources,
         env={"ANTHROPIC_API_KEY": ""},
     )

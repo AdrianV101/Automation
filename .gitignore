@@ -37,7 +37,15 @@ daemon/uv.lock
 
 # Worktrees
 .worktrees/
-.claude/
+
+# Personal Claude Code config (per-developer settings, sessions, etc.)
+# Skills meant to ship with the repo live under .claude/skills/ and are tracked.
+# Pattern: ignore everything under .claude/, then re-include skills/ subtree.
+# (`.claude/*` not `.claude/` — trailing slash blocks directory descent so
+# negations underneath can't apply.)
+.claude/*
+!.claude/skills/
+!.claude/skills/**
 
 # Personal config (gitignored, use .example versions)
 CLAUDE.md

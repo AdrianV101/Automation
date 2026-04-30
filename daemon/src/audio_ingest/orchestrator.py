@@ -44,10 +44,15 @@ class ProcessRecording(Protocol):
 async def run_daemon(config: DaemonConfig) -> None:
     log.info("Daemon started")
 
-    if not (config.email_ingest_enabled or config.news_ingest_enabled):
+    if not (
+        config.email_ingest_enabled
+        or config.news_ingest_enabled
+        or config.news_daily_master_enabled
+    ):
         log.error(
             "No ingestion path enabled. Set EMAIL_INGEST_ENABLED=true and/or "
-            "NEWS_INGEST_ENABLED=true. Exiting.",
+            "NEWS_INGEST_ENABLED=true and/or NEWS_DAILY_MASTER_ENABLED=true. "
+            "Exiting.",
         )
         return
 
@@ -56,6 +61,11 @@ async def run_daemon(config: DaemonConfig) -> None:
             tg.create_task(_run_email_ingest_path(config), name="email-ingest")
         if config.news_ingest_enabled:
             tg.create_task(_run_news_ingest_path(config), name="news-ingest")
+        if config.news_daily_master_enabled:
+            tg.create_task(
+                _run_news_daily_master_path(config),
+                name="news-daily-master",
+            )
 
 
 async def handle_incoming_email(
@@ -349,3 +359,82 @@ async def _run_news_ingest_path(config: DaemonConfig) -> None:
         "news-imap-listener", listener.run,
         on_persistent_failure=on_supervised_crashloop,
     )
+
+
+async def _run_news_daily_master_path(config: DaemonConfig) -> None:
+    from datetime import time as _time
+    from zoneinfo import ZoneInfo
+    from .news_daily_master.runner import (
+        RunnerConfig, run_for_date, run_agent_via_agent_infra,
+    )
+    from .news_daily_master.scheduler import NewsDailyScheduler
+    from .news_daily_master.state import NewsDailyMasterStateDB
+
+    db = NewsDailyMasterStateDB(config.email_ingest_state_db_path)
+    await db.init_db()
+
+    bot = BotConfig(
+        bot_token=config.telegram_bot_token, chat_id=config.telegram_chat_id,
+    )
+
+    async def notify(text: str) -> None:
+        try:
+            await send_message(
+                text, bot, thread_id=config.news_daily_telegram_topic_id,
+            )
+        except Exception:
+            log.exception("Failed to send news daily master notification")
+
+    runner_cfg = RunnerConfig(
+        vault_root=config.pkm_vault_path,
+        model=config.news_daily_master_model,
+        telegram_topic_id=config.news_daily_telegram_topic_id,
+    )
+
+    async def run_for_date_fn(d) -> None:
+        await run_for_date(
+            d, db=db, config=runner_cfg,
+            run_agent=run_agent_via_agent_infra,
+            notify=notify,
+        )
+
+    h, m = config.news_daily_master_local_time.split(":", 1)
+    fire = _time(int(h), int(m))
+    tz = _resolve_news_daily_tz(config.news_daily_master_tz)
+
+    sched = NewsDailyScheduler(
+        db=db, run_for_date_fn=run_for_date_fn, notify=notify,
+        fire_time=fire, tz=tz,
+        backfill_window_days=config.news_daily_master_backfill_days,
+    )
+    await sched.run_forever()
+
+
+def _resolve_news_daily_tz(configured_tz: str):
+    """Resolve the timezone for the news daily scheduler.
+
+    Order of preference: explicit `NEWS_DAILY_MASTER_TZ` (e.g. "Europe/London"),
+    then `localtime` (works on macOS/Linux where /etc/localtime is set), then
+    UTC as a last-resort fallback. Each fallback step is logged at WARNING so
+    operators see in startup logs why the scheduler may not be firing at the
+    wall-clock hour they expect.
+    """
+    from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
+
+    if configured_tz:
+        try:
+            return ZoneInfo(configured_tz)
+        except ZoneInfoNotFoundError:
+            log.warning(
+                "NEWS_DAILY_MASTER_TZ=%r is not a valid IANA zone; "
+                "falling back to system localtime",
+                configured_tz,
+            )
+    try:
+        return ZoneInfo("localtime")
+    except ZoneInfoNotFoundError:
+        log.warning(
+            "Could not resolve system localtime via ZoneInfo (no tzdata?); "
+            "falling back to UTC. Set NEWS_DAILY_MASTER_TZ to override.",
+        )
+        return ZoneInfo("UTC")
