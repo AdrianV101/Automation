@@ -8,6 +8,7 @@ dependencies = [
     "telegram-interface",
     "pkm",
     "email-ingest",
+    "news-pipeline",
     "httpx>=0.27",
     "anthropic>=0.40",
     "python-dotenv>=1.0",
@@ -34,6 +35,7 @@ agent-infra = { path = "../libs/agent-infra", editable = true }
 telegram-interface = { path = "../libs/telegram-interface", editable = true }
 pkm = { path = "../libs/pkm", editable = true }
 email-ingest = { path = "../libs/email-ingest", editable = true }
+news-pipeline = { path = "../libs/news-pipeline", editable = true }
 
 [tool.setuptools.packages.find]
 where = ["src"]

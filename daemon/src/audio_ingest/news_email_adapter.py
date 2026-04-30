@@ -1,22 +1,23 @@
-"""Newsletter email adapter — vault + Telegram capture for the news folder."""
+"""Newsletter email adapter — vault + Telegram capture for the news folder.
+
+Email-transport-specific layer. Body rendering and sender extraction live here;
+the cross-source NewsItem contract and writer live in `news_pipeline`.
+"""
 from __future__ import annotations
 
-import hashlib
 import logging
 import re
-import unicodedata
 from collections.abc import Awaitable, Callable
-from dataclasses import dataclass
 from datetime import datetime, timezone
 from email.utils import parseaddr, parsedate_to_datetime
 from pathlib import Path
 
-import yaml
 from bs4 import BeautifulSoup
 from email_ingest import (
     MalformedEmailError, NewsIngestStateDB, ParsedEmail, parse_email,
 )
 from markdownify import markdownify as _markdownify
+from news_pipeline import NewsItem, write_news_item
 
 TelegramNotifier = Callable[..., Awaitable[None]]
 _PREVIEW_CHARS = 200
@@ -24,22 +25,9 @@ _PREVIEW_CHARS = 200
 log = logging.getLogger(__name__)
 
 
-_SLUG_NONALPHA = re.compile(r"[^a-z0-9]+")
 _VIEW_IN_BROWSER_RE = re.compile(
     r"^\s*\[?[Vv]iew[^\]]*?(in[^\]]*?browser|on[^\]]*?web)[^\]]*?\]?(\([^)]*\))?\s*$",
 )
-
-
-def slugify_subject(subject: str, *, message_id: str) -> str:
-    """Hash suffix prevents collisions across emails sharing a subject."""
-    normalised = unicodedata.normalize("NFKD", subject)
-    ascii_only = normalised.encode("ascii", "ignore").decode("ascii")
-    cleaned = _SLUG_NONALPHA.sub("-", ascii_only.lower()).strip("-")
-    if not cleaned:
-        cleaned = "untitled"
-    truncated = cleaned[:60].rstrip("-")
-    digest = hashlib.sha256(message_id.encode("utf-8")).hexdigest()[:6]
-    return f"{truncated}-{digest}"
 
 
 def _strip_html_noise(html: str) -> str:
@@ -68,17 +56,6 @@ def _collapse_blank_lines(md: str) -> str:
     return re.sub(r"\n{3,}", "\n\n", md)
 
 
-@dataclass(frozen=True)
-class NewsNotePayload:
-    message_id: str
-    sender_display: str   # human-readable name, falling back to domain
-    sender_address: str   # full email address
-    subject: str
-    received_at: datetime # always tz-aware
-    html_body: str | None
-    text_body: str | None
-
-
 def _parse_sender(from_header: str) -> tuple[str, str]:
     display, address = parseaddr(from_header or "")
     if not address:
@@ -103,20 +80,6 @@ def _parse_received_at(date_header: str) -> datetime:
     return dt
 
 
-def email_to_news_note(parsed: ParsedEmail) -> NewsNotePayload:
-    headers = parsed.headers
-    display, address = _parse_sender(headers.get("From") or "")
-    return NewsNotePayload(
-        message_id=parsed.message_id,
-        sender_display=display,
-        sender_address=address,
-        subject=headers.get("Subject") or "",
-        received_at=_parse_received_at(headers.get("Date") or ""),
-        html_body=parsed.html_body,
-        text_body=parsed.text_body,
-    )
-
-
 def render_body(parsed: ParsedEmail) -> str:
     """HTML→MD when present (Substack/Beehiiv plaintext is usually a stub); plaintext otherwise."""
     if parsed.html_body and parsed.html_body.strip():
@@ -131,48 +94,26 @@ def render_body(parsed: ParsedEmail) -> str:
     )
 
 
-def _frontmatter(payload: NewsNotePayload) -> str:
-    received_utc = payload.received_at.astimezone(timezone.utc)
-    data = {
-        "type": "news-item",
-        "created": received_utc.date().isoformat(),
-        "received-at": received_utc.isoformat(),
-        "source": payload.sender_display,
-        "source-type": "newsletter",
-        "source-address": payload.sender_address,
-        "subject": payload.subject,
-        "message-id": payload.message_id,
-        "tags": ["news", "source-newsletter"],
-    }
-    return yaml.safe_dump(
-        data, sort_keys=False, allow_unicode=True, default_flow_style=False,
+def email_to_news_item(parsed: ParsedEmail, body_md: str) -> NewsItem:
+    headers = parsed.headers
+    display, address = _parse_sender(headers.get("From") or "")
+    return NewsItem(
+        message_id=parsed.message_id,
+        source=display,
+        source_type="newsletter",
+        source_address=address,
+        subject=headers.get("Subject") or "",
+        received_at=_parse_received_at(headers.get("Date") or ""),
+        body_md=body_md,
     )
 
 
-def write_news_note(
-    payload: NewsNotePayload,
-    *,
-    body_md: str,
-    vault_root: Path,
-) -> Path:
-    date_folder = payload.received_at.astimezone(timezone.utc).date().isoformat()
-    slug = slugify_subject(payload.subject, message_id=payload.message_id)
-    folder = vault_root / "00-Inbox" / "news" / date_folder
-    folder.mkdir(parents=True, exist_ok=True)
-    path = folder / f"{slug}.md"
-    content = f"---\n{_frontmatter(payload)}---\n\n{body_md.rstrip()}\n"
-    path.write_text(content, encoding="utf-8")
-    return path
-
-
-def _build_telegram_message(
-    payload: NewsNotePayload, body_md: str, vault_path: Path,
-) -> str:
-    preview_lines = [line.strip() for line in body_md.splitlines() if line.strip()]
+def _build_telegram_message(item: NewsItem, vault_path: Path) -> str:
+    preview_lines = [line.strip() for line in item.body_md.splitlines() if line.strip()]
     text_preview = " ".join(preview_lines)[:_PREVIEW_CHARS]
     return (
-        f"📰 {payload.sender_display}\n"
-        f"{payload.subject}\n\n"
+        f"📰 {item.source}\n"
+        f"{item.subject}\n\n"
         f"{text_preview}\n\n"
         f"🔗 {vault_path}"
     )
@@ -218,11 +159,9 @@ async def handle_news_email(
     )
 
     try:
-        payload = email_to_news_note(parsed)
         body_md = render_body(parsed)
-        vault_path = write_news_note(
-            payload, body_md=body_md, vault_root=vault_root,
-        )
+        item = email_to_news_item(parsed, body_md)
+        vault_path = write_news_item(item, vault_root)
     except Exception as exc:
         log.exception("Failed to capture news email %s", message_id)
         await _mark_failed(
@@ -240,22 +179,26 @@ async def handle_news_email(
             message_id, "written", vault_note_path=str(rel_vault_path),
         )
     except Exception as exc:
+        # Distinct error tag so a log search can find the stuck row even if
+        # the operator's Telegram alert below ALSO fails (this is the only
+        # signal that a row is dedup-skipped forever).
         log.exception(
-            "Vault note %s written but DB update failed for %s",
-            rel_vault_path, message_id,
+            "NEWS_CAPTURE_PARTIAL message_id=%s vault_path=%s "
+            "(vault written, DB stuck at 'received', dedup will hide it)",
+            message_id, rel_vault_path,
         )
         await _safe_notify(
             telegram_notifier, news_topic_id,
             f"⚠️ News capture partial — manual fix required\n\n"
             f"Vault note written but DB status update failed.\n"
-            f"From: {payload.sender_display}\nSubject: {payload.subject}\n"
+            f"From: {item.source}\nSubject: {item.subject}\n"
             f"Path: {rel_vault_path}\nError: {exc}\n\n"
             f"Row is stuck at 'received' — delete from news_ingest_events to re-process, "
             f"or manually update status='written'.",
         )
         return
 
-    msg = _build_telegram_message(payload, body_md, rel_vault_path)
+    msg = _build_telegram_message(item, rel_vault_path)
     await _safe_notify(telegram_notifier, news_topic_id, msg)
 
 
