@@ -38,10 +38,13 @@ def _frontmatter(item: NewsItem) -> str:
         "subject": item.subject,
         "message-id": item.message_id,
     }
-    # Source-specific extras land between the canonical fields and tags so
-    # the existing newsletter (extra={}) yields byte-identical output.
-    for key, value in item.extra.items():
-        data[key] = value
+    # Extras land between the canonical fields and tags so a caller with
+    # extra={} produces byte-identical output to a writer without extras
+    # support. Sorted so callers building extras from differently-ordered
+    # dict literals still get deterministic frontmatter (matters for the
+    # golden-file regression test under multiple Python versions).
+    for key in sorted(item.extra):
+        data[key] = item.extra[key]
     data["tags"] = ["news", f"source-{item.source_type}"]
     return yaml.safe_dump(
         data, sort_keys=False, allow_unicode=True, default_flow_style=False,

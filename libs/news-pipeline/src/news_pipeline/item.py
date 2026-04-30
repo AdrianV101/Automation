@@ -28,12 +28,21 @@ class NewsItem:
                 f"unknown source_type {self.source_type!r}; "
                 f"expected one of {sorted(SOURCE_TYPES)}",
             )
-        for reserved in (
-            "type", "created", "received-at", "source", "source-type",
-            "source-address", "subject", "message-id", "tags",
-        ):
+        # message_id = "" makes every untitled item collide on slug
+        # `untitled-<hash("")>`. body_md = "" produces a frontmatter-only note.
+        # Empty subject/source/source_address are tolerated — real emails ship them.
+        for name in ("message_id", "body_md"):
+            if not getattr(self, name):
+                raise ValueError(f"NewsItem.{name} must be non-empty")
+        for reserved in _RESERVED_FRONTMATTER_KEYS:
             if reserved in self.extra:
                 raise ValueError(
                     f"extra key {reserved!r} collides with a canonical "
                     f"frontmatter field; use a source-specific name instead",
                 )
+
+
+_RESERVED_FRONTMATTER_KEYS: frozenset[str] = frozenset({
+    "type", "created", "received-at", "source", "source-type",
+    "source-address", "subject", "message-id", "tags",
+})

@@ -110,7 +110,7 @@ def test_extras_cannot_collide_with_canonical_keys():
             source_address="x",
             subject="x",
             received_at=datetime(2026, 4, 30, tzinfo=timezone.utc),
-            body_md="",
+            body_md="body",
             extra={"subject": "trying to override"},
         )
 
@@ -124,7 +124,7 @@ def test_received_at_must_be_tz_aware():
             source_address="x",
             subject="x",
             received_at=datetime(2026, 4, 30, 0, 0, 0),
-            body_md="",
+            body_md="body",
         )
 
 
@@ -137,8 +137,86 @@ def test_unknown_source_type_rejected():
             source_address="x",
             subject="x",
             received_at=datetime(2026, 4, 30, tzinfo=timezone.utc),
+            body_md="body",
+        )
+
+
+def test_empty_message_id_rejected():
+    with pytest.raises(ValueError, match="message_id"):
+        NewsItem(
+            message_id="",
+            source="x",
+            source_type="newsletter",
+            source_address="x",
+            subject="x",
+            received_at=datetime(2026, 4, 30, tzinfo=timezone.utc),
+            body_md="body",
+        )
+
+
+def test_empty_body_md_rejected():
+    with pytest.raises(ValueError, match="body_md"):
+        NewsItem(
+            message_id="x",
+            source="x",
+            source_type="newsletter",
+            source_address="x",
+            subject="x",
+            received_at=datetime(2026, 4, 30, tzinfo=timezone.utc),
             body_md="",
         )
+
+
+def test_empty_subject_allowed():
+    """Real emails ship with no Subject header; slug falls back to 'untitled'."""
+    item = NewsItem(
+        message_id="x",
+        source="x",
+        source_type="newsletter",
+        source_address="x",
+        subject="",
+        received_at=datetime(2026, 4, 30, tzinfo=timezone.utc),
+        body_md="body",
+    )
+    assert item.subject == ""
+
+
+def test_extras_sorted_for_deterministic_yaml(tmp_path):
+    """Same extras in different insertion orders produce the same bytes."""
+    base = dict(
+        message_id="x",
+        source="src",
+        source_type="hacker-news",
+        source_address="https://example.com",
+        subject="Hello",
+        received_at=datetime(2026, 4, 30, 0, 0, 0, tzinfo=timezone.utc),
+        body_md="body",
+    )
+    a = write_news_item(NewsItem(**base, extra={"a": 1, "b": 2, "c": 3}), tmp_path / "a")
+    b = write_news_item(NewsItem(**base, extra={"c": 3, "a": 1, "b": 2}), tmp_path / "b")
+    assert a.read_text() == b.read_text()
+
+
+def test_extras_non_string_types_round_trip(tmp_path):
+    """Phase 2 sources will pass int/bool extras (HN points, X pinned, etc.)."""
+    import yaml
+    item = NewsItem(
+        message_id="x",
+        source="src",
+        source_type="hacker-news",
+        source_address="https://example.com",
+        subject="Hello",
+        received_at=datetime(2026, 4, 30, 0, 0, 0, tzinfo=timezone.utc),
+        body_md="body",
+        extra={"hn-points": 142, "hn-comments": 0, "x-pinned": True, "ft-paywalled": False},
+    )
+    content = write_news_item(item, tmp_path).read_text()
+    fm_end = content.index("\n---\n", 4)
+    fm = yaml.safe_load(content[4:fm_end])
+    assert fm["hn-points"] == 142 and isinstance(fm["hn-points"], int)
+    assert fm["hn-comments"] == 0 and isinstance(fm["hn-comments"], int)
+    assert fm["x-pinned"] is True
+    assert fm["ft-paywalled"] is False
 
 
 def test_idempotent_overwrite(tmp_path):

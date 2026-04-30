@@ -179,9 +179,13 @@ async def handle_news_email(
             message_id, "written", vault_note_path=str(rel_vault_path),
         )
     except Exception as exc:
+        # Distinct error tag so a log search can find the stuck row even if
+        # the operator's Telegram alert below ALSO fails (this is the only
+        # signal that a row is dedup-skipped forever).
         log.exception(
-            "Vault note %s written but DB update failed for %s",
-            rel_vault_path, message_id,
+            "NEWS_CAPTURE_PARTIAL message_id=%s vault_path=%s "
+            "(vault written, DB stuck at 'received', dedup will hide it)",
+            message_id, rel_vault_path,
         )
         await _safe_notify(
             telegram_notifier, news_topic_id,

@@ -78,20 +78,28 @@ non-alphanumerics collapsed to hyphens, truncated to 60 chars, with a 6-char
 ## State protocol
 
 ```python
+@runtime_checkable
 class NewsSourceState(Protocol):
-    async def get_uidnext_checkpoint(self) -> int: ...
-    async def set_uidnext_checkpoint(self, uidnext: int) -> None: ...
+    async def get_checkpoint(self) -> int: ...
+    async def set_checkpoint(self, checkpoint: int) -> None: ...
     async def is_processed(self, key: str) -> bool: ...
     async def record_processed(self, key: str, vault_path: str) -> None: ...
 ```
 
+The "checkpoint" is source-agnostic: an IMAP listener stores a UIDNEXT, an HN
+poller stores the largest-seen item id, an FT poller a since-timestamp.
 `record_processed` is the one-shot path for sources that don't need an
 intermediate "received but not yet written" state (HN/FT/X are pull-based).
 The newsletter adapter still uses the explicit two-step
 `insert_event` + `update_status('written', ...)` pattern because IMAP IDLE
 push gives it a real intermediate window where a crash could otherwise leave
 the row stuck. Both DBs (`EmailIngestStateDB`, `NewsIngestStateDB`)
-structurally satisfy this protocol.
+structurally satisfy this protocol; `isinstance(db, NewsSourceState)` works at
+runtime.
+
+`record_processed` MUST be durable before returning, and MUST raise if the
+underlying UPDATE affected zero rows — the silent-success failure mode would
+let dedup hide an item forever.
 
 ## Regenerating the golden frontmatter snapshots
 

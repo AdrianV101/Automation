@@ -1,11 +1,9 @@
 """Byte-identical frontmatter regression test.
 
-Locks the news-item frontmatter schema. The Phase 1 master-doc generator and
-forthcoming Phase 2 sources (HN/FT/X) read these keys; a silent rename or
-reorder would break them invisibly.
-
-If you intentionally change the schema, regenerate the golden files via the
-snippet in libs/news-pipeline/README.md and update downstream consumers in the
+Locks the news-item frontmatter schema. The master-doc generator and other
+news sources read these keys; a silent rename or reorder would break them
+invisibly. To intentionally change the schema, regenerate the goldens per
+libs/news-pipeline/README.md and audit every downstream consumer in the
 same PR.
 """
 from __future__ import annotations

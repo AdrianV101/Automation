@@ -117,26 +117,34 @@ class EmailIngestStateDB:
         await self.set_setting("uidnext", str(uidnext))
 
     async def record_processed(self, key: str, vault_path: str) -> None:
-        """Satisfies news_pipeline.NewsSourceState.
-
-        Maps to the transcript pipeline's notion of "done": status='completed',
-        summary_path=vault_path. The transcript flow continues to use the
-        multi-step `insert_event` + `update_status` path; this method is a
-        one-shot for protocol conformance and tooling.
-        """
+        """Protocol-conformant one-shot path; the transcript flow uses
+        `insert_event` + `update_status` directly."""
         async with aiosqlite.connect(self._path) as db:
             await db.execute(
                 "INSERT OR IGNORE INTO email_ingest_events "
                 "(message_id, uid, received_at, status) VALUES (?, 0, ?, 'received')",
                 (key, _now_iso()),
             )
-            await db.execute(
+            cur = await db.execute(
                 "UPDATE email_ingest_events "
                 "SET status = 'completed', summary_path = ?, completed_at = ? "
                 "WHERE message_id = ?",
                 (vault_path, _now_iso(), key),
             )
             await db.commit()
+            if cur.rowcount == 0:
+                raise RuntimeError(
+                    f"record_processed for {key!r} affected no rows",
+                )
+
+    # Generic-named aliases so a `NewsSourceState`-typed caller doesn't have
+    # to know about IMAP-specific UIDNEXT semantics. The IMAP listener still
+    # uses the *_uidnext_* methods directly — those are the canonical names.
+    async def get_checkpoint(self) -> int:
+        return await self.get_uidnext_checkpoint()
+
+    async def set_checkpoint(self, checkpoint: int) -> None:
+        await self.set_uidnext_checkpoint(checkpoint)
 
     async def get_setting(self, key: str) -> str | None:
         async with aiosqlite.connect(self._path) as db:
@@ -264,26 +272,34 @@ class NewsIngestStateDB:
         await self._set_setting(self.SETTINGS_KEY_UIDNEXT, str(uidnext))
 
     async def record_processed(self, key: str, vault_path: str) -> None:
-        """Satisfies news_pipeline.NewsSourceState.
-
-        One-shot for sources without an intermediate state (HN/FT/X poll
-        pull rather than IMAP IDLE push, so there's no separate "received but
-        not yet written" window worth tracking). Inserts the row if missing
-        then marks `written` with the vault note path.
-        """
+        """One-shot for pull-based sources (HN/FT/X) that have no intermediate
+        "received but not yet written" window worth tracking. The IMAP-driven
+        newsletter adapter still calls `insert_event` + `update_status` directly
+        because IDLE push gives it a real intermediate state where a crash
+        could otherwise leave a row stuck at 'received'."""
         async with aiosqlite.connect(self._path) as db:
             await db.execute(
                 "INSERT OR IGNORE INTO news_ingest_events "
                 "(message_id, uid, received_at, status) VALUES (?, 0, ?, 'received')",
                 (key, _now_iso()),
             )
-            await db.execute(
+            cur = await db.execute(
                 "UPDATE news_ingest_events "
                 "SET status = 'written', vault_note_path = ?, completed_at = ? "
                 "WHERE message_id = ?",
                 (vault_path, _now_iso(), key),
             )
             await db.commit()
+            if cur.rowcount == 0:
+                raise RuntimeError(
+                    f"record_processed for {key!r} affected no rows",
+                )
+
+    async def get_checkpoint(self) -> int:
+        return await self.get_uidnext_checkpoint()
+
+    async def set_checkpoint(self, checkpoint: int) -> None:
+        await self.set_uidnext_checkpoint(checkpoint)
 
     async def _get_setting(self, key: str) -> str | None:
         async with aiosqlite.connect(self._path) as db:
