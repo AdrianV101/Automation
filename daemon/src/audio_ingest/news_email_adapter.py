@@ -71,7 +71,7 @@ def _classify_source_type(address: str) -> SourceType:
         if domain in _DOMAIN_SOURCE_TYPES:
             return _DOMAIN_SOURCE_TYPES[domain]
         domain = domain.split(".", 1)[1]
-    return _DOMAIN_SOURCE_TYPES.get(domain, "newsletter")
+    return "newsletter"
 
 
 def _parse_sender(from_header: str) -> tuple[str, str]:
