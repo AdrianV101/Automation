@@ -372,3 +372,130 @@ async def test_run_agent_via_agent_infra_handles_missing_summary(
     assert output.success is False
     assert output.error is not None
     assert "summary" in output.error.lower()
+
+
+# ---------------------------------------------------------------------------
+# AgentRunOutput pair-invariant
+# ---------------------------------------------------------------------------
+
+
+class TestAgentRunOutputInvariants:
+    """Mirror of the AgentRoutingResult success/error pair invariant."""
+
+    def test_success_true_with_error_is_rejected(self) -> None:
+        with pytest.raises(ValueError, match="success=True.*error=None"):
+            AgentRunOutput(success=True, item_count=1, error="actually failed")
+
+    def test_success_false_without_error_is_rejected(self) -> None:
+        with pytest.raises(ValueError, match="success=False.*non-None error"):
+            AgentRunOutput(success=False, item_count=0)
+
+    def test_success_true_without_error_is_valid(self) -> None:
+        out = AgentRunOutput(success=True, item_count=1)
+        assert out.error is None
+
+    def test_success_false_with_error_is_valid(self) -> None:
+        out = AgentRunOutput(success=False, item_count=0, error="something broke")
+        assert out.error == "something broke"
+
+
+# ---------------------------------------------------------------------------
+# _parse_agent_summary edge cases (multiple JSON blocks, missing-error fallback)
+# ---------------------------------------------------------------------------
+
+
+def test_parse_agent_summary_picks_last_json_block() -> None:
+    """When the agent emits multiple JSON blocks, only the LAST one wins."""
+    from audio_ingest.news_daily_master.runner import _parse_agent_summary
+
+    intermediate = '{"success": false, "item_count": 0, "error": "still working"}'
+    final = '{"success": true, "item_count": 5, "categories": ["AI"]}'
+    text = (
+        f"Working...\n```json\n{intermediate}\n```\n"
+        f"More work...\n```json\n{final}\n```\n"
+    )
+    out = _parse_agent_summary([text])
+    assert out.success is True
+    assert out.item_count == 5
+    assert out.categories == ["AI"]
+
+
+def test_parse_agent_summary_invalid_json_returns_failure() -> None:
+    from audio_ingest.news_daily_master.runner import _parse_agent_summary
+
+    # Closing brace is required for the fenced-block regex to match the block
+    # at all; the JSON inside is then what fails to parse.
+    out = _parse_agent_summary(["```json\n{bad: json, missing: quotes}\n```"])
+    assert out.success is False
+    assert out.error is not None
+    assert "invalid" in out.error.lower()
+
+
+def test_parse_agent_summary_failure_without_error_field_synthesises_one() -> None:
+    """Agent reports success=false but forgets to include `error` — we synthesise.
+
+    Without this fallback, the AgentRunOutput pair-invariant would refuse to
+    construct, and the runner would crash with an unhelpful error.
+    """
+    from audio_ingest.news_daily_master.runner import _parse_agent_summary
+
+    out = _parse_agent_summary(['```json\n{"success": false, "item_count": 0}\n```'])
+    assert out.success is False
+    assert out.error  # truthy — some fallback message present
+
+
+# ---------------------------------------------------------------------------
+# _hash_notes_section error handling — bad bytes / permission errors
+# ---------------------------------------------------------------------------
+
+
+def test_hash_notes_section_returns_none_on_unicode_error(tmp_path: Path) -> None:
+    """A non-UTF8 byte sequence in the master doc must not crash the runner."""
+    from audio_ingest.news_daily_master.runner import _hash_notes_section
+
+    p = tmp_path / "master.md"
+    p.write_bytes(b"# Header\n\n## Notes\n\xff\xfe non-utf8 bytes\n")
+    # Should swallow the decode error and return None (= "no prior hash").
+    assert _hash_notes_section(p) is None
+
+
+# ---------------------------------------------------------------------------
+# run_for_date defensive try/except — DB row never stuck in 'running'
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_run_for_date_unexpected_exception_marks_failed(
+    monkeypatch: pytest.MonkeyPatch,
+    db_path: Path, vault_root: Path, runner_cfg: RunnerConfig,
+) -> None:
+    """If something between insert_run and the final update_run raises (e.g.
+    `_hash_notes_section` blowing up on an unexpected internal error), the row
+    must transition out of 'running' so backfill doesn't see a stale stuck row."""
+    db = NewsDailyMasterStateDB(db_path)
+    await db.init_db()
+    _seed_source_item(vault_root, date(2026, 4, 29), "item-a")
+
+    def boom(_path):
+        raise RuntimeError("hashing crashed unexpectedly")
+
+    monkeypatch.setattr(
+        "audio_ingest.news_daily_master.runner._hash_notes_section", boom,
+    )
+
+    async def fake_agent(inp: AgentRunInput) -> AgentRunOutput:
+        return AgentRunOutput(success=True, item_count=1, categories=["AI"])
+
+    notifier = AsyncMock()
+    # Should NOT propagate the RuntimeError; the runner's outer guard catches it.
+    await run_for_date(
+        date(2026, 4, 29),
+        db=db, config=runner_cfg,
+        run_agent=fake_agent, notify=notifier,
+    )
+
+    row = await db.get_run(date(2026, 4, 29))
+    assert row["status"] == "failed"  # not 'running'
+    assert row["error"] is not None
+    assert "hashing crashed unexpectedly" in row["error"]
+    notifier.assert_awaited()

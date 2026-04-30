@@ -2,15 +2,13 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import json
 import logging
 import re
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from datetime import date
 from pathlib import Path
-
-import json as _json
-import re as _re
 
 from agent_infra import build_agent_options, run_agent_loop_streaming
 
@@ -26,7 +24,6 @@ class RunnerConfig:
     model: str = "claude-opus-4-7"
     telegram_topic_id: int | None = None
     retry_backoff_seconds: tuple[float, ...] = (0.0, 60.0, 300.0)
-    mcp_server_path: str | None = None
 
 
 @dataclass
@@ -39,7 +36,13 @@ class AgentRunInput:
 
 @dataclass
 class AgentRunOutput:
-    """Structured summary returned by the agent runner."""
+    """Structured summary returned by the agent runner.
+
+    Enforces the success/error pair invariant: success implies error is None;
+    failure requires a non-None error. This mirrors `AgentRoutingResult` in
+    extraction.py and prevents the silent-failure mode where the runner reads
+    `output.error or "fallback"` and silently substitutes when error is None.
+    """
     success: bool
     item_count: int
     categories: list[str] = field(default_factory=list)
@@ -47,6 +50,17 @@ class AgentRunOutput:
     skipped_items: list[str] = field(default_factory=list)
     text: str = ""
     error: str | None = None
+
+    def __post_init__(self) -> None:
+        if self.success and self.error is not None:
+            raise ValueError(
+                "AgentRunOutput(success=True) must have error=None; "
+                f"got error={self.error!r}"
+            )
+        if not self.success and self.error is None:
+            raise ValueError(
+                "AgentRunOutput(success=False) requires a non-None error"
+            )
 
 
 AgentRunFn = Callable[[AgentRunInput], Awaitable[AgentRunOutput]]
@@ -82,10 +96,24 @@ def _extract_notes_section(master_text: str) -> str:
 
 
 def _hash_notes_section(master_path: Path) -> str | None:
-    """SHA256 of the '## Notes' section of the master doc, or None if no doc."""
+    """SHA256 of the '## Notes' section of the master doc.
+
+    Returns None if the master doc is absent OR unreadable. The unreadable
+    case is treated identically to absent on purpose: the clobber-detection
+    invariant only kicks in when we have a stable hash to compare against.
+    A non-UTF8 payload or a permissions issue that blocks the read is
+    surprising enough to log, but not worth crashing the whole daily run for.
+    """
     if not master_path.is_file():
         return None
-    body = master_path.read_text()
+    try:
+        body = master_path.read_text()
+    except (OSError, UnicodeDecodeError):
+        log.warning(
+            "Could not read master doc for notes-hash snapshot at %s",
+            master_path, exc_info=True,
+        )
+        return None
     section = _extract_notes_section(body)
     return hashlib.sha256(section.encode("utf-8")).hexdigest()
 
@@ -113,6 +141,42 @@ async def run_for_date(
     """
     await db.insert_run(target_date)
 
+    try:
+        await _run_for_date_inner(
+            target_date, db=db, config=config, run_agent=run_agent, notify=notify,
+        )
+    except Exception as exc:
+        # Catch-all so the row never gets stuck in 'running'. Inner branches
+        # are responsible for the typed-failure transitions (failed,
+        # failed_verification, failed_notes_clobbered); anything that reaches
+        # here is unexpected (DB error, IO error in a helper, programmer bug).
+        log.exception("Unexpected error in run_for_date for %s", target_date)
+        try:
+            await db.update_run(
+                target_date, status="failed", error=f"unexpected: {exc}",
+            )
+        except Exception:
+            log.exception(
+                "Could not mark %s failed after unexpected error", target_date,
+            )
+        try:
+            await notify(
+                f"⚠️ News daily master crashed for {target_date.isoformat()}: "
+                f"{exc}",
+            )
+        except Exception:
+            log.exception("Could not notify after unexpected error in %s", target_date)
+
+
+async def _run_for_date_inner(
+    target_date: date,
+    *,
+    db: NewsDailyMasterStateDB,
+    config: RunnerConfig,
+    run_agent: AgentRunFn,
+    notify: NotifyFn,
+) -> None:
+    """The body of run_for_date, wrapped above for stuck-row defence."""
     if not _has_source_items(config.vault_root, target_date):
         log.info("No news items for %s — skipping", target_date)
         await db.update_run(target_date, status="skipped_empty")
@@ -142,7 +206,8 @@ async def run_for_date(
             continue
 
         if not output.success:
-            last_error = output.error or "agent_returned_unsuccessful"
+            # Pair invariant guarantees output.error is non-None here.
+            last_error = output.error
             continue
 
         # Verify the Notes section if it existed before.
@@ -202,7 +267,7 @@ async def run_for_date(
 # Concrete AgentRunFn — wires agent_infra to the news-daily-master skill
 # ---------------------------------------------------------------------------
 
-_JSON_BLOCK_RE = _re.compile(r"```json\s*(\{.*?\})\s*```", _re.DOTALL)
+_JSON_BLOCK_RE = re.compile(r"```json\s*(\{.*?\})\s*```", re.DOTALL)
 
 
 def _parse_agent_summary(text_parts: list[str]) -> AgentRunOutput:
@@ -220,20 +285,29 @@ def _parse_agent_summary(text_parts: list[str]) -> AgentRunOutput:
             text=joined,
         )
     try:
-        data = _json.loads(matches[-1])
-    except _json.JSONDecodeError as exc:
+        data = json.loads(matches[-1])
+    except json.JSONDecodeError as exc:
         return AgentRunOutput(
             success=False, item_count=0,
             error=f"invalid JSON summary: {exc}", text=joined,
         )
+    success = bool(data.get("success", False))
+    raw_error = data.get("error")
+    # Honour the AgentRunOutput pair invariant: drop any error if success=True
+    # (agents occasionally include diagnostic 'error' fields on a successful
+    # run); synthesise a fallback if success=False and no error was provided.
+    if success:
+        error = None
+    else:
+        error = raw_error or "agent reported success=false without an error message"
     return AgentRunOutput(
-        success=bool(data.get("success", False)),
+        success=success,
         item_count=int(data.get("item_count", 0)),
         categories=list(data.get("categories", [])),
         new_categories=list(data.get("new_categories", [])),
         skipped_items=list(data.get("skipped_items", [])),
         text=joined,
-        error=data.get("error"),
+        error=error,
     )
 
 
