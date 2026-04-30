@@ -36,8 +36,10 @@ async def test_record_processed_marks_processed(db):
 
 async def test_record_processed_idempotent(db):
     await db.record_processed("hn-1", "path/a.md")
-    await db.record_processed("hn-1", "path/b.md")  # later vault path overwrites
+    await db.record_processed("hn-1", "path/b.md")
     assert await db.is_processed("hn-1") is True
+    row = await db.get_event(1)
+    assert row["vault_note_path"] == "path/b.md"
 
 
 async def test_record_processed_persists_vault_path(db):
@@ -46,6 +48,33 @@ async def test_record_processed_persists_vault_path(db):
     assert row is not None
     assert row["vault_note_path"] == "00-Inbox/news/2026-05-01/x-abc123.md"
     assert row["item_id"] == 42
+
+
+async def test_record_processed_full_persists_metadata(db):
+    await db.record_processed_full(
+        99, points=234, title="Some HN headline",
+        vault_path="00-Inbox/news/2026-05-01/some-headline-abcdef.md",
+    )
+    assert await db.is_processed("hn-99") is True
+    row = await db.get_event(99)
+    assert row is not None
+    assert row["item_id"] == 99
+    assert row["points"] == 234
+    assert row["title"] == "Some HN headline"
+    assert row["vault_note_path"] == "00-Inbox/news/2026-05-01/some-headline-abcdef.md"
+
+
+async def test_record_processed_full_idempotent_overwrites_metadata(db):
+    await db.record_processed_full(
+        7, points=100, title="first", vault_path="path/a.md",
+    )
+    await db.record_processed_full(
+        7, points=250, title="updated", vault_path="path/b.md",
+    )
+    row = await db.get_event(7)
+    assert row["points"] == 250
+    assert row["title"] == "updated"
+    assert row["vault_note_path"] == "path/b.md"
 
 
 async def test_record_processed_rejects_non_hn_prefix_key(db):
