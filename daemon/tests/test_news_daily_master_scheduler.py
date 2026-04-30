@@ -232,3 +232,42 @@ async def test_scheduler_backfill_emits_older_than_window_notice(
     msg = notifier.await_args.args[0]
     assert "2026-04-21" in msg
     assert "2026-04-26" in msg
+
+
+@pytest.mark.asyncio
+async def test_scheduler_backfill_skips_terminally_failed_dates(
+    state_db_path,
+) -> None:
+    """Regression test: terminally-failed dates must NOT be re-fired on every
+    daemon restart. The 06:00 scheduled fire targets 'yesterday' regardless of
+    state and will retry-once-per-day; backfill is for catching up on dates
+    that have NEVER been attempted.
+    """
+    db = NewsDailyMasterStateDB(state_db_path)
+    await db.init_db()
+    # 2026-04-28 was attempted and terminally failed — should NOT be retried.
+    await db.insert_run(date(2026, 4, 28))
+    await db.update_run(
+        date(2026, 4, 28), status="failed", error="model timeout 3x",
+    )
+    # 2026-04-27 completed cleanly.
+    await db.insert_run(date(2026, 4, 27))
+    await db.update_run(
+        date(2026, 4, 27), status="completed", master_path="x",
+    )
+    # 2026-04-29 (yesterday) has never been tried.
+
+    runs: list[date] = []
+    async def fake_run(d: date) -> None:
+        runs.append(d)
+
+    sched = NewsDailyScheduler(
+        db=db, run_for_date_fn=fake_run, notify=AsyncMock(),
+        fire_time=time(6, 0), tz=ZoneInfo("UTC"),
+        backfill_window_days=3,
+    )
+
+    fixed_now = datetime(2026, 4, 30, 6, 1, tzinfo=ZoneInfo("UTC"))
+    await sched.run_backfill(now=fixed_now)
+    # Only 04-29 (never attempted) — NOT 04-28 (terminally failed).
+    assert runs == [date(2026, 4, 29)]

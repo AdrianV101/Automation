@@ -103,14 +103,20 @@ class NewsDailyScheduler:
     backfill_window_days: int = 3
 
     async def run_backfill(self, *, now: datetime) -> None:
-        """One-shot: backfill missing days within the window, notify older."""
+        """One-shot: backfill missing days within the window, notify older.
+
+        "Missing" here means a date in the window with no completed/skipped_empty
+        run row — terminally-failed rows are NOT re-fired by backfill (the
+        scheduled 06:00 fire will retry yesterday once per day; permanent
+        retry-on-restart would mask real failures and burn API quota).
+        """
         today_local = now.astimezone(self.tz).date()
         last_completed = await self.db.get_last_completed()
 
-        backfill = compute_backfill_dates(
-            last_completed=last_completed,
-            today=today_local,
-            window_days=self.backfill_window_days,
+        yesterday = today_local - timedelta(days=1)
+        window_start = today_local - timedelta(days=self.backfill_window_days)
+        backfill = await self.db.get_unattempted_in_window(
+            start=window_start, end=yesterday,
         )
         # Sequentially — bounded by window size, no need for concurrency.
         for d in backfill:

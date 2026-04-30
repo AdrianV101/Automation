@@ -120,27 +120,30 @@ class NewsDailyMasterStateDB:
                     return None
                 return date.fromisoformat(row[0])
 
-    async def get_missing_in_window(
+    async def get_unattempted_in_window(
         self, start: date, end: date,
     ) -> list[date]:
-        """Dates in [start, end] (inclusive) with no completed/skipped_empty run.
+        """Dates in [start, end] (inclusive) with NO row in the runs table.
 
-        Returned in ascending order. Used for backfill on daemon boot.
+        Returned in ascending order. Used for backfill on daemon boot:
+        terminally-failed dates have a row and are NOT re-fired here (the
+        scheduled 06:00 fire retries 'yesterday' once per day via
+        run_once → INSERT OR REPLACE). Permanent retry-on-restart would mask
+        real failures and burn API quota.
         """
         if start > end:
             return []
         async with aiosqlite.connect(self._path) as db:
             async with db.execute(
                 "SELECT target_date FROM news_daily_master_runs "
-                "WHERE status IN ('completed', 'skipped_empty') "
-                "AND target_date BETWEEN ? AND ?",
+                "WHERE target_date BETWEEN ? AND ?",
                 (_date_key(start), _date_key(end)),
             ) as cur:
-                done = {date.fromisoformat(r[0]) for r in await cur.fetchall()}
+                attempted = {date.fromisoformat(r[0]) for r in await cur.fetchall()}
         result: list[date] = []
         cur_date = start
         while cur_date <= end:
-            if cur_date not in done:
+            if cur_date not in attempted:
                 result.append(cur_date)
             cur_date = date.fromordinal(cur_date.toordinal() + 1)
         return result

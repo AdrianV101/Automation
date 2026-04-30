@@ -152,17 +152,34 @@ async def test_get_last_completed_includes_skipped_empty(db_path: Path) -> None:
 
 
 @pytest.mark.asyncio
-async def test_get_missing_in_window_returns_dates_with_no_completed_run(db_path: Path) -> None:
+async def test_get_unattempted_in_window_returns_dates_with_no_row(db_path: Path) -> None:
+    """Backfill semantics: a 'failed' row counts as ATTEMPTED — don't replay it.
+
+    The scheduled 06:00 fire targets yesterday explicitly via run_once
+    (INSERT OR REPLACE), so a failed-yesterday gets one retry per day from
+    the schedule. Backfill is for catching up on dates the daemon never even
+    saw, not for retrying terminal failures on every restart.
+    """
     db = NewsDailyMasterStateDB(db_path)
     await db.init_db()
-    # Mark one date as completed.
+    # 04-27 completed.
     await db.insert_run(date(2026, 4, 27))
     await db.update_run(date(2026, 4, 27), status="completed", master_path="x")
-    # Mark one as failed (still missing).
+    # 04-28 attempted but failed — has a row, so NOT in 'unattempted'.
     await db.insert_run(date(2026, 4, 28))
     await db.update_run(date(2026, 4, 28), status="failed", error="x")
-    # 2026-04-29 not yet attempted.
-    missing = await db.get_missing_in_window(
+    # 04-29 never attempted — IS in 'unattempted'.
+    missing = await db.get_unattempted_in_window(
         start=date(2026, 4, 27), end=date(2026, 4, 29),
     )
-    assert missing == [date(2026, 4, 28), date(2026, 4, 29)]
+    assert missing == [date(2026, 4, 29)]
+
+
+@pytest.mark.asyncio
+async def test_get_unattempted_in_window_handles_inverted_range(db_path: Path) -> None:
+    db = NewsDailyMasterStateDB(db_path)
+    await db.init_db()
+    out = await db.get_unattempted_in_window(
+        start=date(2026, 4, 30), end=date(2026, 4, 27),
+    )
+    assert out == []
