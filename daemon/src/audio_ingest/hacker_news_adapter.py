@@ -137,12 +137,13 @@ class PollSummary:
     skipped_dedupe: int
     fetch_failures: int
     write_failures: int
+    db_failures: int
     top_title: str
     top_points: int
 
 
 async def run_poll_cycle(
-    client,
+    client: HackerNewsClient,
     state_db: HackerNewsStateDB,
     vault_root: Path,
     *,
@@ -160,6 +161,7 @@ async def run_poll_cycle(
     ingested = 0
     skipped_dedupe = 0
     write_failures = 0
+    db_failures = 0
     top_title = ""
     top_points = 0
     if selected:
@@ -181,18 +183,22 @@ async def run_poll_cycle(
             continue
         try:
             await state_db.record_processed_full(
-                item_id,
+                key,
                 points=int(hn_item.get("score") or 0),
                 title=hn_item.get("title"),
                 vault_path=str(vault_path.relative_to(vault_root)),
             )
+            ingested += 1
         except Exception:
+            # Vault note is durable; the row simply isn't deduped, so the same
+            # item will be re-ingested next poll. Counted as a db_failure (not
+            # ingested) so the operator's daily summary reflects reality.
             log.exception(
                 "HN record_processed_full failed for item_id=%d "
-                "(vault note already written; dedup will hit next poll via INSERT-OR-IGNORE)",
+                "(vault note already written; will retry tomorrow)",
                 item_id,
             )
-        ingested += 1
+            db_failures += 1
 
     if top_ids:
         await state_db.set_checkpoint(max(top_ids))
@@ -202,6 +208,7 @@ async def run_poll_cycle(
         skipped_dedupe=skipped_dedupe,
         fetch_failures=fetch_failures,
         write_failures=write_failures,
+        db_failures=db_failures,
         top_title=top_title,
         top_points=top_points,
     )
@@ -221,6 +228,11 @@ def build_telegram_summary(summary: PollSummary, *, date_folder: str) -> str:
         extras.append(
             f"{summary.write_failures} write "
             f"{'failure' if summary.write_failures == 1 else 'failures'}",
+        )
+    if summary.db_failures:
+        extras.append(
+            f"{summary.db_failures} db "
+            f"{'failure' if summary.db_failures == 1 else 'failures'}",
         )
     if extras:
         lines.append("(" + ", ".join(extras) + ")")

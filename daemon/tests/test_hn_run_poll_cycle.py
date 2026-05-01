@@ -3,8 +3,8 @@ from __future__ import annotations
 import json
 from pathlib import Path
 from typing import Any
-from unittest.mock import AsyncMock
 
+import httpx
 import pytest
 
 from audio_ingest.hacker_news_adapter import PollSummary, run_poll_cycle
@@ -160,9 +160,58 @@ async def test_top_story_ids_failure_aborts_poll_with_summary(state_db, vault):
             raise httpx.HTTPError("network down")
         async def get_items(self, ids):
             return []
-    import httpx
     with pytest.raises(httpx.HTTPError):
         await run_poll_cycle(
             BoomClient(), state_db, vault,
             min_points=100, max_items=25, topstories_pool=50,
         )
+
+
+async def test_empty_top_ids_returns_zero_summary_without_crash(state_db, vault):
+    """If the API returns an empty list, run_poll_cycle must not crash on
+    `max(top_ids)` and must return a zero-valued summary."""
+    client = FakeClient(top_ids=[], items_by_id={})
+    summary = await run_poll_cycle(
+        client, state_db, vault,
+        min_points=100, max_items=25, topstories_pool=50,
+    )
+    assert summary.ingested == 0
+    assert summary.skipped_dedupe == 0
+    assert summary.fetch_failures == 0
+    assert summary.write_failures == 0
+    assert summary.db_failures == 0
+    assert summary.top_title == ""
+    # Checkpoint must NOT advance when there were no IDs to consider.
+    assert await state_db.get_checkpoint() == 0
+
+
+async def test_db_failure_after_vault_write_counted_as_db_failure_not_ingested(
+    state_db, vault, monkeypatch,
+):
+    """If record_processed_full raises after a successful vault write, the
+    summary must NOT count the item as `ingested` (the dedupe row wasn't
+    written -> it'll be re-ingested next poll). It MUST count it as a
+    `db_failure` so the operator's daily summary surfaces the issue."""
+    s = _load("story_url.json")
+    client = FakeClient(top_ids=[s["id"]], items_by_id={s["id"]: s})
+
+    async def boom_record(self, key, *, points, title, vault_path):
+        raise RuntimeError("DB unavailable")
+
+    monkeypatch.setattr(
+        "audio_ingest.hn_state.HackerNewsStateDB.record_processed_full",
+        boom_record,
+    )
+    summary = await run_poll_cycle(
+        client, state_db, vault,
+        min_points=100, max_items=25, topstories_pool=50,
+    )
+    assert summary.ingested == 0
+    assert summary.db_failures == 1
+    assert summary.write_failures == 0
+    # Vault note WAS written (the failure is post-write).
+    folder = vault / "00-Inbox" / "news" / "2025-05-01"
+    assert folder.is_dir()
+    assert len(list(folder.glob("*.md"))) == 1
+    # Item is NOT marked processed -> next poll will retry.
+    assert await state_db.is_processed(f"hn-{s['id']}") is False

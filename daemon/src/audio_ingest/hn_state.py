@@ -85,11 +85,14 @@ class HackerNewsStateDB:
                 )
 
     async def record_processed_full(
-        self, item_id: int, *, points: int, title: str | None, vault_path: str,
+        self, key: str, *, points: int, title: str | None, vault_path: str,
     ) -> None:
-        """Adapter-side path that captures points/title alongside the dedupe row.
-        Equivalent to record_processed for protocol purposes; preferred when
-        the caller has the metadata to hand."""
+        """Like record_processed but stores points and title on the dedupe row.
+
+        Same key shape as record_processed (`hn-{item_id}`) — adapter callers
+        already have the key in scope.
+        """
+        item_id = _parse_item_id(key)
         async with aiosqlite.connect(self._path) as db:
             await db.execute(
                 "INSERT OR IGNORE INTO hn_ingest_events "
