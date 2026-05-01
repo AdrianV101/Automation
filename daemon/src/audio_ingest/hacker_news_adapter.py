@@ -7,18 +7,24 @@ summary builder, and the daemon-side scheduling loop.
 """
 from __future__ import annotations
 
+import asyncio
 import logging
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
 from pathlib import Path
 from typing import Any
 
+import httpx
 from bs4 import BeautifulSoup
 from markdownify import markdownify as _markdownify
 from news_pipeline import NewsItem, write_news_item
 
+from .hn_client import HackerNewsClient
 from .hn_state import HackerNewsStateDB
+
+TelegramNotifier = Callable[..., Awaitable[None]]
 
 log = logging.getLogger(__name__)
 
@@ -221,3 +227,52 @@ def _seconds_until_next_local_time(
     else:
         target = target_today
     return int((target - local_now).total_seconds())
+
+
+async def run_scheduler_loop(
+    *,
+    state_db: HackerNewsStateDB,
+    vault_root: Path,
+    telegram_notifier: TelegramNotifier,
+    news_topic_id: int | None,
+    local_time: str,
+    tz: ZoneInfo,
+    min_points: int,
+    max_items: int,
+    topstories_pool: int,
+) -> None:
+    """Long-running task: sleep until next 05:30 local, poll, send summary, loop."""
+    h, m = local_time.split(":", 1)
+    target_hour = int(h)
+    target_minute = int(m)
+
+    async with httpx.AsyncClient(
+        base_url="https://hacker-news.firebaseio.com",
+        timeout=httpx.Timeout(30.0),
+    ) as http:
+        client = HackerNewsClient(http)
+        while True:
+            secs = _seconds_until_next_local_time(
+                now=datetime.now(timezone.utc),
+                hour=target_hour, minute=target_minute, tz=tz,
+            )
+            log.info("HN scheduler sleeping %d seconds until next %s %s",
+                     secs, local_time, tz.key)
+            await asyncio.sleep(secs)
+            try:
+                summary = await run_poll_cycle(
+                    client, state_db, vault_root,
+                    min_points=min_points, max_items=max_items,
+                    topstories_pool=topstories_pool,
+                )
+            except Exception:
+                log.exception("HN poll cycle crashed; supervisor will restart")
+                raise
+            today = datetime.now(tz).date().isoformat()
+            try:
+                await telegram_notifier(
+                    build_telegram_summary(summary, date_folder=today),
+                    thread_id=news_topic_id,
+                )
+            except Exception:
+                log.exception("HN Telegram summary notify failed (vault is durable)")

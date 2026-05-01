@@ -14,8 +14,12 @@ from email_ingest import (
     verify_dkim,
 )
 
+from zoneinfo import ZoneInfo
+
 from .config import DaemonConfig
 from .command_config import build_daemon_commands
+from .hacker_news_adapter import run_scheduler_loop
+from .hn_state import HackerNewsStateDB
 from .supervisor import supervise
 from .models import RecordingJob, StatusTracker
 from .notifications import format_file_list
@@ -48,11 +52,12 @@ async def run_daemon(config: DaemonConfig) -> None:
         config.email_ingest_enabled
         or config.news_ingest_enabled
         or config.news_daily_master_enabled
+        or config.hacker_news_enabled
     ):
         log.error(
             "No ingestion path enabled. Set EMAIL_INGEST_ENABLED=true and/or "
-            "NEWS_INGEST_ENABLED=true and/or NEWS_DAILY_MASTER_ENABLED=true. "
-            "Exiting.",
+            "NEWS_INGEST_ENABLED=true and/or NEWS_DAILY_MASTER_ENABLED=true "
+            "and/or HACKER_NEWS_ENABLED=true. Exiting.",
         )
         return
 
@@ -66,6 +71,8 @@ async def run_daemon(config: DaemonConfig) -> None:
                 _run_news_daily_master_path(config),
                 name="news-daily-master",
             )
+        if config.hacker_news_enabled:
+            tg.create_task(_run_hacker_news_path(config), name="hacker-news")
 
 
 async def handle_incoming_email(
@@ -408,6 +415,52 @@ async def _run_news_daily_master_path(config: DaemonConfig) -> None:
         backfill_window_days=config.news_daily_master_backfill_days,
     )
     await sched.run_forever()
+
+
+async def _run_hacker_news_path(config: DaemonConfig) -> None:
+    state_db = HackerNewsStateDB(config.email_ingest_state_db_path)
+    await state_db.init_db()
+
+    bot = BotConfig(
+        bot_token=config.telegram_bot_token, chat_id=config.telegram_chat_id,
+    )
+
+    async def telegram_notifier(text: str, *, thread_id: int | None = None) -> None:
+        await send_message(text, bot, thread_id=thread_id)
+
+    async def on_persistent_failure(task_name: str, failures: int) -> None:
+        try:
+            await send_message(
+                f"⚠️ Hacker News scheduler crash-looping\n\n"
+                f"Task: {task_name}\nConsecutive failures: {failures}\n"
+                f"Will keep restarting with backoff. Check daemon logs.",
+                bot, thread_id=config.news_telegram_topic_id,
+            )
+        except Exception:
+            log.exception("Failed to send HN crash-loop alert")
+
+    tz = ZoneInfo(config.news_daily_master_tz) if config.news_daily_master_tz \
+        else ZoneInfo("UTC")
+    # Note: HN uses the same tz field as news-daily-master for consistency.
+    # Add HACKER_NEWS_TZ later only if a use case for divergence appears.
+
+    async def factory() -> None:
+        await run_scheduler_loop(
+            state_db=state_db,
+            vault_root=config.pkm_vault_path,
+            telegram_notifier=telegram_notifier,
+            news_topic_id=config.news_telegram_topic_id,
+            local_time=config.hacker_news_local_time,
+            tz=tz,
+            min_points=config.hacker_news_min_points,
+            max_items=config.hacker_news_max_items,
+            topstories_pool=config.hacker_news_topstories_pool,
+        )
+
+    await supervise(
+        "hacker-news-scheduler", factory,
+        on_persistent_failure=on_persistent_failure,
+    )
 
 
 def _resolve_news_daily_tz(configured_tz: str):
