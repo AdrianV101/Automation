@@ -9,7 +9,8 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
+from zoneinfo import ZoneInfo
 from pathlib import Path
 from typing import Any
 
@@ -201,3 +202,22 @@ def build_telegram_summary(summary: PollSummary, *, date_folder: str) -> str:
         lines.append("(" + ", ".join(extras) + ")")
     lines.append(f"🔗 00-Inbox/news/{date_folder}/")
     return "\n".join(lines)
+
+
+def _seconds_until_next_local_time(
+    *, now: datetime, hour: int, minute: int, tz: ZoneInfo,
+) -> int:
+    """Seconds from `now` until the next local-time occurrence of HH:MM.
+
+    If `now` lands exactly on the target wall-clock time, returns one full
+    day so the scheduler doesn't tight-loop.
+    """
+    local_now = now.astimezone(tz)
+    target_today = local_now.replace(
+        hour=hour, minute=minute, second=0, microsecond=0,
+    )
+    if target_today <= local_now:
+        target = target_today + timedelta(days=1)
+    else:
+        target = target_today
+    return int((target - local_now).total_seconds())
