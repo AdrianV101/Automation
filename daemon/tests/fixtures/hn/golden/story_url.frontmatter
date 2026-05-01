@@ -1,0 +1,17 @@
+---
+type: news-item
+created: '2025-05-01'
+received-at: '2025-05-01T08:00:00+00:00'
+source: Hacker News
+source-type: hacker-news
+source-address: https://news.ycombinator.com/item?id=42000001
+subject: 'Show HN: A new way to do X'
+message-id: hn-42000001
+hn-author: alice
+hn-comments: 87
+hn-id: 42000001
+hn-points: 350
+tags:
+- news
+- source-hacker-news
+---
