@@ -180,3 +180,24 @@ async def run_poll_cycle(
         top_title=top_title,
         top_points=top_points,
     )
+
+
+def build_telegram_summary(summary: PollSummary, *, date_folder: str) -> str:
+    lines = ["📰 Hacker News", f"{summary.ingested} stories ingested"]
+    if summary.top_title and summary.ingested > 0:
+        lines.append(f"top: {summary.top_title} • {summary.top_points}p")
+    extras: list[str] = []
+    if summary.fetch_failures:
+        extras.append(
+            f"{summary.fetch_failures} fetch "
+            f"{'failure' if summary.fetch_failures == 1 else 'failures'}",
+        )
+    if summary.write_failures:
+        extras.append(
+            f"{summary.write_failures} write "
+            f"{'failure' if summary.write_failures == 1 else 'failures'}",
+        )
+    if extras:
+        lines.append("(" + ", ".join(extras) + ")")
+    lines.append(f"🔗 00-Inbox/news/{date_folder}/")
+    return "\n".join(lines)
