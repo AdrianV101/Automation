@@ -1,9 +1,27 @@
 """Hacker News source adapter — Firebase poll → vault notes via news_pipeline.
 
-Sibling to `news_email_adapter.py`. The HTTP client lives in `hn_client`,
-the dedupe state in `hn_state`. This module owns: HN-dict → NewsItem
+Sibling to ``news_email_adapter.py``. The HTTP client lives in ``hn_client``,
+the dedupe state in ``hn_state``. This module owns: HN-dict → NewsItem
 conversion, top-N filtering, the per-poll orchestration, the Telegram
 summary builder, and the daemon-side scheduling loop.
+
+Environment variables (all optional except ``HACKER_NEWS_ENABLED``):
+
+- ``HACKER_NEWS_ENABLED``         — must be ``true`` to start the scheduler.
+                                    Default ``false``.
+- ``HACKER_NEWS_LOCAL_TIME``      — HH:MM 24h (default ``05:30``). Fires once
+                                    per day at this wall-clock time, in the
+                                    timezone given by ``NEWS_DAILY_MASTER_TZ``
+                                    (or system localtime if unset).
+- ``HACKER_NEWS_MIN_POINTS``      — minimum HN score to ingest. Default ``100``.
+- ``HACKER_NEWS_MAX_ITEMS``       — cap on stories ingested per poll.
+                                    Default ``25``.
+- ``HACKER_NEWS_TOPSTORIES_POOL`` — how many top IDs to pull from
+                                    ``/topstories.json`` before filtering.
+                                    Default ``50``.
+
+The daemon supervisor restarts this task with exponential backoff on crash;
+3 consecutive crashes alert via the existing ``NEWS_TELEGRAM_TOPIC_ID``.
 """
 from __future__ import annotations
 
