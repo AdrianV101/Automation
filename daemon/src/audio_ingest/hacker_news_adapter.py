@@ -11,8 +11,8 @@ Environment variables (all optional except ``HACKER_NEWS_ENABLED``):
                                     Default ``false``.
 - ``HACKER_NEWS_LOCAL_TIME``      — HH:MM 24h (default ``05:30``). Fires once
                                     per day at this wall-clock time, in the
-                                    timezone given by ``NEWS_DAILY_MASTER_TZ``
-                                    (or system localtime if unset).
+                                    timezone resolved from ``NEWS_DAILY_MASTER_TZ``
+                                    (then system localtime, then UTC).
 - ``HACKER_NEWS_MIN_POINTS``      — minimum HN score to ingest. Default ``100``.
 - ``HACKER_NEWS_MAX_ITEMS``       — cap on stories ingested per poll.
                                     Default ``25``.
@@ -39,7 +39,7 @@ from bs4 import BeautifulSoup
 from markdownify import markdownify as _markdownify
 from news_pipeline import NewsItem, write_news_item
 
-from .hn_client import HackerNewsClient
+from .hn_client import HN_API_BASE, HackerNewsClient
 from .hn_state import HackerNewsStateDB
 
 TelegramNotifier = Callable[..., Awaitable[None]]
@@ -271,13 +271,13 @@ async def run_scheduler_loop(
     max_items: int,
     topstories_pool: int,
 ) -> None:
-    """Long-running task: sleep until next 05:30 local, poll, send summary, loop."""
+    """Long-running task: sleep until next ``local_time``, poll, send summary, loop."""
     h, m = local_time.split(":", 1)
     target_hour = int(h)
     target_minute = int(m)
 
     async with httpx.AsyncClient(
-        base_url="https://hacker-news.firebaseio.com",
+        base_url=HN_API_BASE,
         timeout=httpx.Timeout(30.0),
     ) as http:
         client = HackerNewsClient(http)

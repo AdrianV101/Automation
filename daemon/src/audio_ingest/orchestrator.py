@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import logging
 from typing import Protocol
+from zoneinfo import ZoneInfo
 
 from email_ingest import (
     BridgeConfig,
@@ -13,8 +14,6 @@ from email_ingest import (
     parse_email,
     verify_dkim,
 )
-
-from zoneinfo import ZoneInfo
 
 from .config import DaemonConfig
 from .command_config import build_daemon_commands
@@ -370,7 +369,6 @@ async def _run_news_ingest_path(config: DaemonConfig) -> None:
 
 async def _run_news_daily_master_path(config: DaemonConfig) -> None:
     from datetime import time as _time
-    from zoneinfo import ZoneInfo
     from .news_daily_master.runner import (
         RunnerConfig, run_for_date, run_agent_via_agent_infra,
     )
@@ -439,10 +437,9 @@ async def _run_hacker_news_path(config: DaemonConfig) -> None:
         except Exception:
             log.exception("Failed to send HN crash-loop alert")
 
-    tz = ZoneInfo(config.news_daily_master_tz) if config.news_daily_master_tz \
-        else ZoneInfo("UTC")
-    # Note: HN uses the same tz field as news-daily-master for consistency.
-    # Add HACKER_NEWS_TZ later only if a use case for divergence appears.
+    # Reuse NEWS_DAILY_MASTER_TZ to keep the timezone config surface minimal;
+    # the same fallback chain (configured -> localtime -> UTC) is used.
+    tz = _resolve_news_daily_tz(config.news_daily_master_tz)
 
     async def factory() -> None:
         await run_scheduler_loop(
