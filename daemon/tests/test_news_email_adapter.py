@@ -10,7 +10,7 @@ import yaml
 from email_ingest import MalformedEmailError, NewsIngestStateDB, parse_email
 from news_pipeline import NewsItem
 from audio_ingest.news_email_adapter import (
-    email_to_news_item, handle_news_email, render_body,
+    _classify_source_type, email_to_news_item, handle_news_email, render_body,
 )
 
 FIXTURES = Path(__file__).parent / "fixtures" / "news"
@@ -83,6 +83,35 @@ def test_email_to_news_item_falls_back_to_domain_when_no_display_name():
 def test_email_to_news_item_no_subject_falls_back_to_empty():
     item = email_to_news_item(_load("no_subject.eml"), body_md="x")
     assert item.subject == ""
+
+
+# --- _classify_source_type -------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("address", "expected"),
+    [
+        ("digest@ft.com", "financial-times"),
+        ("newsletters@email.ft.com", "financial-times"),
+        ("Mixed.Case@FT.COM", "financial-times"),
+        ("weekly@example-news.com", "newsletter"),
+        ("hello@plaintext-news.org", "newsletter"),
+        ("", "newsletter"),
+        ("not-an-email", "newsletter"),
+        # Right-anchored match: ft.com must be the registered domain, not a
+        # substring of the host. ft.com.attacker.example is NOT FT.
+        ("phish@ft.com.attacker.example", "newsletter"),
+    ],
+)
+def test_classify_source_type(address, expected):
+    assert _classify_source_type(address) == expected
+
+
+def test_email_to_news_item_ft_email_classified_as_financial_times():
+    item = email_to_news_item(_load("firstft_email.eml"), body_md="x")
+    assert item.source_type == "financial-times"
+    assert item.source == "Financial Times"
+    assert item.source_address == "newsletters@email.ft.com"
 
 
 # --- end-to-end via shared writer ------------------------------------------

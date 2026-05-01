@@ -21,8 +21,11 @@ FIXTURES = Path(__file__).parent / "fixtures" / "news"
 GOLDEN = FIXTURES / "golden"
 
 
-@pytest.mark.parametrize("eml_name", ["html_newsletter.eml", "plaintext_newsletter.eml"])
-def test_newsletter_frontmatter_byte_identical(eml_name):
+@pytest.mark.parametrize(
+    "eml_name",
+    ["html_newsletter.eml", "plaintext_newsletter.eml", "firstft_email.eml"],
+)
+def test_news_item_frontmatter_byte_identical(eml_name):
     parsed = parse_email((FIXTURES / eml_name).read_bytes())
     body_md = render_body(parsed)
     item = email_to_news_item(parsed, body_md)
