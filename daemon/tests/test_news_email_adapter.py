@@ -54,6 +54,19 @@ def test_render_body_drops_style_block():
     assert "color: red" not in md
 
 
+def test_render_body_handles_substack_nested_tracking_pixels():
+    """Real Substack HTML reaches the parser with stray close tags before two
+    back-to-back 1x1 pixels (the second of which uses XHTML `/>`). bs4's
+    html.parser then nests the second img INSIDE the first; decomposing the
+    outer pixel clears the inner img's `attrs`/`parent`, and the next
+    iteration over `find_all("img")` used to crash with
+    `'NoneType' object has no attribute 'get'`. Fixture is a sanitized slice
+    of a real failing email."""
+    md = render_body(_load("substack_nested_img.eml"))
+    assert "eotrx.substackcdn.com" not in md
+    assert "email.mg-d0.substack.com" not in md
+
+
 def test_render_body_no_body_raises_malformed():
     with pytest.raises(MalformedEmailError):
         render_body(_load("empty_body.eml"))

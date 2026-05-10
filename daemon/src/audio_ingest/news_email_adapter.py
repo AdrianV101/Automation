@@ -42,6 +42,14 @@ def _strip_html_noise(html: str) -> str:
     for tag in soup.find_all(["style", "script"]):
         tag.decompose()
     for img in soup.find_all("img"):
+        # Substack ships back-to-back 1x1 trackers where the first uses
+        # `<img ... />`. html.parser doesn't honour XHTML self-closing on
+        # void elements, so the second img is parsed as a child of the
+        # first. Decomposing the outer pixel zeroes this inner img's
+        # `.attrs`/`.parent`, and the next iteration would crash on
+        # `img.get(...)` with "'NoneType' object has no attribute 'get'".
+        if img.decomposed:
+            continue
         try:
             w = int(img.get("width", "0") or "0")
             h = int(img.get("height", "0") or "0")
