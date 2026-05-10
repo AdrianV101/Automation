@@ -1,10 +1,20 @@
 from __future__ import annotations
 
+from dataclasses import dataclass
 from datetime import date, datetime, timezone
 from pathlib import Path
 from typing import Any
 
 import aiosqlite
+
+
+@dataclass(frozen=True)
+class DigestItemInput:
+    source_path: str
+    category: str
+    title: str
+    url: str | None
+    position: int
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS news_digest_runs (
@@ -129,3 +139,47 @@ class NewsDigestStateDB:
                 raise KeyError(
                     f"no run row for digest_date={digest_date.isoformat()!r}",
                 )
+
+    async def insert_item(
+        self, *, digest_date: date, item: DigestItemInput,
+    ) -> int:
+        async with aiosqlite.connect(self._path) as db:
+            cur = await db.execute(
+                "INSERT INTO news_digest_items "
+                "(digest_date, source_path, category, title, url, position, "
+                " telegram_message_id) "
+                "VALUES (?, ?, ?, ?, ?, ?, NULL)",
+                (
+                    _date_key(digest_date),
+                    item.source_path, item.category, item.title,
+                    item.url, item.position,
+                ),
+            )
+            await db.commit()
+            row_id = cur.lastrowid
+            if row_id is None:
+                raise RuntimeError("INSERT returned no lastrowid")
+            return int(row_id)
+
+    async def get_digest_item(self, item_id: int) -> dict[str, Any] | None:
+        async with aiosqlite.connect(self._path) as db:
+            db.row_factory = aiosqlite.Row
+            async with db.execute(
+                "SELECT * FROM news_digest_items WHERE id = ?", (item_id,),
+            ) as cur:
+                row = await cur.fetchone()
+                return dict(row) if row else None
+
+    async def attach_telegram_message_id(
+        self, *, item_ids: list[int], telegram_message_id: int,
+    ) -> None:
+        if not item_ids:
+            return
+        placeholders = ",".join("?" for _ in item_ids)
+        async with aiosqlite.connect(self._path) as db:
+            await db.execute(
+                f"UPDATE news_digest_items SET telegram_message_id = ? "
+                f"WHERE id IN ({placeholders})",
+                (telegram_message_id, *item_ids),
+            )
+            await db.commit()

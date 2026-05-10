@@ -119,3 +119,93 @@ async def test_update_run_missing_row_raises(db_path: Path) -> None:
     await db.init_db()
     with pytest.raises(KeyError):
         await db.update_run(date(2026, 5, 9), status="completed")
+
+
+# ---------------------------------------------------------------------------
+# news_digest_items
+# ---------------------------------------------------------------------------
+
+from audio_ingest.news_personal_digest.state import DigestItemInput  # noqa: E402
+
+
+@pytest.mark.asyncio
+async def test_insert_item_returns_autoincrement_id(db_path: Path) -> None:
+    db = NewsDigestStateDB(db_path)
+    await db.init_db()
+    await db.insert_run(digest_date=date(2026, 5, 9))
+    id1 = await db.insert_item(
+        digest_date=date(2026, 5, 9),
+        item=DigestItemInput(
+            source_path="00-Inbox/news/2026-05-09/anthropic-x.md",
+            category="AI",
+            title="Anthropic ships Claude 4.7",
+            url="https://anthropic.com/news/claude-4-7",
+            position=1,
+        ),
+    )
+    id2 = await db.insert_item(
+        digest_date=date(2026, 5, 9),
+        item=DigestItemInput(
+            source_path="00-Inbox/news/2026-05-09/ecb-x.md",
+            category="Finance",
+            title="ECB holds rates",
+            url=None,
+            position=1,
+        ),
+    )
+    assert id1 == 1
+    assert id2 == 2
+
+
+@pytest.mark.asyncio
+async def test_get_digest_item_round_trip(db_path: Path) -> None:
+    db = NewsDigestStateDB(db_path)
+    await db.init_db()
+    await db.insert_run(digest_date=date(2026, 5, 9))
+    item_id = await db.insert_item(
+        digest_date=date(2026, 5, 9),
+        item=DigestItemInput(
+            source_path="00-Inbox/news/2026-05-09/x.md",
+            category="AI",
+            title="X",
+            url="https://x.example",
+            position=1,
+        ),
+    )
+    row = await db.get_digest_item(item_id)
+    assert row is not None
+    assert row["id"] == item_id
+    assert row["digest_date"] == "2026-05-09"
+    assert row["title"] == "X"
+    assert row["telegram_message_id"] is None
+
+
+@pytest.mark.asyncio
+async def test_get_digest_item_missing_returns_none(db_path: Path) -> None:
+    db = NewsDigestStateDB(db_path)
+    await db.init_db()
+    assert await db.get_digest_item(99999) is None
+
+
+@pytest.mark.asyncio
+async def test_attach_telegram_message_id(db_path: Path) -> None:
+    db = NewsDigestStateDB(db_path)
+    await db.init_db()
+    await db.insert_run(digest_date=date(2026, 5, 9))
+    id1 = await db.insert_item(
+        digest_date=date(2026, 5, 9),
+        item=DigestItemInput("p1", "AI", "T1", None, 1),
+    )
+    id2 = await db.insert_item(
+        digest_date=date(2026, 5, 9),
+        item=DigestItemInput("p2", "AI", "T2", None, 2),
+    )
+    id3 = await db.insert_item(
+        digest_date=date(2026, 5, 9),
+        item=DigestItemInput("p3", "Finance", "T3", None, 1),
+    )
+    await db.attach_telegram_message_id(item_ids=[id1, id2], telegram_message_id=10001)
+    await db.attach_telegram_message_id(item_ids=[id3], telegram_message_id=10002)
+    assert (await db.get_digest_item(id1))["telegram_message_id"] == 10001
+    assert (await db.get_digest_item(id2))["telegram_message_id"] == 10001
+    assert (await db.get_digest_item(id3))["telegram_message_id"] == 10002
