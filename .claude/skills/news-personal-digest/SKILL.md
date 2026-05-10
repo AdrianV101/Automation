@@ -138,7 +138,7 @@ The runner extracts the LAST fenced `json` block in your output, so progress JSO
   "title": "ECB holds at 3.25%, signals June cut",
   "url": "https://ft.com/...",
   "briefing": "ECB held the deposit rate at 3.25% in line with consensus but Lagarde's press conference language shifted from 'data-dependent' to 'increasingly confident', priced as a 70% probability of a 25bp cut in June. Bund yields fell 8bp on the day.",
-  "why_you_care": "Direct EUR-mortgage rate exposure (Madrid flat); a June cut accelerates the timeline for re-pricing the variable tracker."
+  "why_you_care": "Eurozone rate trajectory directly affects personal financial planning; a June cut shifts the timeline for refinancing decisions."
 }
 ```
 
