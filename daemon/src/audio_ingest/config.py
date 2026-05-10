@@ -51,6 +51,12 @@ class DaemonConfig:
     # or to override for testing.
     news_daily_master_tz: str = ""
     news_daily_telegram_topic_id: int | None = None
+    # News personal digest (Phase 3) — chained after the daily master.
+    news_personal_digest_enabled: bool = False
+    news_personal_digest_model: str = "claude-opus-4-7"
+    news_personal_digest_feedback_window_days: int = 7
+    news_personal_digest_min_items: int = 4
+    news_personal_digest_max_items: int = 12
     # Hacker News source (daily HTTP poll of Firebase HN API).
     # See 01-Projects/Automation/development/designs/2026-05-01-news-source-hacker-news-design.md.
     hacker_news_enabled: bool = False
@@ -156,6 +162,22 @@ class DaemonConfig:
             int(raw_news_daily_topic) if raw_news_daily_topic else None
         )
 
+        news_personal_digest_enabled = (
+            os.environ.get("NEWS_PERSONAL_DIGEST_ENABLED", "false").lower() == "true"
+        )
+        news_personal_digest_model = os.environ.get(
+            "NEWS_PERSONAL_DIGEST_MODEL", "claude-opus-4-7",
+        )
+        news_personal_digest_feedback_window_days = typed_env(
+            "NEWS_PERSONAL_DIGEST_FEEDBACK_WINDOW_DAYS", "7", int,
+        )
+        news_personal_digest_min_items = typed_env(
+            "NEWS_PERSONAL_DIGEST_MIN_ITEMS", "4", int,
+        )
+        news_personal_digest_max_items = typed_env(
+            "NEWS_PERSONAL_DIGEST_MAX_ITEMS", "12", int,
+        )
+
         hacker_news_enabled = (
             os.environ.get("HACKER_NEWS_ENABLED", "false").lower() == "true"
         )
@@ -216,6 +238,11 @@ class DaemonConfig:
             news_daily_master_model=news_daily_master_model,
             news_daily_master_tz=news_daily_master_tz,
             news_daily_telegram_topic_id=news_daily_telegram_topic_id,
+            news_personal_digest_enabled=news_personal_digest_enabled,
+            news_personal_digest_model=news_personal_digest_model,
+            news_personal_digest_feedback_window_days=news_personal_digest_feedback_window_days,
+            news_personal_digest_min_items=news_personal_digest_min_items,
+            news_personal_digest_max_items=news_personal_digest_max_items,
             hacker_news_enabled=hacker_news_enabled,
             hacker_news_local_time=hacker_news_local_time,
             hacker_news_min_points=hacker_news_min_points,
@@ -233,4 +260,21 @@ class DaemonConfig:
             raise ValueError(
                 f"max_concurrent_dispatch must be >= 1, "
                 f"got {self.max_concurrent_dispatch}"
+            )
+        if self.news_personal_digest_min_items < 1:
+            raise ValueError(
+                f"news_personal_digest_min_items must be >= 1, "
+                f"got {self.news_personal_digest_min_items}"
+            )
+        if self.news_personal_digest_max_items < self.news_personal_digest_min_items:
+            raise ValueError(
+                f"news_personal_digest_max_items "
+                f"({self.news_personal_digest_max_items}) must be >= "
+                f"news_personal_digest_min_items "
+                f"({self.news_personal_digest_min_items})"
+            )
+        if self.news_personal_digest_feedback_window_days < 1:
+            raise ValueError(
+                f"news_personal_digest_feedback_window_days must be >= 1, "
+                f"got {self.news_personal_digest_feedback_window_days}"
             )

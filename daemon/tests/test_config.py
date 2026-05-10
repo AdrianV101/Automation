@@ -158,3 +158,56 @@ class TestNewsDailyMasterConfig:
         monkeypatch.setenv("NEWS_DAILY_MASTER_LOCAL_TIME", "25:00")
         with pytest.raises(ValueError, match="NEWS_DAILY_MASTER_LOCAL_TIME"):
             DaemonConfig.from_env()
+
+
+class TestNewsPersonalDigestConfig:
+    def test_defaults_when_unset(self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+        _set_required_env(monkeypatch, tmp_path)
+        cfg = DaemonConfig.from_env()
+        assert cfg.news_personal_digest_enabled is False
+        assert cfg.news_personal_digest_model == "claude-opus-4-7"
+        assert cfg.news_personal_digest_feedback_window_days == 7
+        assert cfg.news_personal_digest_min_items == 4
+        assert cfg.news_personal_digest_max_items == 12
+
+    def test_reads_env_vars(self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+        _set_required_env(monkeypatch, tmp_path)
+        monkeypatch.setenv("NEWS_PERSONAL_DIGEST_ENABLED", "true")
+        monkeypatch.setenv("NEWS_PERSONAL_DIGEST_MODEL", "claude-sonnet-4-6")
+        monkeypatch.setenv("NEWS_PERSONAL_DIGEST_FEEDBACK_WINDOW_DAYS", "14")
+        monkeypatch.setenv("NEWS_PERSONAL_DIGEST_MIN_ITEMS", "6")
+        monkeypatch.setenv("NEWS_PERSONAL_DIGEST_MAX_ITEMS", "10")
+        cfg = DaemonConfig.from_env()
+        assert cfg.news_personal_digest_enabled is True
+        assert cfg.news_personal_digest_model == "claude-sonnet-4-6"
+        assert cfg.news_personal_digest_feedback_window_days == 14
+        assert cfg.news_personal_digest_min_items == 6
+        assert cfg.news_personal_digest_max_items == 10
+
+    def test_max_items_must_be_at_least_min(self) -> None:
+        with pytest.raises(ValueError, match="news_personal_digest_max_items"):
+            DaemonConfig(
+                telegram_bot_token="x",
+                telegram_chat_id="y",
+                pkm_vault_path=Path("/tmp"),
+                news_personal_digest_min_items=10,
+                news_personal_digest_max_items=4,
+            )
+
+    def test_min_items_must_be_positive(self) -> None:
+        with pytest.raises(ValueError, match="news_personal_digest_min_items"):
+            DaemonConfig(
+                telegram_bot_token="x",
+                telegram_chat_id="y",
+                pkm_vault_path=Path("/tmp"),
+                news_personal_digest_min_items=0,
+            )
+
+    def test_feedback_window_days_must_be_positive(self) -> None:
+        with pytest.raises(ValueError, match="news_personal_digest_feedback_window_days"):
+            DaemonConfig(
+                telegram_bot_token="x",
+                telegram_chat_id="y",
+                pkm_vault_path=Path("/tmp"),
+                news_personal_digest_feedback_window_days=0,
+            )
