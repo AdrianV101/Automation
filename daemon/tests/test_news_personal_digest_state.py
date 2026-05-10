@@ -62,3 +62,60 @@ def test_valid_ratings_constant() -> None:
     assert VALID_RATINGS == frozenset({
         "thumbs_up", "thumbs_down", "star",
     })
+
+
+@pytest.mark.asyncio
+async def test_update_run_to_completed(db_path: Path) -> None:
+    db = NewsDigestStateDB(db_path)
+    await db.init_db()
+    await db.insert_run(digest_date=date(2026, 5, 9))
+    await db.update_run(
+        date(2026, 5, 9),
+        status="completed",
+        item_count=8,
+        rating_signal_summary="Boosted AI items based on 3 recent ⭐.",
+    )
+    row = await db.get_run(date(2026, 5, 9))
+    assert row["status"] == "completed"
+    assert row["completed_at"] is not None
+    assert row["item_count"] == 8
+    assert row["rating_signal_summary"].startswith("Boosted AI")
+    assert row["error"] is None
+
+
+@pytest.mark.asyncio
+async def test_update_run_to_failed_records_error(db_path: Path) -> None:
+    db = NewsDigestStateDB(db_path)
+    await db.init_db()
+    await db.insert_run(digest_date=date(2026, 5, 9))
+    await db.update_run(date(2026, 5, 9), status="failed", error="agent timeout")
+    row = await db.get_run(date(2026, 5, 9))
+    assert row["status"] == "failed"
+    assert row["error"] == "agent timeout"
+    assert row["completed_at"] is not None  # terminal status sets completed_at
+
+
+@pytest.mark.asyncio
+async def test_update_run_invalid_status_raises(db_path: Path) -> None:
+    db = NewsDigestStateDB(db_path)
+    await db.init_db()
+    await db.insert_run(digest_date=date(2026, 5, 9))
+    with pytest.raises(ValueError, match="invalid status"):
+        await db.update_run(date(2026, 5, 9), status="bogus")
+
+
+@pytest.mark.asyncio
+async def test_update_run_unknown_column_raises(db_path: Path) -> None:
+    db = NewsDigestStateDB(db_path)
+    await db.init_db()
+    await db.insert_run(digest_date=date(2026, 5, 9))
+    with pytest.raises(ValueError, match="unknown columns"):
+        await db.update_run(date(2026, 5, 9), status="completed", master_path="x")
+
+
+@pytest.mark.asyncio
+async def test_update_run_missing_row_raises(db_path: Path) -> None:
+    db = NewsDigestStateDB(db_path)
+    await db.init_db()
+    with pytest.raises(KeyError):
+        await db.update_run(date(2026, 5, 9), status="completed")

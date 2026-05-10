@@ -100,3 +100,32 @@ class NewsDigestStateDB:
             ) as cur:
                 row = await cur.fetchone()
                 return dict(row) if row else None
+
+    async def update_run(
+        self, digest_date: date, status: str, **fields: Any,
+    ) -> None:
+        if status not in NEWS_DIGEST_VALID_STATUSES:
+            raise ValueError(f"invalid status {status!r}")
+        bad = set(fields) - _UPDATABLE_COLUMNS
+        if bad:
+            raise ValueError(f"unknown columns: {sorted(bad)}")
+        cols = ["status = ?"]
+        params: list[Any] = [status]
+        for key, value in fields.items():
+            cols.append(f"{key} = ?")
+            params.append(value)
+        if status in _TERMINAL_STATUSES:
+            cols.append("completed_at = ?")
+            params.append(_now_iso())
+        params.append(_date_key(digest_date))
+        async with aiosqlite.connect(self._path) as db:
+            cur = await db.execute(
+                f"UPDATE news_digest_runs SET {', '.join(cols)} "
+                f"WHERE digest_date = ?",
+                params,
+            )
+            await db.commit()
+            if cur.rowcount == 0:
+                raise KeyError(
+                    f"no run row for digest_date={digest_date.isoformat()!r}",
+                )
