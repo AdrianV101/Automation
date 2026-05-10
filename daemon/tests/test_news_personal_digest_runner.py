@@ -281,3 +281,99 @@ async def test_agent_returns_failure_marks_failed_verification(
     assert "briefing too short" in (row["error"] or "")
     notify.assert_awaited()
     send_messages.assert_not_awaited()
+
+
+# ---------------------------------------------------------------------------
+# parse_agent_summary
+# ---------------------------------------------------------------------------
+
+from audio_ingest.news_personal_digest.runner import (  # noqa: E402
+    parse_agent_summary,
+)
+
+
+def test_parse_agent_summary_happy_path() -> None:
+    text = """
+Some preamble from the agent.
+
+```json
+{
+  "success": true,
+  "rating_signal_summary": "Boosted AI items based on 3 ⭐.",
+  "categories": [
+    {
+      "name": "AI",
+      "emoji": "🤖",
+      "items": [
+        {
+          "source_path": "00-Inbox/news/2026-05-09/anthropic.md",
+          "title": "Anthropic 4.7",
+          "url": "https://anthropic.com/...",
+          "briefing": "Larger context window (1M default). Faster cache hits. Definitely more than the 80-character minimum.",
+          "why_you_care": "Daily-driver model."
+        }
+      ]
+    }
+  ]
+}
+```
+""".strip()
+    out = parse_agent_summary([text])
+    assert out.success is True
+    assert out.error is None
+    assert len(out.categories) == 1
+    assert out.categories[0].name == "AI"
+    assert out.categories[0].items[0].title == "Anthropic 4.7"
+    assert out.categories[0].items[0].position == 1
+    assert "Boosted" in out.rating_signal_summary
+
+
+def test_parse_agent_summary_invalid_json_returns_failure() -> None:
+    out = parse_agent_summary(["```json\n{not valid}\n```"])
+    assert out.success is False
+    assert "invalid" in (out.error or "").lower() or "json" in (out.error or "").lower()
+
+
+def test_parse_agent_summary_no_json_block_returns_failure() -> None:
+    out = parse_agent_summary(["just plain prose, no json block"])
+    assert out.success is False
+    assert "json" in (out.error or "").lower()
+
+
+def test_parse_agent_summary_verifies_min_briefing_length() -> None:
+    text = """
+```json
+{"success": true, "categories": [{"name":"AI","emoji":"🤖","items":[
+{"source_path":"p","title":"T","url":"u","briefing":"short","why_you_care":"w"}
+]}], "rating_signal_summary":""}
+```
+""".strip()
+    out = parse_agent_summary([text])
+    assert out.success is False
+    assert "briefing" in (out.error or "").lower()
+
+
+def test_parse_agent_summary_assigns_positions_per_category() -> None:
+    long_b = "x" * 100
+    text = (
+        "```json\n"
+        '{"success": true, "rating_signal_summary": "", "categories": [\n'
+        '  {"name": "AI", "emoji": "🤖", "items": [\n'
+        '    {"source_path":"p1","title":"A","url":null,'
+        f'"briefing":"{long_b}","why_you_care":"w"' "},\n"
+        '    {"source_path":"p2","title":"B","url":null,'
+        f'"briefing":"{long_b}","why_you_care":"w"' "}\n"
+        '  ]},\n'
+        '  {"name": "Finance", "emoji": "💸", "items": [\n'
+        '    {"source_path":"p3","title":"C","url":null,'
+        f'"briefing":"{long_b}","why_you_care":"w"' "}\n"
+        '  ]}\n'
+        ']}\n'
+        "```"
+    )
+    out = parse_agent_summary([text])
+    assert out.success is True, out.error
+    ai = out.categories[0]
+    fin = out.categories[1]
+    assert [it.position for it in ai.items] == [1, 2]
+    assert [it.position for it in fin.items] == [1]

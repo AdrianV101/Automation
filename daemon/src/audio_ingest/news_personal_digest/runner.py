@@ -224,3 +224,118 @@ async def _run_for_date_inner(
         item_count=output.item_count,
         rating_signal_summary=output.rating_signal_summary,
     )
+
+
+# ---------------------------------------------------------------------------
+# Agent summary parser + concrete agent_infra adapter
+# ---------------------------------------------------------------------------
+
+_JSON_BLOCK_RE = re.compile(r"```json\s*(\{.*?\})\s*```", re.DOTALL)
+_MIN_BRIEFING_CHARS = 80
+
+
+def parse_agent_summary(text_parts: list[str]) -> AgentRunOutput:
+    """Pull a structured summary out of the agent's text blocks.
+
+    Looks for the LAST fenced ```json``` block. Verifies all items have a
+    minimum briefing length (≥80 chars) per the design's verification
+    checklist.
+    """
+    joined = "\n".join(text_parts)
+    matches = _JSON_BLOCK_RE.findall(joined)
+    if not matches:
+        return AgentRunOutput(
+            success=False,
+            error="no JSON summary block in agent output",
+            text=joined,
+        )
+    try:
+        data = json.loads(matches[-1])
+    except json.JSONDecodeError as exc:
+        return AgentRunOutput(
+            success=False,
+            error=f"invalid JSON summary: {exc}",
+            text=joined,
+        )
+
+    success = bool(data.get("success", False))
+    raw_error = data.get("error")
+    if not success:
+        return AgentRunOutput(
+            success=False,
+            error=raw_error or "agent reported success=false without an error",
+            text=joined,
+        )
+
+    try:
+        categories: list[DigestCategory] = []
+        for cat_data in data.get("categories", []):
+            items: list[DigestItem] = []
+            for pos, it in enumerate(cat_data.get("items", []), start=1):
+                briefing = it.get("briefing") or ""
+                if len(briefing) < _MIN_BRIEFING_CHARS:
+                    return AgentRunOutput(
+                        success=False,
+                        error=(
+                            f"briefing too short ({len(briefing)} chars) "
+                            f"for item {it.get('title')!r} in category "
+                            f"{cat_data.get('name')!r}"
+                        ),
+                        text=joined,
+                    )
+                items.append(DigestItem(
+                    id=0,  # populated later by runner.insert_item
+                    title=str(it["title"]),
+                    url=it.get("url"),
+                    briefing=briefing,
+                    why_you_care=str(it["why_you_care"]),
+                    source_path=str(it["source_path"]),
+                    position=pos,
+                ))
+            categories.append(DigestCategory(
+                name=str(cat_data["name"]),
+                emoji=str(cat_data.get("emoji", "•")),
+                items=items,
+            ))
+    except (KeyError, TypeError) as exc:
+        return AgentRunOutput(
+            success=False, error=f"malformed item: {exc}", text=joined,
+        )
+
+    return AgentRunOutput(
+        success=True,
+        categories=categories,
+        rating_signal_summary=str(data.get("rating_signal_summary", "")),
+        text=joined,
+    )
+
+
+async def run_agent_via_agent_infra(
+    inp: AgentRunInput,
+    *,
+    mcp_server_path: str | None = None,
+) -> AgentRunOutput:
+    """Concrete AgentRunFn that invokes the news-personal-digest skill.
+
+    System prompt is intentionally minimal: procedural detail lives in
+    .claude/skills/news-personal-digest/SKILL.md, loaded via
+    setting_sources=["project"].
+    """
+    options = build_agent_options(
+        system_prompt=(
+            "You are the news personal digest agent. Follow the "
+            "news-personal-digest skill exactly."
+        ),
+        pkm_vault_path=inp.vault_root,
+        model=inp.model,
+        setting_sources=["project"],
+        allow_skill_tool=True,
+        mcp_server_path=mcp_server_path,
+    )
+    result = await run_agent_loop_streaming(inp.prompt, options)
+    if result.error:
+        return AgentRunOutput(
+            success=False, error=result.error,
+            text="\n".join(result.text_parts),
+        )
+    return parse_agent_summary(result.text_parts)
