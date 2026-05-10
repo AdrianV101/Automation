@@ -133,5 +133,94 @@ async def _run_for_date_inner(
         await db.update_run(target_date, status="skipped_no_master")
         return
 
-    # Inner branches (happy / failed / failed_verification) added in Task I.
-    raise NotImplementedError("happy/error paths added in subsequent tasks")
+    # 1. Build the recent-feedback prompt block.
+    window_start = target_date - timedelta(days=config.feedback_window_days)
+    rating_rows = await db.recent_ratings(window_start, target_date)
+    feedback_block = render_feedback_block(ratings=rating_rows)
+
+    prompt = build_runner_prompt(
+        target_date=target_date, feedback_block=feedback_block,
+    )
+
+    # 2. Invoke the agent.
+    try:
+        output = await run_agent(AgentRunInput(
+            target_date=target_date,
+            vault_root=config.vault_root,
+            model=config.model,
+            prompt=prompt,
+        ))
+    except Exception as exc:
+        log.exception("Agent run raised for digest %s", target_date)
+        await db.update_run(
+            target_date, status="failed",
+            error=f"agent_exception: {exc}",
+        )
+        await notify(
+            f"⚠️ News personal digest agent failed for "
+            f"{target_date.isoformat()}: {exc}",
+        )
+        return
+
+    if not output.success:
+        await db.update_run(
+            target_date, status="failed_verification",
+            error=output.error,
+        )
+        await notify(
+            f"⚠️ News personal digest verification failed for "
+            f"{target_date.isoformat()}: {output.error}",
+        )
+        return
+
+    # 3. Persist items, capture autoincrement ids, rebuild category objects
+    #    with real ids so the rendered button payloads reference DB rows.
+    persisted_categories: list[DigestCategory] = []
+    for cat in output.categories:
+        new_items: list[DigestItem] = []
+        for it in cat.items:
+            new_id = await db.insert_item(
+                digest_date=target_date,
+                item=DigestItemInput(
+                    source_path=it.source_path,
+                    category=cat.name,
+                    title=it.title,
+                    url=it.url,
+                    position=it.position,
+                ),
+            )
+            new_items.append(DigestItem(
+                id=new_id,
+                title=it.title, url=it.url,
+                briefing=it.briefing, why_you_care=it.why_you_care,
+                source_path=it.source_path, position=it.position,
+            ))
+        persisted_categories.append(DigestCategory(
+            name=cat.name, emoji=cat.emoji, items=new_items,
+        ))
+
+    # 4. Render and send Telegram messages, attach message_ids.
+    messages = build_messages(persisted_categories)
+    if messages:
+        message_ids = await send_messages(messages)
+        # `messages` and `message_ids` are aligned 1:1; each message's
+        # button rows correspond to a contiguous slice of items in the
+        # flattened persisted_categories.items list.
+        flat_items = [
+            it for cat in persisted_categories for it in cat.items
+        ]
+        offset = 0
+        for (_, kb), msg_id in zip(messages, message_ids):
+            row_count = len(kb["inline_keyboard"])
+            ids_in_msg = [it.id for it in flat_items[offset:offset + row_count]]
+            await db.attach_telegram_message_id(
+                item_ids=ids_in_msg, telegram_message_id=msg_id,
+            )
+            offset += row_count
+
+    # 5. Mark completed.
+    await db.update_run(
+        target_date, status="completed",
+        item_count=output.item_count,
+        rating_signal_summary=output.rating_signal_summary,
+    )
