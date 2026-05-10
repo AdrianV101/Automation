@@ -1,2 +1,0 @@
-- [Phase 3 implementation capture pattern](project_phase3_capture.md) — large multi-task work blocks warrant single consolidated devlog entry, not per-task entries
-- [Broken links in design docs are pre-existing noise](feedback_broken_links_design_docs.md) — example paths in brainstorming docs; skip, don't fix
