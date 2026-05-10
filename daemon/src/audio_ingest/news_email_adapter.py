@@ -42,6 +42,12 @@ def _strip_html_noise(html: str) -> str:
     for tag in soup.find_all(["style", "script"]):
         tag.decompose()
     for img in soup.find_all("img"):
+        # html.parser ignores `/>` on void elements, so following content
+        # (e.g. another <img>) can be parsed as a child. Decomposing the
+        # outer img then nulls the inner's `.attrs`/`.parent`, so this
+        # already-materialised find_all() list can yield stale nodes.
+        if img.decomposed:
+            continue
         try:
             w = int(img.get("width", "0") or "0")
             h = int(img.get("height", "0") or "0")

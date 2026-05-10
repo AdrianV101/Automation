@@ -54,6 +54,13 @@ def test_render_body_drops_style_block():
     assert "color: red" not in md
 
 
+def test_render_body_handles_substack_nested_tracking_pixels():
+    """Nested <img> from html.parser's void-element handling must not crash the pixel filter."""
+    md = render_body(_load("substack_nested_img.eml"))
+    assert "eotrx.substackcdn.com" not in md
+    assert "email.mg-d0.substack.com" not in md
+
+
 def test_render_body_no_body_raises_malformed():
     with pytest.raises(MalformedEmailError):
         render_body(_load("empty_body.eml"))
