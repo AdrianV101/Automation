@@ -209,3 +209,104 @@ async def test_attach_telegram_message_id(db_path: Path) -> None:
     assert (await db.get_digest_item(id1))["telegram_message_id"] == 10001
     assert (await db.get_digest_item(id2))["telegram_message_id"] == 10001
     assert (await db.get_digest_item(id3))["telegram_message_id"] == 10002
+
+
+# ---------------------------------------------------------------------------
+# news_ratings
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_upsert_rating_inserts_new(db_path: Path) -> None:
+    db = NewsDigestStateDB(db_path)
+    await db.init_db()
+    await db.insert_run(digest_date=date(2026, 5, 9))
+    item_id = await db.insert_item(
+        digest_date=date(2026, 5, 9),
+        item=DigestItemInput("p1", "AI", "T1", None, 1),
+    )
+    await db.upsert_rating(item_id=item_id, rating="thumbs_up")
+    row = await db.get_rating(item_id)
+    assert row is not None
+    assert row["rating"] == "thumbs_up"
+    assert row["digest_date"] == "2026-05-09"
+    assert row["rated_at"] is not None
+
+
+@pytest.mark.asyncio
+async def test_upsert_rating_overwrites_same_item(db_path: Path) -> None:
+    db = NewsDigestStateDB(db_path)
+    await db.init_db()
+    await db.insert_run(digest_date=date(2026, 5, 9))
+    item_id = await db.insert_item(
+        digest_date=date(2026, 5, 9),
+        item=DigestItemInput("p1", "AI", "T1", None, 1),
+    )
+    await db.upsert_rating(item_id=item_id, rating="thumbs_up")
+    await db.upsert_rating(item_id=item_id, rating="thumbs_down")
+    row = await db.get_rating(item_id)
+    assert row["rating"] == "thumbs_down"
+    rows = await db.recent_ratings(date(2026, 5, 1), date(2026, 5, 31))
+    assert len(rows) == 1
+
+
+@pytest.mark.asyncio
+async def test_upsert_rating_invalid_value_raises(db_path: Path) -> None:
+    db = NewsDigestStateDB(db_path)
+    await db.init_db()
+    await db.insert_run(digest_date=date(2026, 5, 9))
+    item_id = await db.insert_item(
+        digest_date=date(2026, 5, 9),
+        item=DigestItemInput("p1", "AI", "T1", None, 1),
+    )
+    with pytest.raises(ValueError, match="invalid rating"):
+        await db.upsert_rating(item_id=item_id, rating="meh")
+
+
+@pytest.mark.asyncio
+async def test_upsert_rating_unknown_item_raises(db_path: Path) -> None:
+    db = NewsDigestStateDB(db_path)
+    await db.init_db()
+    with pytest.raises(KeyError):
+        await db.upsert_rating(item_id=99999, rating="thumbs_up")
+
+
+@pytest.mark.asyncio
+async def test_recent_ratings_window_filter(db_path: Path) -> None:
+    db = NewsDigestStateDB(db_path)
+    await db.init_db()
+    for d_offset, rating in enumerate(["thumbs_up", "star", "thumbs_down"]):
+        d = date(2026, 5, 1 + d_offset)
+        await db.insert_run(digest_date=d)
+        item_id = await db.insert_item(
+            digest_date=d,
+            item=DigestItemInput(f"p{d_offset}", "AI", f"T{d_offset}", None, 1),
+        )
+        await db.upsert_rating(item_id=item_id, rating=rating)
+
+    rows = await db.recent_ratings(date(2026, 5, 2), date(2026, 5, 3))
+    assert len(rows) == 2
+    ratings = {r["rating"] for r in rows}
+    assert ratings == {"star", "thumbs_down"}
+    assert {r["category"] for r in rows} == {"AI"}
+    assert "title" in rows[0]
+
+
+@pytest.mark.asyncio
+async def test_list_items_for_message_orders_by_position(db_path: Path) -> None:
+    db = NewsDigestStateDB(db_path)
+    await db.init_db()
+    await db.insert_run(digest_date=date(2026, 5, 9))
+    id_a = await db.insert_item(
+        digest_date=date(2026, 5, 9),
+        item=DigestItemInput("p1", "AI", "A", None, 2),
+    )
+    id_b = await db.insert_item(
+        digest_date=date(2026, 5, 9),
+        item=DigestItemInput("p2", "AI", "B", None, 1),
+    )
+    await db.attach_telegram_message_id(
+        item_ids=[id_a, id_b], telegram_message_id=10001,
+    )
+    rows = await db.list_items_for_message(10001)
+    assert [r["title"] for r in rows] == ["B", "A"]

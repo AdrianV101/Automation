@@ -183,3 +183,69 @@ class NewsDigestStateDB:
                 (telegram_message_id, *item_ids),
             )
             await db.commit()
+
+    async def list_items_for_message(
+        self, telegram_message_id: int,
+    ) -> list[dict[str, Any]]:
+        async with aiosqlite.connect(self._path) as db:
+            db.row_factory = aiosqlite.Row
+            async with db.execute(
+                "SELECT * FROM news_digest_items "
+                "WHERE telegram_message_id = ? ORDER BY position ASC",
+                (telegram_message_id,),
+            ) as cur:
+                rows = await cur.fetchall()
+                return [dict(r) for r in rows]
+
+    async def upsert_rating(self, *, item_id: int, rating: str) -> None:
+        if rating not in VALID_RATINGS:
+            raise ValueError(f"invalid rating {rating!r}")
+        async with aiosqlite.connect(self._path) as db:
+            db.row_factory = aiosqlite.Row
+            async with db.execute(
+                "SELECT digest_date FROM news_digest_items WHERE id = ?",
+                (item_id,),
+            ) as cur:
+                row = await cur.fetchone()
+            if row is None:
+                raise KeyError(f"no digest item with id={item_id}")
+            await db.execute(
+                "INSERT INTO news_ratings "
+                "(item_id, digest_date, rating, rated_at) "
+                "VALUES (?, ?, ?, ?) "
+                "ON CONFLICT(item_id) DO UPDATE SET "
+                "rating = excluded.rating, rated_at = excluded.rated_at",
+                (item_id, row["digest_date"], rating, _now_iso()),
+            )
+            await db.commit()
+
+    async def get_rating(self, item_id: int) -> dict[str, Any] | None:
+        async with aiosqlite.connect(self._path) as db:
+            db.row_factory = aiosqlite.Row
+            async with db.execute(
+                "SELECT * FROM news_ratings WHERE item_id = ?", (item_id,),
+            ) as cur:
+                row = await cur.fetchone()
+                return dict(row) if row else None
+
+    async def recent_ratings(
+        self, start: date, end: date,
+    ) -> list[dict[str, Any]]:
+        """All ratings whose digest_date is in [start, end] inclusive.
+
+        Each row joins news_digest_items so the caller can build a prompt
+        block keyed by category + title without a second query.
+        """
+        async with aiosqlite.connect(self._path) as db:
+            db.row_factory = aiosqlite.Row
+            async with db.execute(
+                "SELECT r.item_id, r.digest_date, r.rating, r.rated_at, "
+                "       i.category, i.title, i.source_path, i.url "
+                "FROM news_ratings r "
+                "JOIN news_digest_items i ON i.id = r.item_id "
+                "WHERE r.digest_date BETWEEN ? AND ? "
+                "ORDER BY r.rated_at DESC",
+                (_date_key(start), _date_key(end)),
+            ) as cur:
+                rows = await cur.fetchall()
+                return [dict(r) for r in rows]
