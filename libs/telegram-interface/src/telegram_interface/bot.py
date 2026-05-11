@@ -62,15 +62,23 @@ async def check_topics_enabled(tg: BotConfig) -> bool:
 
 async def send_message_return_id(
     text: str, tg: BotConfig, *, thread_id: int | None = None,
-    parse_mode: str | None = None,
+    parse_mode: str | None = None, reply_markup: dict | None = None,
 ) -> int | None:
-    """Send a message and return its message_id (for later editing)."""
+    """Send a message and return its message_id (for later editing).
+
+    Optional `reply_markup` accepts an InlineKeyboardMarkup dict
+    ({"inline_keyboard": [[{...}, ...], ...]}); Telegram requires the
+    keyboard to be a JSON string in the multipart body.
+    """
     url = f"{TELEGRAM_API}/bot{tg.bot_token}/sendMessage"
     payload: dict = {"chat_id": tg.chat_id, "text": text}
     if thread_id is not None:
         payload["message_thread_id"] = thread_id
     if parse_mode is not None:
         payload["parse_mode"] = parse_mode
+    if reply_markup is not None:
+        import json as _json
+        payload["reply_markup"] = _json.dumps(reply_markup)
     async with httpx.AsyncClient(timeout=10.0) as client:
         resp = await client.post(url, json=payload)
         resp.raise_for_status()

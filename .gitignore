@@ -47,6 +47,9 @@ daemon/uv.lock
 !.claude/skills/
 !.claude/skills/**
 
+# Agent-private memory written by subagents at runtime — ignore at any depth.
+**/.claude/agent-memory/
+
 # Personal config (gitignored, use .example versions)
 CLAUDE.md
 user_context.py

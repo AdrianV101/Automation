@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from collections.abc import Awaitable, Callable
 from typing import Protocol
 from zoneinfo import ZoneInfo
 
@@ -32,6 +33,49 @@ from telegram_interface import (
 )
 
 log = logging.getLogger(__name__)
+
+
+# ---------------------------------------------------------------------------
+# Telegram callback_query routing
+# ---------------------------------------------------------------------------
+
+# Hardcoded rather than imported from news_personal_digest.render to keep this
+# dispatcher loadable when the digest feature is disabled (and to keep
+# dispatch_callback_query itself free of digest-module imports).
+_DIGEST_CALLBACK_PREFIX = "nr"
+
+CallbackQueryHandler = Callable[..., Awaitable[None]]
+
+
+async def dispatch_callback_query(
+    *,
+    callback_query_id: str,
+    message_id: int,
+    data: str,
+    digest_handler: CallbackQueryHandler | None,
+    fallback_handler: CallbackQueryHandler | None = None,
+) -> None:
+    """Route a Telegram callback_query by data prefix.
+
+    `nr:` → digest rating handler. Anything else → fallback (e.g. speaker
+    labeling). With no digest_handler, even nr: routes to fallback. With
+    no fallback, unrecognised data is dropped silently — no toast, no DB
+    write — because the bot is shared across features and we don't want
+    one feature to claim ownership of unfamiliar callbacks.
+    """
+    if digest_handler is not None and data.startswith(f"{_DIGEST_CALLBACK_PREFIX}:"):
+        await digest_handler(
+            callback_query_id=callback_query_id,
+            message_id=message_id,
+            data=data,
+        )
+        return
+    if fallback_handler is not None:
+        await fallback_handler(
+            callback_query_id=callback_query_id,
+            message_id=message_id,
+            data=data,
+        )
 
 
 class ProcessRecording(Protocol):
@@ -264,6 +308,16 @@ async def _run_email_ingest_path(config: DaemonConfig) -> None:
         except Exception:
             log.exception("Failed to send crash-loop alert for %s", task_name)
 
+    # Wire digest rating callbacks only when the digest feature is enabled.
+    digest_handler = await _build_digest_callback_handler(config, bot)
+
+    async def on_callback_query(cbq_id: str, msg_id: int, data: str) -> None:
+        await dispatch_callback_query(
+            callback_query_id=cbq_id, message_id=msg_id, data=data,
+            digest_handler=digest_handler,
+            fallback_handler=None,  # speaker-labeling routes via on_labeling_reply
+        )
+
     try:
         async with asyncio.TaskGroup() as tg:
             tg.create_task(supervise(
@@ -272,11 +326,64 @@ async def _run_email_ingest_path(config: DaemonConfig) -> None:
             ))
             tg.create_task(supervise(
                 "telegram-poller",
-                lambda: tii.run_poller(max_concurrent_dispatch=config.max_concurrent_dispatch),
+                lambda: tii.run_poller(
+                    max_concurrent_dispatch=config.max_concurrent_dispatch,
+                    on_callback_query=on_callback_query if digest_handler else None,
+                ),
                 on_persistent_failure=on_supervised_task_crashloop,
             ))
     finally:
         await session_mgr.close_all()
+
+
+async def _build_digest_callback_handler(
+    config: DaemonConfig, bot: BotConfig,
+) -> CallbackQueryHandler | None:
+    """Build the digest rating-callback handler, or None when disabled."""
+    if not config.news_personal_digest_enabled:
+        return None
+    from .news_personal_digest.callback import (
+        DigestCallbackDeps, handle_rating_callback,
+    )
+    from .news_personal_digest.state import NewsDigestStateDB
+    from .notifications import (
+        answer_callback_query as _raw_answer,
+        edit_message_reply_markup as _raw_edit,
+    )
+
+    digest_db = NewsDigestStateDB(config.email_ingest_state_db_path)
+    await digest_db.init_db()
+
+    async def edit_reply_markup_kw(
+        *, message_id: int, reply_markup: dict,
+    ) -> None:
+        await _raw_edit(
+            chat_id=config.telegram_chat_id,
+            message_id=message_id,
+            reply_markup=reply_markup,
+            tg=bot,
+        )
+
+    async def answer_cbq_kw(
+        *, callback_query_id: str, text: str,
+    ) -> None:
+        await _raw_answer(callback_query_id, text, bot)
+
+    deps = DigestCallbackDeps(
+        db=digest_db,
+        edit_message_reply_markup=edit_reply_markup_kw,
+        answer_callback_query=answer_cbq_kw,
+    )
+
+    async def handler(
+        *, callback_query_id: str, message_id: int, data: str,
+    ) -> None:
+        await handle_rating_callback(
+            callback_query_id=callback_query_id,
+            message_id=message_id, data=data, deps=deps,
+        )
+
+    return handler
 
 
 async def _setup_pipeline_topic_email(
@@ -396,12 +503,89 @@ async def _run_news_daily_master_path(config: DaemonConfig) -> None:
         telegram_topic_id=config.news_daily_telegram_topic_id,
     )
 
+    # Chain the personalised digest after each successful master run when
+    # news_personal_digest_enabled; otherwise the master path runs alone.
+    digest_db = None
+    digest_runner_cfg = None
+    digest_run_for_date_fn = None
+    if config.news_personal_digest_enabled:
+        from .news_personal_digest.runner import (
+            DigestRunnerConfig,
+            run_for_date as _digest_run_for_date,
+            run_agent_via_agent_infra as _digest_run_agent,
+        )
+        from .news_personal_digest.state import NewsDigestStateDB
+        from telegram_interface import send_message_return_id
+
+        digest_db = NewsDigestStateDB(config.email_ingest_state_db_path)
+        await digest_db.init_db()
+        digest_runner_cfg = DigestRunnerConfig(
+            vault_root=config.pkm_vault_path,
+            model=config.news_personal_digest_model,
+            feedback_window_days=config.news_personal_digest_feedback_window_days,
+            min_items=config.news_personal_digest_min_items,
+            max_items=config.news_personal_digest_max_items,
+            telegram_topic_id=config.news_daily_telegram_topic_id,
+        )
+
+        async def _send_digest_messages(
+            messages: list[tuple[str, dict]],
+        ) -> list[int | None]:
+            # Position-preserving: None at index i means "message i failed to
+            # send". The runner relies on len(result) == len(messages) to keep
+            # item ↔ message_id attachment correctly aligned across categories.
+            ids: list[int | None] = []
+            for text, kb in messages:
+                try:
+                    msg_id = await send_message_return_id(
+                        text, bot,
+                        thread_id=config.news_daily_telegram_topic_id,
+                        reply_markup=kb,
+                    )
+                except Exception:
+                    log.exception("Failed to send digest message")
+                    ids.append(None)
+                    continue
+                if msg_id is None:
+                    # Telegram returned ok=true but no message_id in result
+                    # — a Bot API contract violation worth flagging
+                    # distinctly from the exception branch above.
+                    log.warning(
+                        "send_message_return_id returned None for digest "
+                        "message (Telegram ok=true but no message_id)"
+                    )
+                    ids.append(None)
+                else:
+                    ids.append(int(msg_id))
+            return ids
+
+        async def digest_run_for_date_fn(d) -> None:
+            await _digest_run_for_date(
+                d, db=digest_db, config=digest_runner_cfg,
+                run_agent=_digest_run_agent,
+                notify=notify, send_messages=_send_digest_messages,
+            )
+
     async def run_for_date_fn(d) -> None:
         await run_for_date(
             d, db=db, config=runner_cfg,
             run_agent=run_agent_via_agent_infra,
             notify=notify,
         )
+        # Chain digest only when master completed cleanly.
+        if digest_run_for_date_fn is None:
+            return
+        master_row = await db.get_run(d)
+        if master_row is None or master_row.get("status") != "completed":
+            log.info(
+                "Skipping digest for %s — master status=%s",
+                d, master_row.get("status") if master_row else None,
+            )
+            return
+        try:
+            await digest_run_for_date_fn(d)
+        except Exception:
+            log.exception("Digest run failed for %s", d)
 
     h, m = config.news_daily_master_local_time.split(":", 1)
     fire = _time(int(h), int(m))

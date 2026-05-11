@@ -240,4 +240,8 @@ class TestEditMessageReplyMarkup:
             await edit_message_reply_markup("456", 789, new_markup, tg)
 
         body = mock_client.post.call_args[1]["json"]
-        assert body["reply_markup"] == new_markup
+        # Telegram requires reply_markup as a JSON-serialised string in
+        # the body, even when the body itself is JSON-encoded. Confirm
+        # the keyboard round-trips correctly after serialisation.
+        import json as _json
+        assert _json.loads(body["reply_markup"]) == new_markup
