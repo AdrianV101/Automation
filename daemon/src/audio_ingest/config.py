@@ -51,7 +51,7 @@ class DaemonConfig:
     # or to override for testing.
     news_daily_master_tz: str = ""
     news_daily_telegram_topic_id: int | None = None
-    # News personal digest (Phase 3) — chained after the daily master.
+    # News personal digest — chained after the daily master when enabled.
     news_personal_digest_enabled: bool = False
     news_personal_digest_model: str = "claude-opus-4-7"
     news_personal_digest_feedback_window_days: int = 7

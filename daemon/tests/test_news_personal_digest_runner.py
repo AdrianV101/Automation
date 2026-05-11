@@ -405,6 +405,76 @@ async def test_partial_send_failure_keeps_alignment_and_notifies(
 
 
 @pytest.mark.asyncio
+async def test_partial_send_with_split_category_preserves_intra_category_alignment(
+    db_path: Path, cfg: DigestRunnerConfig,
+) -> None:
+    """A single oversize category splits into two messages. The first
+    succeeds, the second fails. Items in the first message must be
+    correctly attached; items in the second message must stay NULL —
+    the runner's `flat_items[offset:offset+row_count]` slicing must
+    not bleed across the split."""
+    db = NewsDigestStateDB(db_path)
+    await db.init_db()
+    master = (cfg.vault_root / "01-Projects" / "News" / "daily"
+              / "2026-05-09-master.md")
+    master.write_text("# Master\n")
+
+    # Three items, each with a long briefing → render splits into >1 message.
+    big = "x" * 1500
+
+    async def fake_agent(_inp: AgentRunInput) -> AgentRunOutput:
+        return AgentRunOutput(
+            success=True,
+            categories=[DigestCategory("AI", "🤖", items=[
+                _di(id=0, title="a", briefing=big, position=1,
+                    source_path="p1"),
+                _di(id=0, title="b", briefing=big, position=2,
+                    source_path="p2"),
+                _di(id=0, title="c", briefing=big, position=3,
+                    source_path="p3"),
+            ])],
+            rating_signal_summary="split test",
+        )
+
+    sent_count = {"n": 0}
+
+    async def split_partial_sender(messages):
+        # Confirm we got multiple messages from the splitter; fail the
+        # last one only.
+        sent_count["n"] = len(messages)
+        return [10000 + i for i in range(len(messages) - 1)] + [None]
+
+    await run_for_date(
+        date(2026, 5, 9),
+        db=db, config=cfg,
+        run_agent=fake_agent, notify=AsyncMock(),
+        send_messages=split_partial_sender,
+    )
+
+    assert sent_count["n"] >= 2, "render should have split the category"
+
+    row = await db.get_run(date(2026, 5, 9))
+    assert row["status"] == "completed"
+
+    # Items 1, 2, 3 each persisted; the first N-1 messages succeeded so
+    # items in those slices have telegram_message_id set; the items in
+    # the final failed message stay NULL. We can't predict the split
+    # boundary precisely without re-running render, but we can assert
+    # at least one item has a real id AND at least one item has NULL.
+    items = [await db.get_digest_item(i) for i in (1, 2, 3)]
+    attached = [it["telegram_message_id"] for it in items]
+    assert any(a is not None for a in attached), \
+        "early-message items should be attached"
+    assert any(a is None for a in attached), \
+        "final-message items should remain unattached"
+    # Verify no item is attached to a non-existent message id
+    for it, a in zip(items, attached):
+        if a is not None:
+            assert a < 10000 + sent_count["n"], \
+                f"item {it['title']} attached to invalid msg_id {a}"
+
+
+@pytest.mark.asyncio
 async def test_sender_returns_wrong_length_marks_failed(
     db_path: Path, cfg: DigestRunnerConfig,
 ) -> None:
@@ -445,6 +515,10 @@ async def test_sender_returns_wrong_length_marks_failed(
     assert row["status"] == "failed"
     assert "length mismatch" in (row["error"] or "").lower()
     notify.assert_awaited()
+    # No attachment may leak — both items must be left orphan even though
+    # the items themselves were persisted before the send attempt.
+    assert (await db.get_digest_item(1))["telegram_message_id"] is None
+    assert (await db.get_digest_item(2))["telegram_message_id"] is None
 
 
 @pytest.mark.asyncio

@@ -546,7 +546,17 @@ async def _run_news_daily_master_path(config: DaemonConfig) -> None:
                     log.exception("Failed to send digest message")
                     ids.append(None)
                     continue
-                ids.append(int(msg_id) if msg_id is not None else None)
+                if msg_id is None:
+                    # Telegram returned ok=true but no message_id in result
+                    # — a Bot API contract violation worth flagging
+                    # distinctly from the exception branch above.
+                    log.warning(
+                        "send_message_return_id returned None for digest "
+                        "message (Telegram ok=true but no message_id)"
+                    )
+                    ids.append(None)
+                else:
+                    ids.append(int(msg_id))
             return ids
 
         async def digest_run_for_date_fn(d) -> None:

@@ -26,10 +26,18 @@ class DigestRunnerConfig:
     min_items: int = 4
     max_items: int = 12
     telegram_topic_id: int | None = None
-    # First entry is the wait before attempt 1 (always 0); subsequent entries
-    # gate retries. Default = one retry after 60s, matching the design's
-    # error-handling table.
+    # Per-attempt wait times. First entry is the wait before attempt 1
+    # (always 0); subsequent entries gate retries. Default = two attempts:
+    # immediate, then a single retry after 60s. Empty tuple is rejected
+    # in __post_init__ so the runner can rely on at least one attempt.
     agent_retry_backoff_seconds: tuple[float, ...] = (0.0, 60.0)
+
+    def __post_init__(self) -> None:
+        if not self.agent_retry_backoff_seconds:
+            raise ValueError(
+                "agent_retry_backoff_seconds must contain at least one "
+                "entry (the wait before attempt 1); got empty tuple"
+            )
 
 
 @dataclass(frozen=True)
@@ -156,7 +164,7 @@ async def _run_for_date_inner(
     # is 0 (no wait before attempt 1). A returned-failure AgentRunOutput
     # is treated as a verification failure and does NOT retry — only
     # raised exceptions (network, model, MCP transport) trigger a retry.
-    backoffs = config.agent_retry_backoff_seconds or (0.0,)
+    backoffs = config.agent_retry_backoff_seconds
     output: AgentRunOutput | None = None
     last_exc: BaseException | None = None
     for attempt, wait_s in enumerate(backoffs, start=1):
@@ -230,9 +238,12 @@ async def _run_for_date_inner(
     # The sender returns a positional list of len(messages) where None
     # marks a failed send. We advance the item offset by row_count on
     # every message (success OR failure) so item ↔ message_id pairing
-    # stays aligned across categories — failed-send items simply never
-    # get a telegram_message_id attached, which the callback handler
-    # treats as a stale tap (Item expired toast, no keyboard wipe).
+    # stays aligned across categories. Items in failed-send messages
+    # keep `telegram_message_id = NULL`; if a user later somehow taps a
+    # button from one of these messages (e.g. the send actually reached
+    # Telegram but the API response failed before we saw it), the
+    # callback handler persists the rating but skips the keyboard edit
+    # to avoid wiping all buttons on the message.
     messages = build_messages(persisted_categories)
     failed_sends = 0
     if messages:
@@ -303,9 +314,10 @@ _MIN_BRIEFING_CHARS = 80
 def parse_agent_summary(text_parts: list[str]) -> AgentRunOutput:
     """Pull a structured summary out of the agent's text blocks.
 
-    Looks for the LAST fenced ```json``` block. Verifies all items have a
-    minimum briefing length (≥80 chars) per the design's verification
-    checklist.
+    Looks for the LAST fenced ```json``` block in the agent's output and
+    rejects items whose `briefing` is shorter than `_MIN_BRIEFING_CHARS`
+    — short briefings produce poor Telegram messages and are usually a
+    sign the agent ran out of source material or rushed.
     """
     joined = "\n".join(text_parts)
     matches = _JSON_BLOCK_RE.findall(joined)
