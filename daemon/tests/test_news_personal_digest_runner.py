@@ -254,6 +254,200 @@ async def test_agent_raises_marks_failed_and_alerts(
 
 
 @pytest.mark.asyncio
+async def test_agent_retries_once_on_exception_then_succeeds(
+    db_path: Path, vault_root: Path,
+) -> None:
+    """First agent attempt raises; second succeeds. Run should complete
+    cleanly using the retry-backoff config, with no duplicate item rows."""
+    db = NewsDigestStateDB(db_path)
+    await db.init_db()
+    master = (vault_root / "01-Projects" / "News" / "daily"
+              / "2026-05-09-master.md")
+    master.write_text("# Master\n")
+
+    # Zero backoff so the test doesn't sleep.
+    cfg_no_wait = DigestRunnerConfig(
+        vault_root=vault_root, model="claude-opus-4-7",
+        feedback_window_days=7,
+        agent_retry_backoff_seconds=(0.0, 0.0),
+    )
+
+    calls = {"n": 0}
+
+    async def flaky_agent(_inp: AgentRunInput) -> AgentRunOutput:
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise ConnectionError("transient network glitch")
+        return AgentRunOutput(
+            success=True,
+            categories=[DigestCategory("AI", "🤖", items=[_di(
+                title="x", source_path="00-Inbox/news/2026-05-09/x.md",
+            )])],
+            rating_signal_summary="recovered",
+        )
+
+    sent: list[tuple[str, dict]] = []
+
+    async def send_messages(messages):
+        sent.extend(messages)
+        return [10001 + i for i in range(len(messages))]
+
+    await run_for_date(
+        date(2026, 5, 9),
+        db=db, config=cfg_no_wait,
+        run_agent=flaky_agent, notify=AsyncMock(),
+        send_messages=send_messages,
+    )
+
+    assert calls["n"] == 2
+    row = await db.get_run(date(2026, 5, 9))
+    assert row["status"] == "completed"
+    assert row["item_count"] == 1
+    # Exactly one item row — retry didn't duplicate.
+    assert (await db.get_digest_item(1))["title"] == "x"
+    assert (await db.get_digest_item(2)) is None
+
+
+@pytest.mark.asyncio
+async def test_agent_exhausts_retries_marks_failed(
+    db_path: Path, vault_root: Path,
+) -> None:
+    """Every retry attempt raises — final state is `failed` with the
+    last exception captured in `error`."""
+    db = NewsDigestStateDB(db_path)
+    await db.init_db()
+    master = (vault_root / "01-Projects" / "News" / "daily"
+              / "2026-05-09-master.md")
+    master.write_text("# Master\n")
+    cfg_no_wait = DigestRunnerConfig(
+        vault_root=vault_root, model="claude-opus-4-7",
+        feedback_window_days=7,
+        agent_retry_backoff_seconds=(0.0, 0.0),
+    )
+    calls = {"n": 0}
+
+    async def always_fails(_inp: AgentRunInput) -> AgentRunOutput:
+        calls["n"] += 1
+        raise TimeoutError(f"attempt {calls['n']} timeout")
+
+    notify = AsyncMock()
+    await run_for_date(
+        date(2026, 5, 9),
+        db=db, config=cfg_no_wait,
+        run_agent=always_fails, notify=notify,
+        send_messages=AsyncMock(),
+    )
+
+    assert calls["n"] == 2
+    row = await db.get_run(date(2026, 5, 9))
+    assert row["status"] == "failed"
+    assert "timeout" in (row["error"] or "").lower()
+    # Notify message mentions both attempts.
+    notify.assert_awaited()
+    msg = notify.call_args.args[0]
+    assert "2 attempt" in msg
+
+
+@pytest.mark.asyncio
+async def test_partial_send_failure_keeps_alignment_and_notifies(
+    db_path: Path, cfg: DigestRunnerConfig,
+) -> None:
+    """When send_messages returns [id, None, id] for three messages,
+    only the successful ones get telegram_message_id attached, items
+    in the failed message stay NULL, and the operator is notified."""
+    db = NewsDigestStateDB(db_path)
+    await db.init_db()
+    master = (cfg.vault_root / "01-Projects" / "News" / "daily"
+              / "2026-05-09-master.md")
+    master.write_text("# Master\n")
+
+    async def fake_agent(_inp: AgentRunInput) -> AgentRunOutput:
+        return AgentRunOutput(
+            success=True,
+            categories=[
+                DigestCategory("AI", "🤖", items=[
+                    _di(id=0, title="ai-1", position=1,
+                        source_path="p1"),
+                ]),
+                DigestCategory("Finance", "💸", items=[
+                    _di(id=0, title="fin-1", position=1,
+                        source_path="p2"),
+                ]),
+                DigestCategory("Tech", "🛠", items=[
+                    _di(id=0, title="tech-1", position=1,
+                        source_path="p3"),
+                ]),
+            ],
+            rating_signal_summary="three categories",
+        )
+
+    async def partial_sender(messages):
+        # Middle message fails.
+        return [10001, None, 10003]
+
+    notify = AsyncMock()
+    await run_for_date(
+        date(2026, 5, 9),
+        db=db, config=cfg,
+        run_agent=fake_agent, notify=notify,
+        send_messages=partial_sender,
+    )
+
+    row = await db.get_run(date(2026, 5, 9))
+    assert row["status"] == "completed"
+    assert "delivery: 2/3" in (row["rating_signal_summary"] or "")
+    notify.assert_awaited()
+    # Item 1 (AI) attached to msg 10001; item 2 (Finance, failed send) stays
+    # NULL; item 3 (Tech) attached to msg 10003.
+    assert (await db.get_digest_item(1))["telegram_message_id"] == 10001
+    assert (await db.get_digest_item(2))["telegram_message_id"] is None
+    assert (await db.get_digest_item(3))["telegram_message_id"] == 10003
+
+
+@pytest.mark.asyncio
+async def test_sender_returns_wrong_length_marks_failed(
+    db_path: Path, cfg: DigestRunnerConfig,
+) -> None:
+    """A misbehaving sender that returns the wrong-length list MUST be
+    refused rather than silently misroute."""
+    db = NewsDigestStateDB(db_path)
+    await db.init_db()
+    master = (cfg.vault_root / "01-Projects" / "News" / "daily"
+              / "2026-05-09-master.md")
+    master.write_text("# Master\n")
+
+    async def fake_agent(_inp: AgentRunInput) -> AgentRunOutput:
+        return AgentRunOutput(
+            success=True,
+            categories=[
+                DigestCategory("AI", "🤖", items=[
+                    _di(id=0, title="ai-1", position=1, source_path="p1"),
+                ]),
+                DigestCategory("Finance", "💸", items=[
+                    _di(id=0, title="fin-1", position=1, source_path="p2"),
+                ]),
+            ],
+            rating_signal_summary="",
+        )
+
+    async def broken_sender(messages):
+        # Two messages in, one id out.
+        return [10001]
+
+    notify = AsyncMock()
+    await run_for_date(
+        date(2026, 5, 9),
+        db=db, config=cfg,
+        run_agent=fake_agent, notify=notify,
+        send_messages=broken_sender,
+    )
+    row = await db.get_run(date(2026, 5, 9))
+    assert row["status"] == "failed"
+    assert "length mismatch" in (row["error"] or "").lower()
+    notify.assert_awaited()
+
+
+@pytest.mark.asyncio
 async def test_agent_returns_failure_marks_failed_verification(
     db_path: Path, cfg: DigestRunnerConfig,
 ) -> None:

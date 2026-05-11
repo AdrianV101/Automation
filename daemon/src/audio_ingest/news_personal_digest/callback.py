@@ -77,18 +77,34 @@ async def handle_rating_callback(
     items_in_message = await _items_in_message(
         deps.db, telegram_message_id=row["telegram_message_id"],
     )
-    chosen = await _chosen_map(deps.db, items=items_in_message)
 
-    try:
-        await deps.edit_message_reply_markup(
-            message_id=message_id,
-            reply_markup=keyboard_with_selection(items_in_message, chosen=chosen),
-        )
-    except Exception:
+    # If no items are attached to this Telegram message, skip the edit:
+    # otherwise we'd send an empty inline_keyboard and wipe ALL buttons
+    # from the message that the user just tapped. This case only happens
+    # when (a) a tap arrives before the runner finished attaching
+    # message_ids, or (b) the send for this message failed and items
+    # never got a telegram_message_id. Rating is still persisted above.
+    if not items_in_message:
         log.warning(
-            "edit_message_reply_markup failed for message_id=%d (rating "
-            "persisted)", message_id, exc_info=True,
+            "Digest tap on item_id=%d but no items attached to "
+            "telegram_message_id=%r — skipping keyboard edit (rating "
+            "persisted)",
+            parsed.item_id, row["telegram_message_id"],
         )
+    else:
+        chosen = await _chosen_map(deps.db, items=items_in_message)
+        try:
+            await deps.edit_message_reply_markup(
+                message_id=message_id,
+                reply_markup=keyboard_with_selection(
+                    items_in_message, chosen=chosen,
+                ),
+            )
+        except Exception:
+            log.warning(
+                "edit_message_reply_markup failed for message_id=%d "
+                "(rating persisted)", message_id, exc_info=True,
+            )
 
     glyph = _RATING_TOAST_GLYPH[parsed.rating]
     await deps.answer_callback_query(

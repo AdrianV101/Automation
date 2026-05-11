@@ -140,6 +140,42 @@ async def test_malformed_callback_data_answers_invalid(
 
 
 @pytest.mark.asyncio
+async def test_tap_on_unattached_item_skips_keyboard_edit(
+    db_path: Path,
+) -> None:
+    """Race guard: if a tap arrives for an item whose telegram_message_id
+    is NULL (send-failed or pre-attachment), we MUST NOT send Telegram an
+    empty keyboard — it would wipe all buttons from the message. Rating
+    must still persist."""
+    db = NewsDigestStateDB(db_path)
+    await db.init_db()
+    await db.insert_run(digest_date=date(2026, 5, 9))
+    item_id = await db.insert_item(
+        digest_date=date(2026, 5, 9),
+        item=DigestItemInput("p1", "AI", "Unattached", "u1", 1),
+    )
+    # NOTE: no attach_telegram_message_id — item is orphan.
+
+    edit = AsyncMock()
+    answer = AsyncMock()
+    await handle_rating_callback(
+        callback_query_id="cbq",
+        message_id=10001,
+        data=f"nr:{item_id}:up",
+        deps=DigestCallbackDeps(
+            db=db,
+            edit_message_reply_markup=edit,
+            answer_callback_query=answer,
+        ),
+    )
+    rating = await db.get_rating(item_id)
+    assert rating is not None
+    assert rating["rating"] == "thumbs_up"
+    edit.assert_not_awaited()  # guard prevented the wipe
+    answer.assert_awaited()
+
+
+@pytest.mark.asyncio
 async def test_edit_failure_does_not_block_persist(db_path: Path) -> None:
     """Telegram edit can fail (message deleted etc.) — rating still persists."""
     db, id1, _ = await _seed(db_path)

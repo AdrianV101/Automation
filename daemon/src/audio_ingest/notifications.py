@@ -231,11 +231,16 @@ async def answer_callback_query(
 async def edit_message_reply_markup(
     chat_id: str, message_id: int, reply_markup: dict | None, tg: BotConfig,
 ) -> None:
-    """Edit or remove the reply markup (inline keyboard) on a message."""
+    """Edit or remove the reply markup (inline keyboard) on a message.
+
+    Telegram's Bot API expects `reply_markup` as a JSON-serialised string
+    even though we're posting JSON — serialising it here keeps callers
+    passing native dicts and matches send_message_return_id's behaviour.
+    """
     url = f"{TELEGRAM_API}/bot{tg.bot_token}/editMessageReplyMarkup"
     payload: dict = {"chat_id": chat_id, "message_id": message_id}
     if reply_markup is not None:
-        payload["reply_markup"] = reply_markup
+        payload["reply_markup"] = json_mod.dumps(reply_markup)
     async with httpx.AsyncClient(timeout=10.0) as client:
         resp = await client.post(url, json=payload)
         resp.raise_for_status()

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import re
@@ -25,6 +26,10 @@ class DigestRunnerConfig:
     min_items: int = 4
     max_items: int = 12
     telegram_topic_id: int | None = None
+    # First entry is the wait before attempt 1 (always 0); subsequent entries
+    # gate retries. Default = one retry after 60s, matching the design's
+    # error-handling table.
+    agent_retry_backoff_seconds: tuple[float, ...] = (0.0, 60.0)
 
 
 @dataclass(frozen=True)
@@ -39,8 +44,9 @@ class AgentRunInput:
 class AgentRunOutput:
     """Structured summary returned by the digest agent.
 
-    Same success/error pair invariant as news_daily_master's AgentRunOutput:
-    success implies error is None; failure requires a non-None error.
+    Pair invariant: success=True implies error is None; success=False
+    requires a non-None error. Lets callers branch on `success` without
+    a `or "fallback"` pattern that silently masks missing errors.
     """
     success: bool
     categories: list[DigestCategory] = field(default_factory=list)
@@ -66,8 +72,12 @@ class AgentRunOutput:
 
 AgentRunFn = Callable[[AgentRunInput], Awaitable[AgentRunOutput]]
 NotifyFn = Callable[[str], Awaitable[None]]
+# Position-preserving: result list MUST be the same length as the input list;
+# entry i is the message_id of input message i, or None if that send failed.
+# The runner relies on positional alignment to attach message_ids to the
+# correct slice of items when categories span multiple messages.
 SendMessagesFn = Callable[
-    [list[tuple[str, dict]]], Awaitable[list[int]],
+    [list[tuple[str, dict]]], Awaitable[list[int | None]],
 ]
 
 
@@ -142,23 +152,40 @@ async def _run_for_date_inner(
         target_date=target_date, feedback_block=feedback_block,
     )
 
-    # 2. Invoke the agent.
-    try:
-        output = await run_agent(AgentRunInput(
-            target_date=target_date,
-            vault_root=config.vault_root,
-            model=config.model,
-            prompt=prompt,
-        ))
-    except Exception as exc:
-        log.exception("Agent run raised for digest %s", target_date)
+    # 2. Invoke the agent with retry-on-exception. The first backoff entry
+    # is 0 (no wait before attempt 1). A returned-failure AgentRunOutput
+    # is treated as a verification failure and does NOT retry — only
+    # raised exceptions (network, model, MCP transport) trigger a retry.
+    backoffs = config.agent_retry_backoff_seconds or (0.0,)
+    output: AgentRunOutput | None = None
+    last_exc: BaseException | None = None
+    for attempt, wait_s in enumerate(backoffs, start=1):
+        if wait_s > 0:
+            await asyncio.sleep(wait_s)
+        try:
+            output = await run_agent(AgentRunInput(
+                target_date=target_date,
+                vault_root=config.vault_root,
+                model=config.model,
+                prompt=prompt,
+            ))
+            break
+        except Exception as exc:
+            log.exception(
+                "Agent run raised on attempt %d/%d for digest %s",
+                attempt, len(backoffs), target_date,
+            )
+            last_exc = exc
+
+    if output is None:
         await db.update_run(
             target_date, status="failed",
-            error=f"agent_exception: {exc}",
+            error=f"agent_exception: {last_exc}",
         )
         await notify(
             f"⚠️ News personal digest agent failed for "
-            f"{target_date.isoformat()}: {exc}",
+            f"{target_date.isoformat()} after "
+            f"{len(backoffs)} attempt(s): {last_exc}",
         )
         return
 
@@ -200,29 +227,68 @@ async def _run_for_date_inner(
         ))
 
     # 4. Render and send Telegram messages, attach message_ids.
+    # The sender returns a positional list of len(messages) where None
+    # marks a failed send. We advance the item offset by row_count on
+    # every message (success OR failure) so item ↔ message_id pairing
+    # stays aligned across categories — failed-send items simply never
+    # get a telegram_message_id attached, which the callback handler
+    # treats as a stale tap (Item expired toast, no keyboard wipe).
     messages = build_messages(persisted_categories)
+    failed_sends = 0
     if messages:
         message_ids = await send_messages(messages)
-        # `messages` and `message_ids` are aligned 1:1; each message's
-        # button rows correspond to a contiguous slice of items in the
-        # flattened persisted_categories.items list.
+        if len(message_ids) != len(messages):
+            # Misuse from the injected sender — refuse to attach anything
+            # rather than silently mis-route. Mark the run failed.
+            await db.update_run(
+                target_date, status="failed",
+                error=(
+                    f"send_messages returned {len(message_ids)} ids for "
+                    f"{len(messages)} messages (length mismatch)"
+                ),
+            )
+            await notify(
+                f"⚠️ News personal digest delivery for "
+                f"{target_date.isoformat()} failed: sender returned the "
+                f"wrong number of message_ids."
+            )
+            return
+
         flat_items = [
             it for cat in persisted_categories for it in cat.items
         ]
         offset = 0
         for (_, kb), msg_id in zip(messages, message_ids):
             row_count = len(kb["inline_keyboard"])
-            ids_in_msg = [it.id for it in flat_items[offset:offset + row_count]]
-            await db.attach_telegram_message_id(
-                item_ids=ids_in_msg, telegram_message_id=msg_id,
-            )
+            if msg_id is None:
+                failed_sends += 1
+            else:
+                ids_in_msg = [
+                    it.id for it in flat_items[offset:offset + row_count]
+                ]
+                await db.attach_telegram_message_id(
+                    item_ids=ids_in_msg, telegram_message_id=msg_id,
+                )
             offset += row_count
 
-    # 5. Mark completed.
+    # 5. Mark completed; surface partial delivery to the operator.
+    # Partial delivery is degraded but not catastrophic — items that did
+    # get delivered carry their telegram_message_id and remain rateable.
+    summary = output.rating_signal_summary
+    if failed_sends > 0:
+        summary = (
+            f"{summary} (delivery: {len(messages) - failed_sends}/"
+            f"{len(messages)} messages sent)"
+        )
+        await notify(
+            f"⚠️ News personal digest for {target_date.isoformat()} "
+            f"partially delivered: {failed_sends} of {len(messages)} "
+            f"messages failed to send. See daemon log for details."
+        )
     await db.update_run(
         target_date, status="completed",
         item_count=output.item_count,
-        rating_signal_summary=output.rating_signal_summary,
+        rating_signal_summary=summary,
     )
 
 

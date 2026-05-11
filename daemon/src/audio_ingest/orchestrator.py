@@ -39,8 +39,9 @@ log = logging.getLogger(__name__)
 # Telegram callback_query routing
 # ---------------------------------------------------------------------------
 
-# Imported lazily inside dispatch_callback_query to avoid a hard dependency
-# from the orchestrator on the digest module's import-time side effects.
+# Hardcoded rather than imported from news_personal_digest.render to keep this
+# dispatcher loadable when the digest feature is disabled (and to keep
+# dispatch_callback_query itself free of digest-module imports).
 _DIGEST_CALLBACK_PREFIX = "nr"
 
 CallbackQueryHandler = Callable[..., Awaitable[None]]
@@ -307,7 +308,7 @@ async def _run_email_ingest_path(config: DaemonConfig) -> None:
         except Exception:
             log.exception("Failed to send crash-loop alert for %s", task_name)
 
-    # Build digest callback dispatch if Phase 3 is enabled.
+    # Wire digest rating callbacks only when the digest feature is enabled.
     digest_handler = await _build_digest_callback_handler(config, bot)
 
     async def on_callback_query(cbq_id: str, msg_id: int, data: str) -> None:
@@ -338,7 +339,7 @@ async def _run_email_ingest_path(config: DaemonConfig) -> None:
 async def _build_digest_callback_handler(
     config: DaemonConfig, bot: BotConfig,
 ) -> CallbackQueryHandler | None:
-    """Build a digest rating-callback handler if Phase 3 is enabled."""
+    """Build the digest rating-callback handler, or None when disabled."""
     if not config.news_personal_digest_enabled:
         return None
     from .news_personal_digest.callback import (
@@ -356,11 +357,10 @@ async def _build_digest_callback_handler(
     async def edit_reply_markup_kw(
         *, message_id: int, reply_markup: dict,
     ) -> None:
-        import json as _json
         await _raw_edit(
             chat_id=config.telegram_chat_id,
             message_id=message_id,
-            reply_markup=_json.dumps(reply_markup),
+            reply_markup=reply_markup,
             tg=bot,
         )
 
@@ -503,7 +503,8 @@ async def _run_news_daily_master_path(config: DaemonConfig) -> None:
         telegram_topic_id=config.news_daily_telegram_topic_id,
     )
 
-    # Optional Phase 3 chain: digest after master completes.
+    # Chain the personalised digest after each successful master run when
+    # news_personal_digest_enabled; otherwise the master path runs alone.
     digest_db = None
     digest_runner_cfg = None
     digest_run_for_date_fn = None
@@ -529,8 +530,11 @@ async def _run_news_daily_master_path(config: DaemonConfig) -> None:
 
         async def _send_digest_messages(
             messages: list[tuple[str, dict]],
-        ) -> list[int]:
-            ids: list[int] = []
+        ) -> list[int | None]:
+            # Position-preserving: None at index i means "message i failed to
+            # send". The runner relies on len(result) == len(messages) to keep
+            # item ↔ message_id attachment correctly aligned across categories.
+            ids: list[int | None] = []
             for text, kb in messages:
                 try:
                     msg_id = await send_message_return_id(
@@ -540,9 +544,9 @@ async def _run_news_daily_master_path(config: DaemonConfig) -> None:
                     )
                 except Exception:
                     log.exception("Failed to send digest message")
+                    ids.append(None)
                     continue
-                if msg_id is not None:
-                    ids.append(int(msg_id))
+                ids.append(int(msg_id) if msg_id is not None else None)
             return ids
 
         async def digest_run_for_date_fn(d) -> None:
