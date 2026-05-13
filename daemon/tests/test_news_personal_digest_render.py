@@ -172,3 +172,75 @@ def test_keyboard_with_selection_thumbs_down_marks_correct_button() -> None:
     assert row[0]["text"] == "👍 1"
     assert row[1]["text"] == "✅ 1"
     assert row[2]["text"] == "⭐ 1"
+
+
+# ---------------------------------------------------------------------------
+# Telegram HTML output contract
+# ---------------------------------------------------------------------------
+# Messages are sent with parse_mode="HTML"; the renderer must emit valid
+# Telegram HTML (not raw markdown) and HTML-escape agent-supplied content.
+
+
+def test_build_messages_emits_html_bold_for_title() -> None:
+    cat = DigestCategory(
+        "AI", "🤖", [_item(id=1, title="Anthropic 4.7", position=1)],
+    )
+    text, _ = build_messages([cat])[0]
+    assert "<b>Anthropic 4.7</b>" in text
+    # No raw markdown bold markers should leak through.
+    assert "**" not in text
+
+
+def test_build_messages_emits_html_italic_for_why_you_care() -> None:
+    cat = DigestCategory(
+        "AI", "🤖",
+        [_item(id=1, why="It matters because X.", position=1)],
+    )
+    text, _ = build_messages([cat])[0]
+    assert "<i>Why you care:</i>" in text
+    # No raw markdown italic markers around the label.
+    assert "_Why you care:_" not in text
+
+
+def test_build_messages_html_escapes_agent_supplied_content() -> None:
+    """Agent text may contain `<`, `>`, `&`. Escape so parse_mode="HTML"
+    does not interpret it as a tag and reject the message."""
+    cat = DigestCategory(
+        "AI & ML", "🤖",
+        [_item(
+            id=1,
+            title="A<script>",
+            briefing="x & y < z",
+            why="<not-a-tag>",
+            url="https://example.com/?a=1&b=2",
+            position=1,
+        )],
+    )
+    text, _ = build_messages([cat])[0]
+    # Category header
+    assert "AI &amp; ML" in text
+    # Title (inside <b> wrapper)
+    assert "<b>A&lt;script&gt;</b>" in text
+    # Briefing escaped
+    assert "x &amp; y &lt; z" in text
+    # Why-you-care escaped
+    assert "&lt;not-a-tag&gt;" in text
+    # URL escaped (& → &amp;); bare URLs auto-link in HTML mode.
+    assert "https://example.com/?a=1&amp;b=2" in text
+    # Raw unescaped reserved characters must not remain in agent content.
+    # (The literal `<` and `>` in `<b>` and `<i>` tags are fine, so check
+    # by ensuring the dangerous substrings don't appear.)
+    assert "<script>" not in text
+    assert "<not-a-tag>" not in text
+
+
+def test_build_messages_has_no_raw_markdown_artifacts() -> None:
+    """Sanity check: with parse_mode="HTML" we must not be emitting any
+    of the old markdown formatting characters in structural positions."""
+    cat = DigestCategory(
+        "AI", "🤖", [_item(id=1, title="T", why="W", position=1)],
+    )
+    text, _ = build_messages([cat])[0]
+    assert "**" not in text
+    # Underscore-as-italic syntax must not appear around the label.
+    assert "_Why" not in text and "care:_" not in text

@@ -6,6 +6,8 @@ from collections.abc import Awaitable, Callable
 from typing import Protocol
 from zoneinfo import ZoneInfo
 
+import httpx
+
 from email_ingest import (
     BridgeConfig,
     EmailIngestStateDB,
@@ -534,14 +536,43 @@ async def _run_news_daily_master_path(config: DaemonConfig) -> None:
             # Position-preserving: None at index i means "message i failed to
             # send". The runner relies on len(result) == len(messages) to keep
             # item ↔ message_id attachment correctly aligned across categories.
+            #
+            # Digest text is rendered as Telegram HTML (<b>, <i>, bare-URL
+            # auto-link). We send with parse_mode="HTML" and fall back to
+            # plain text on a 400 — so an unexpected entity in agent output
+            # degrades gracefully (visible tags) rather than dropping the
+            # whole message. Matches the trace.py "_send_html" pattern.
             ids: list[int | None] = []
             for text, kb in messages:
                 try:
                     msg_id = await send_message_return_id(
                         text, bot,
                         thread_id=config.news_daily_telegram_topic_id,
+                        parse_mode="HTML",
                         reply_markup=kb,
                     )
+                except httpx.HTTPStatusError as exc:
+                    if exc.response.status_code == 400:
+                        log.warning(
+                            "Digest HTML send rejected (400); retrying plain",
+                        )
+                        try:
+                            msg_id = await send_message_return_id(
+                                text, bot,
+                                thread_id=config.news_daily_telegram_topic_id,
+                                reply_markup=kb,
+                            )
+                        except Exception:
+                            log.exception(
+                                "Plain-text fallback also failed for digest "
+                                "message",
+                            )
+                            ids.append(None)
+                            continue
+                    else:
+                        log.exception("Failed to send digest message")
+                        ids.append(None)
+                        continue
                 except Exception:
                     log.exception("Failed to send digest message")
                     ids.append(None)

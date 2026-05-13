@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import html
 from dataclasses import dataclass
 from typing import Literal
 
@@ -78,16 +79,28 @@ class DigestCategory:
     items: list[DigestItem]
 
 
+def _esc(text: str) -> str:
+    """HTML-escape a string for Telegram HTML parse mode.
+
+    Telegram's HTML mode requires `<`, `>`, and `&` to be escaped in
+    text content; quotes are only required inside attribute values.
+    """
+    return html.escape(text, quote=False)
+
+
 def _format_item(item: DigestItem) -> str:
-    parts = [f"▸ **{item.title}**", f"   {item.briefing}"]
-    parts.append(f"   _Why you care:_ {item.why_you_care}")
+    # Output is Telegram HTML (parse_mode="HTML"): <b>/<i> render bold +
+    # italic; bare URLs auto-link. All agent-supplied strings are
+    # HTML-escaped so a stray `<`, `>`, or `&` cannot break the message.
+    parts = [f"▸ <b>{_esc(item.title)}</b>", f"   {_esc(item.briefing)}"]
+    parts.append(f"   <i>Why you care:</i> {_esc(item.why_you_care)}")
     if item.url:
-        parts.append(f"   🔗 {item.url}")
+        parts.append(f"   🔗 {_esc(item.url)}")
     return "\n".join(parts)
 
 
 def _format_category_header(cat: DigestCategory) -> str:
-    return f"{cat.emoji} {cat.name}"
+    return f"{cat.emoji} {_esc(cat.name)}"
 
 
 def _button_row(item: DigestItem, chosen: str | None = None) -> list[dict[str, str]]:
