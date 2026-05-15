@@ -73,3 +73,33 @@ def test_dst_spring_forward_returns_physical_seconds():
     now = datetime(2026, 3, 29, 0, 30, 0, tzinfo=UTC)
     secs = _seconds_until_next_local_time(now=now, hour=5, minute=30, tz=tz)
     assert secs == 4 * 3600
+
+
+def test_dst_spring_forward_imaginary_target_is_deterministic():
+    """Characterisation: a target wall-clock time that does not exist.
+
+    On 2026-03-29 Europe/London jumps 01:00 GMT -> 02:00 BST, so 01:30
+    local never occurs. ZoneInfo resolves the imaginary time with the
+    pre-transition offset (fold=0, i.e. GMT) -> 01:30 UTC, so from
+    now=00:00 UTC the function returns 5400s (1h30m). Pinned so a future
+    tz/fold-handling change is a conscious decision, not a silent shift.
+    """
+    tz = ZoneInfo("Europe/London")
+    now = datetime(2026, 3, 29, 0, 0, 0, tzinfo=UTC)
+    secs = _seconds_until_next_local_time(now=now, hour=1, minute=30, tz=tz)
+    assert secs == 5400
+
+
+def test_dst_fall_back_ambiguous_target_is_deterministic():
+    """Characterisation: a target wall-clock time that occurs twice.
+
+    On 2026-10-25 Europe/London falls back 02:00 BST -> 01:00 GMT, so
+    01:30 local happens twice. ZoneInfo resolves the ambiguous time to
+    the first occurrence (fold=0, BST: 01:30 - 01:00 = 00:30 UTC). From
+    now=2026-10-24 23:30 UTC (= 00:30 BST on the 25th) the function
+    returns 3600s (1h). Pinned to catch a silent fold-resolution change.
+    """
+    tz = ZoneInfo("Europe/London")
+    now = datetime(2026, 10, 24, 23, 30, 0, tzinfo=UTC)
+    secs = _seconds_until_next_local_time(now=now, hour=1, minute=30, tz=tz)
+    assert secs == 3600

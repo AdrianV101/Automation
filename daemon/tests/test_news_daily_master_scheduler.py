@@ -63,6 +63,36 @@ class TestSecondsUntilNextFire:
         secs = seconds_until_next_fire(now, fire_time=time(6, 0), tz=tz)
         assert secs == pytest.approx(24 * 3600, abs=1)
 
+    def test_dst_spring_forward_imaginary_fire_time_is_deterministic(
+        self,
+    ) -> None:
+        """Characterisation: fire_time that does not exist (spring gap).
+
+        2026-03-29 London jumps 01:00 GMT -> 02:00 BST; 01:30 never
+        occurs. ZoneInfo resolves it with the pre-transition offset
+        (fold=0 / GMT) -> 01:30 UTC; from now=00:00 GMT that is 5400s.
+        Pinned so a future fold/tz change is a conscious decision.
+        """
+        tz = ZoneInfo("Europe/London")
+        now = datetime(2026, 3, 29, 0, 0, tzinfo=tz)  # 00:00 GMT
+        secs = seconds_until_next_fire(now, fire_time=time(1, 30), tz=tz)
+        assert secs == pytest.approx(5400, abs=1)
+
+    def test_dst_fall_back_ambiguous_fire_time_is_deterministic(
+        self,
+    ) -> None:
+        """Characterisation: fire_time that occurs twice (fall-back).
+
+        2026-10-25 London falls back 02:00 BST -> 01:00 GMT; 01:30
+        happens twice. ZoneInfo resolves to the first occurrence
+        (fold=0 / BST = 00:30 UTC). From now=2026-10-25 00:00 BST
+        (= 2026-10-24 23:00 UTC) that is 5400s.
+        """
+        tz = ZoneInfo("Europe/London")
+        now = datetime(2026, 10, 25, 0, 0, tzinfo=tz)  # 00:00 BST, pre-fold
+        secs = seconds_until_next_fire(now, fire_time=time(1, 30), tz=tz)
+        assert secs == pytest.approx(5400, abs=1)
+
     def test_returns_positive_float(self) -> None:
         tz = ZoneInfo("UTC")
         now = datetime(2026, 4, 30, 5, 59, 30, tzinfo=tz)
