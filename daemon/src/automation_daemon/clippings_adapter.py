@@ -120,3 +120,46 @@ async def process_clipping(
             f"(left in Clippings/, will retry)",
             thread_id=news_topic_id,
         )
+
+
+async def reconcile_clippings(
+    *,
+    clippings_dir: Path,
+    vault_root: Path,
+    state: ClippingsStateDB,
+    telegram_notifier: Callable[..., Awaitable[None]],
+    list_routing_targets: Callable[[], list[str]],
+    send_clarification: Callable[..., Awaitable[int | None]] | None,
+    max_failed_retries: int = 3,
+    news_topic_id: int | None = None,
+    model: str = "claude-opus-4-7",
+) -> None:
+    """Scan the folder; (re)process anything not in a terminal/awaiting state.
+
+    Safety net behind the watcher: recovers clippings synced while the
+    daemon was down, and retries `failed` rows up to `max_failed_retries`.
+    """
+    if not clippings_dir.is_dir():
+        return
+    for path in sorted(clippings_dir.glob("*.md")):
+        try:
+            fm, body = parse_clipping(path)
+        except OSError:
+            log.exception("Reconcile: cannot read %s", path)
+            continue
+        key = clipping_key(fm, body)
+        row = await state.get(key)
+        if row is not None:
+            if row["status"] in _TERMINAL:
+                continue
+            if row["status"] == "pending_clarification" and row["telegram_message_id"]:
+                continue
+            if row["status"] == "failed" and row["retry_count"] >= max_failed_retries:
+                continue
+        await process_clipping(
+            path, vault_root=vault_root, state=state,
+            telegram_notifier=telegram_notifier,
+            list_routing_targets=list_routing_targets,
+            send_clarification=send_clarification,
+            news_topic_id=news_topic_id, model=model,
+        )

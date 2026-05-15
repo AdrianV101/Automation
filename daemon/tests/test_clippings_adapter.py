@@ -114,3 +114,52 @@ async def test_failed_outcome_marks_failed_and_leaves_file(tmp_path, state):
     fm, body = parse_clipping(f)
     assert (await state.get(clipping_key(fm, body)))["status"] == "failed"
     notify.assert_awaited()
+
+
+from automation_daemon.clippings_adapter import reconcile_clippings
+
+
+async def test_reconcile_enqueues_unseen_and_failed_skips_terminal(tmp_path, state):
+    cdir = tmp_path / "Clippings"
+    cdir.mkdir()
+    for n, src in [("new.md", "https://x.com/new"),
+                   ("routed.md", "https://x.com/routed"),
+                   ("failed.md", "https://x.com/failed")]:
+        (cdir / n).write_text(f'---\ntitle: t\nsource: "{src}"\n---\nb\n', encoding="utf-8")
+    from automation_daemon.clippings_state import parse_clipping, clipping_key
+    rk = clipping_key(*parse_clipping(cdir / "routed.md"))
+    await state.insert_pending(rk, "routed.md"); await state.mark_routed(rk, "x.md")
+    fk = clipping_key(*parse_clipping(cdir / "failed.md"))
+    await state.insert_pending(fk, "failed.md"); await state.mark_failed(fk)
+
+    seen: list[str] = []
+    async def fake_process(path, **kw): seen.append(path.name)
+
+    with patch("automation_daemon.clippings_adapter.process_clipping", fake_process):
+        await reconcile_clippings(
+            clippings_dir=cdir, vault_root=tmp_path, state=state,
+            telegram_notifier=AsyncMock(), list_routing_targets=lambda: [],
+            send_clarification=AsyncMock(), max_failed_retries=3,
+        )
+    assert "new.md" in seen        # unseen -> enqueued
+    assert "failed.md" in seen     # failed under retry cap -> re-enqueued
+    assert "routed.md" not in seen # terminal -> skipped
+
+
+async def test_reconcile_stops_retrying_after_cap(tmp_path, state):
+    cdir = tmp_path / "Clippings"; cdir.mkdir()
+    (cdir / "f.md").write_text('---\ntitle: t\nsource: "https://x.com/f"\n---\nb\n', encoding="utf-8")
+    from automation_daemon.clippings_state import parse_clipping, clipping_key
+    k = clipping_key(*parse_clipping(cdir / "f.md"))
+    await state.insert_pending(k, "f.md")
+    for _ in range(3):
+        await state.mark_failed(k)  # retry_count == 3
+    seen = []
+    async def fake_process(path, **kw): seen.append(path.name)
+    with patch("automation_daemon.clippings_adapter.process_clipping", fake_process):
+        await reconcile_clippings(
+            clippings_dir=cdir, vault_root=tmp_path, state=state,
+            telegram_notifier=AsyncMock(), list_routing_targets=lambda: [],
+            send_clarification=AsyncMock(), max_failed_retries=3,
+        )
+    assert seen == []  # at cap -> not retried
