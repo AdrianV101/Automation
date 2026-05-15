@@ -3,7 +3,7 @@ from __future__ import annotations
 from datetime import datetime, timedelta, timezone
 
 import pytest
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, patch
 
 from automation_daemon.config import DaemonConfig
 from automation_daemon.models import RecordingJob
@@ -116,3 +116,52 @@ async def test_reap_skips_timeout_stamp_if_late_reply_won_race(tmp_path) -> None
                         process_recording_fn=_route_then_late_reply)
     assert (await db.get_event("race"))["status"] != "timed_out_unresolved"
     assert n == 0
+
+
+@pytest.mark.asyncio
+async def test_reaper_escalates_and_gives_up_after_max_attempts(tmp_path) -> None:
+    db = EmailIngestStateDB(tmp_path / "s.db"); await db.init_db()
+    await db.insert_event("flap", uid=1)
+    old_ts = (datetime.now(timezone.utc) - timedelta(hours=25)).isoformat()
+    await db.insert_pending("flap", payload=serialize_job(_job()),
+                            unknown_speakers=["Speaker 1"], created_at=old_ts)
+    await db.update_status("flap", "awaiting_speaker_labels")
+    cfg = DaemonConfig(telegram_bot_token="t", telegram_chat_id="c", pkm_vault_path=tmp_path)
+    bot = BotConfig(bot_token="t", chat_id="c")
+    failing = AsyncMock(side_effect=RuntimeError("routing always fails"))
+    counts: dict[str, int] = {}
+    with patch("automation_daemon.speaker_reaper.send_message", new=AsyncMock()) as alert:
+        # attempts 1 and 2: retried, row kept, no alert
+        await reap_once(db, cfg, bot, ttl_hours=24, process_recording_fn=failing,
+                        _failure_counts=counts, max_attempts=3)
+        assert await db.get_pending("flap") is not None
+        await reap_once(db, cfg, bot, ttl_hours=24, process_recording_fn=failing,
+                        _failure_counts=counts, max_attempts=3)
+        assert await db.get_pending("flap") is not None
+        alert.assert_not_awaited()
+        # attempt 3: escalate + give up
+        await reap_once(db, cfg, bot, ttl_hours=24, process_recording_fn=failing,
+                        _failure_counts=counts, max_attempts=3)
+    alert.assert_awaited()                                  # operator notified
+    assert await db.get_pending("flap") is None             # stopped looping
+    assert (await db.get_event("flap"))["status"] == "failed"
+
+
+@pytest.mark.asyncio
+async def test_reaper_transient_failure_then_success_clears_counter(tmp_path) -> None:
+    db = EmailIngestStateDB(tmp_path / "s.db"); await db.init_db()
+    await db.insert_event("ok", uid=1)
+    old_ts = (datetime.now(timezone.utc) - timedelta(hours=25)).isoformat()
+    await db.insert_pending("ok", payload=serialize_job(_job()),
+                            unknown_speakers=["Speaker 1"], created_at=old_ts)
+    await db.update_status("ok", "awaiting_speaker_labels")
+    cfg = DaemonConfig(telegram_bot_token="t", telegram_chat_id="c", pkm_vault_path=tmp_path)
+    bot = BotConfig(bot_token="t", chat_id="c")
+    counts: dict[str, int] = {}
+    flud = AsyncMock(side_effect=RuntimeError("transient"))
+    await reap_once(db, cfg, bot, process_recording_fn=flud, _failure_counts=counts, max_attempts=3)
+    assert counts.get("ok") == 1
+    ok = AsyncMock()
+    await reap_once(db, cfg, bot, process_recording_fn=ok, _failure_counts=counts, max_attempts=3)
+    assert "ok" not in counts                                # cleared on success
+    assert (await db.get_event("ok"))["status"] == "timed_out_unresolved"
