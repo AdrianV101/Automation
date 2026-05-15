@@ -69,3 +69,57 @@ def test_clipping_key_falls_back_to_content_hash():
     assert k.startswith("hash:")
     assert k == clipping_key({}, "abc")  # same body → same key
     assert k != clipping_key({}, "abd")
+
+
+import pytest
+from automation_daemon.clippings_state import ClippingsStateDB
+
+
+@pytest.fixture
+async def db(tmp_path):
+    d = ClippingsStateDB(tmp_path / "state.db")
+    await d.init_db()
+    return d
+
+
+async def test_insert_then_get_pending(db):
+    await db.insert_pending("url:https://x.com/a", "A.md")
+    row = await db.get("url:https://x.com/a")
+    assert row is not None
+    assert row["status"] == "pending"
+    assert row["original_filename"] == "A.md"
+    assert row["retry_count"] == 0
+
+
+async def test_mark_routed_and_skipped(db):
+    await db.insert_pending("k1", "A.md")
+    await db.mark_routed("k1", "01-Projects/Next Steps/clippings/A.md")
+    assert (await db.get("k1"))["status"] == "routed"
+    await db.insert_pending("k2", "B.md")
+    await db.mark_skipped("k2")
+    assert (await db.get("k2"))["status"] == "skipped"
+
+
+async def test_mark_failed_increments_retry_count(db):
+    await db.insert_pending("k", "A.md")
+    await db.mark_failed("k")
+    await db.mark_failed("k")
+    row = await db.get("k")
+    assert row["status"] == "failed"
+    assert row["retry_count"] == 2
+
+
+async def test_pending_clarification_lookup_by_message_and_oldest(db):
+    await db.insert_pending("k1", "A.md")
+    await db.set_pending_clarification("k1", candidates=["Next Steps", "Skip"], telegram_message_id=555)
+    by_msg = await db.find_pending_clarification_by_message(555)
+    assert by_msg["url_key"] == "k1"
+    assert by_msg["candidates"] == ["Next Steps", "Skip"]
+    oldest = await db.oldest_pending_clarification()
+    assert oldest["url_key"] == "k1"
+
+
+async def test_get_missing_returns_none(db):
+    assert await db.get("nope") is None
+    assert await db.find_pending_clarification_by_message(999) is None
+    assert await db.oldest_pending_clarification() is None
