@@ -71,7 +71,7 @@ async def process_clipping(
         await state.insert_pending(key, path.name)
         await state.mark_failed(key)
         await telegram_notifier(
-            f"Warning: Clipping could not be parsed: {path.name} (left in Clippings/)",
+            f"⚠️ Clipping could not be parsed: {path.name} (left in Clippings/)",
             thread_id=news_topic_id,
         )
         return
@@ -98,7 +98,7 @@ async def process_clipping(
         await state.mark_routed(key, outcome.routed_path or "")
         plan_note = f"\nPlan updated: {outcome.plan_attached}" if outcome.plan_attached else ""
         await telegram_notifier(
-            f"Clipping filed: {path.name}\n-> {outcome.routed_path}\n"
+            f"📎 Clipping filed: {path.name}\n→ {outcome.routed_path}\n"
             f"Links added: {outcome.links_added}{plan_note}",
             thread_id=news_topic_id,
         )
@@ -116,7 +116,7 @@ async def process_clipping(
     else:  # failed
         await state.mark_failed(key)
         await telegram_notifier(
-            f"Warning: Clipping routing failed: {path.name}\n{outcome.error}\n"
+            f"⚠️ Clipping routing failed: {path.name}\n{outcome.error}\n"
             f"(left in Clippings/, will retry)",
             thread_id=news_topic_id,
         )
