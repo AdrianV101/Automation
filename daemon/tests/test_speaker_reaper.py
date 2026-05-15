@@ -56,3 +56,63 @@ async def test_reap_skips_fresh_pending(tmp_path) -> None:
     n = await reap_once(db, cfg, bot, ttl_hours=24, process_recording_fn=AsyncMock())
     assert n == 0
     assert await db.get_pending("new") is not None
+
+
+@pytest.mark.asyncio
+async def test_reap_is_idempotent_only_routes_once(tmp_path) -> None:
+    db = EmailIngestStateDB(tmp_path / "s.db"); await db.init_db()
+    await db.insert_event("old", uid=1)
+    old_ts = (datetime.now(timezone.utc) - timedelta(hours=25)).isoformat()
+    await db.insert_pending("old", payload=serialize_job(_job()),
+                            unknown_speakers=["Speaker 1"], created_at=old_ts)
+    await db.update_status("old", "awaiting_speaker_labels")
+    cfg = DaemonConfig(telegram_bot_token="t", telegram_chat_id="c", pkm_vault_path=tmp_path)
+    bot = BotConfig(bot_token="t", chat_id="c")
+    routed = AsyncMock()
+    n1 = await reap_once(db, cfg, bot, ttl_hours=24, process_recording_fn=routed)
+    n2 = await reap_once(db, cfg, bot, ttl_hours=24, process_recording_fn=routed)
+    assert n1 == 1
+    assert n2 == 0
+    routed.assert_awaited_once()  # NOT called again on the second sweep
+    assert await db.get_pending("old") is not None  # still retained for late correction
+    assert (await db.get_event("old"))["status"] == "timed_out_unresolved"
+
+
+@pytest.mark.asyncio
+async def test_reap_drops_poisoned_pending_row(tmp_path) -> None:
+    db = EmailIngestStateDB(tmp_path / "s.db"); await db.init_db()
+    await db.insert_event("bad", uid=1)
+    old_ts = (datetime.now(timezone.utc) - timedelta(hours=25)).isoformat()
+    await db.insert_pending("bad", payload="{not valid json",
+                            unknown_speakers=["Speaker 1"], created_at=old_ts)
+    await db.update_status("bad", "awaiting_speaker_labels")
+    cfg = DaemonConfig(telegram_bot_token="t", telegram_chat_id="c", pkm_vault_path=tmp_path)
+    bot = BotConfig(bot_token="t", chat_id="c")
+    routed = AsyncMock()
+    n = await reap_once(db, cfg, bot, ttl_hours=24, process_recording_fn=routed)
+    routed.assert_not_awaited()
+    assert await db.get_pending("bad") is None  # poisoned row dropped
+    assert (await db.get_event("bad"))["status"] == "failed"
+    assert n == 0
+
+
+@pytest.mark.asyncio
+async def test_reap_skips_timeout_stamp_if_late_reply_won_race(tmp_path) -> None:
+    db = EmailIngestStateDB(tmp_path / "s.db"); await db.init_db()
+    await db.insert_event("race", uid=1)
+    old_ts = (datetime.now(timezone.utc) - timedelta(hours=25)).isoformat()
+    await db.insert_pending("race", payload=serialize_job(_job()),
+                            unknown_speakers=["Speaker 1"], created_at=old_ts)
+    await db.update_status("race", "awaiting_speaker_labels")
+    cfg = DaemonConfig(telegram_bot_token="t", telegram_chat_id="c", pkm_vault_path=tmp_path)
+    bot = BotConfig(bot_token="t", chat_id="c")
+
+    async def _route_then_late_reply(job, config, *, status=None, speakers_unresolved=False):
+        # Simulate a concurrent late reply resolving + deleting the row
+        # while the reaper is inside process_recording.
+        await db.delete_pending("race")
+
+    n = await reap_once(db, cfg, bot, ttl_hours=24,
+                        process_recording_fn=_route_then_late_reply)
+    assert (await db.get_event("race"))["status"] != "timed_out_unresolved"
+    assert n == 0

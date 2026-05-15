@@ -27,22 +27,61 @@ async def reap_once(
     ttl_hours: int = 24,
     process_recording_fn=process_recording,
 ) -> int:
+    """Route pending transcripts older than `ttl_hours` with generic labels
+    + the `speakers_unresolved` flag, then stamp `timed_out_unresolved`.
+
+    The pending row is RETAINED (ADR-010 §5: a late reply can still correct
+    it) so this must be idempotent: a row already stamped
+    `timed_out_unresolved` is skipped on subsequent sweeps. Returns the
+    number of rows actually reaped this sweep (not the number scanned)."""
     cutoff = (
         datetime.now(timezone.utc) - timedelta(hours=ttl_hours)
     ).isoformat()
     stale = await email_db.list_pending_older_than(cutoff)
+    reaped = 0
     for row in stale:
         mid = row["message_id"]
+        event = await email_db.get_event(mid)
+        if event is not None and event["status"] == "timed_out_unresolved":
+            # Already reaped on a previous sweep; row is only retained so a
+            # late reply can still correct it. Do not re-route.
+            continue
         try:
             job = deserialize_job(row["payload"])
+        except Exception:
+            log.exception(
+                "speaker reaper: unrecoverable pending payload for %s; "
+                "marking failed and dropping the poisoned row", mid,
+            )
+            try:
+                await email_db.update_status(mid, "failed")
+            except Exception:
+                log.exception("speaker reaper: could not mark %s failed", mid)
+            await email_db.delete_pending(mid)
+            continue
+        try:
             tracker = EmailIngestStatusTracker(email_db, mid)
             await process_recording_fn(
                 job, config, status=tracker, speakers_unresolved=True,
             )
-            await email_db.update_status(mid, "timed_out_unresolved")
         except Exception:
-            log.exception("speaker reaper failed for %s", mid)
-    return len(stale)
+            log.exception(
+                "speaker reaper: routing failed for %s; leaving pending for "
+                "next sweep", mid,
+            )
+            continue
+        # A concurrent late reply may have resolved + deleted the pending
+        # row while we were routing. _maybe_resume's clean run is
+        # authoritative -- don't stamp timeout over it or count it.
+        if await email_db.get_pending(mid) is None:
+            log.info(
+                "speaker reaper: %s resolved by a late reply mid-sweep; "
+                "skipping timeout stamp", mid,
+            )
+            continue
+        await email_db.update_status(mid, "timed_out_unresolved")
+        reaped += 1
+    return reaped
 
 
 async def run_speaker_reaper_forever(
