@@ -36,6 +36,7 @@ from .speaker_resolution import (
 from .news_email_adapter import handle_news_email
 from .pipeline import process_recording
 from .plaud_email_adapter import MalformedPlaudEmailError, recording_job_from_email
+from .speaker_reaper import run_speaker_reaper_forever
 from agent_infra import SessionManager
 from telegram_interface import (
     BotConfig, TelegramInterface, ThreadStore,
@@ -486,6 +487,11 @@ async def _run_email_ingest_path(config: DaemonConfig) -> None:
                     on_callback_query=on_callback_query,
                     on_labeling_reply=on_text_reply,
                 ),
+                on_persistent_failure=on_supervised_task_crashloop,
+            ))
+            tg.create_task(supervise(
+                "speaker-reaper",
+                lambda: run_speaker_reaper_forever(email_db, config, bot),
                 on_persistent_failure=on_supervised_task_crashloop,
             ))
     finally:

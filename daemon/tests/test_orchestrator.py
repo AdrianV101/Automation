@@ -53,6 +53,7 @@ class TestRunDaemonEmailPath:
 
         with (
             patch("automation_daemon.orchestrator.supervise", new=_fake_supervise_run_once),
+            patch("automation_daemon.orchestrator.run_speaker_reaper_forever", new=AsyncMock()),
             patch("automation_daemon.orchestrator.ImapIdleListener") as MockListener,
             patch("automation_daemon.orchestrator.EmailIngestStateDB") as MockDb,
             patch("automation_daemon.orchestrator.TelegramInterface") as MockTii,
@@ -105,6 +106,7 @@ class TestRunDaemonEmailPath:
 
         with (
             patch("automation_daemon.orchestrator.supervise", new=fake_supervise),
+            patch("automation_daemon.orchestrator.run_speaker_reaper_forever", new=AsyncMock()),
             patch("automation_daemon.orchestrator.ImapIdleListener") as MockListener,
             patch("automation_daemon.orchestrator.EmailIngestStateDB") as MockDb,
             patch("automation_daemon.orchestrator.TelegramInterface") as MockTii,
@@ -125,8 +127,8 @@ class TestRunDaemonEmailPath:
 
             await run_daemon(cfg)
 
-        # Both names must appear, regardless of order
-        assert set(supervised_names) == {"imap-listener", "telegram-poller"}, (
+        # All three names must appear, regardless of order
+        assert set(supervised_names) == {"imap-listener", "telegram-poller", "speaker-reaper"}, (
             f"unexpected supervised tasks: {supervised_names}"
         )
 
@@ -398,3 +400,42 @@ async def test_text_reply_records_name_and_resumes_when_complete(tmp_path) -> No
     assert routed_job.transcript_data.speakers == ["Carol"]
     assert await db.get_pending("m1") is None
     assert (await db.get_event("m1"))["status"] in ("writing_pkm", "extracting", "completed")
+
+
+# ---------------------------------------------------------------------------
+# Task F2: speaker reaper started under supervision
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_email_path_starts_reaper(tmp_path) -> None:
+    cfg = DaemonConfig(
+        email_ingest_enabled=True, imap_host="h", imap_port=1,
+        imap_user="u", imap_password="p", telegram_bot_token="t",
+        telegram_chat_id="c", pkm_vault_path=tmp_path,
+        email_ingest_state_db_path=tmp_path / "e.db",
+    )
+    started: list[str] = []
+
+    async def _fake_supervise(name, factory, **kw):
+        started.append(name)
+
+    with (
+        patch("automation_daemon.orchestrator.supervise", new=_fake_supervise),
+        patch("automation_daemon.orchestrator.ImapIdleListener"),
+        patch("automation_daemon.orchestrator.EmailIngestStateDB") as Db,
+        patch("automation_daemon.orchestrator.TelegramInterface") as MockTii,
+        patch("automation_daemon.orchestrator.ThreadStore") as MockThreadStore,
+        patch("automation_daemon.orchestrator.SessionManager") as MockSessionMgr,
+        patch("automation_daemon.orchestrator.check_topics_enabled", new=AsyncMock(return_value=True)),
+        patch("automation_daemon.orchestrator.create_forum_topic", new=AsyncMock(return_value=42)),
+        patch("automation_daemon.orchestrator.reopen_forum_topic", new=AsyncMock(return_value=False)),
+    ):
+        Db.return_value.init_db = AsyncMock()
+        Db.return_value.get_setting = AsyncMock(return_value=None)
+        Db.return_value.set_setting = AsyncMock(return_value=None)
+        MockThreadStore.return_value.init_db = AsyncMock()
+        MockSessionMgr.return_value.close_all = AsyncMock()
+        MockTii.return_value.run_poller = AsyncMock(return_value=None)
+        from automation_daemon.orchestrator import _run_email_ingest_path
+        await _run_email_ingest_path(cfg)
+    assert any("speaker-reaper" in s for s in started)
