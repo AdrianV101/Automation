@@ -475,6 +475,36 @@ async def test_freetext_reply_targets_speaker_by_prompt_id_with_multiple_unknown
     assert await db.get_pending("m1") is None
 
 
+# ---------------------------------------------------------------------------
+# Finding 6: regression — all-named email routes through REAL gate
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_parsed_email_all_named_routes_through_real_gate(tmp_path) -> None:
+    """Regression: an all-recognised-names transcript must pass the REAL
+    gate (gate_or_pass returns False) and reach process_recording — no
+    mock of gate_or_pass. Guards against the gate wiring being inverted."""
+    db = EmailIngestStateDB(tmp_path / "s.db"); await db.init_db()
+    await db.insert_event("mN", uid=1)
+    cfg = DaemonConfig(telegram_bot_token="t", telegram_chat_id="c", pkm_vault_path=tmp_path)
+    bot = BotConfig(bot_token="t", chat_id="c")
+    routed = AsyncMock()
+    job = _job_gate(["Alice", "Bob"])  # all recognised names, zero "Speaker N"
+    from email_ingest.auth import DkimPass
+    with (
+        patch("automation_daemon.orchestrator.verify_dkim",
+              return_value=DkimPass(signing_domain="example.com", authserv_id="mx")),
+        patch("automation_daemon.orchestrator.recording_job_from_email", return_value=job),
+    ):
+        from automation_daemon.orchestrator import _process_parsed_email
+        await _process_parsed_email(
+            object(), "mN", email_db=db, config=cfg, bot=bot,
+            pipeline_thread=None, process_recording_fn=routed,
+        )
+    routed.assert_awaited_once()                     # gate passed → routed
+    assert await db.get_pending("mN") is None        # no hold created
+
+
 @pytest.mark.asyncio
 async def test_late_reply_after_timeout_reroutes(tmp_path) -> None:
     db = EmailIngestStateDB(tmp_path / "s.db"); await db.init_db()
