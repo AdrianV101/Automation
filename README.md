@@ -117,7 +117,7 @@ daemon/.venv/bin/python -m automation_daemon
 
 # Or run as a managed service:
 #   macOS: install a launchd LaunchAgent via daemon/scripts/install-launchagent.sh
-#          (Label `com.adrian.automation-daemon`, RunAtLoad, KeepAlive on crash,
+#          (Label `com.adrian.automation-daemon`, RunAtLoad, KeepAlive on abnormal exit,
 #          logs to ~/Library/Logs/automation-daemon/{stdout,stderr}.log)
 #   Linux: sudo cp daemon/automation-daemon.service /etc/systemd/system/
 #          sudo systemctl enable --now automation-daemon

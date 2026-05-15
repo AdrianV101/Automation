@@ -175,7 +175,7 @@ System python lacks packages -- always use `.venv/bin/python`.
 - IMAP bridge: Proton Mail Bridge presents a self-signed cert on `127.0.0.1:1143` -- `IMAP_USE_STARTTLS=true` + `IMAP_SSL_VERIFY=false` are required. The Bridge runs as a per-user LaunchAgent and may briefly drop on login/logout cycles; `ImapBridge` retries with backoff
 - IMAP exception logging: `ImapBridge` formats connect-failure exceptions with `%s`; some asyncio exceptions (e.g. `TimeoutError`) have empty `__str__`, so log lines may show "IMAP connect attempt N failed: " with a blank repr. Use `%r` to surface the type. Cosmetic, deferred
 - DKIM: configured via `DKIM_TRUSTED_AUTHSERV_ID` (default `mail.protonmail.ch`) + `DKIM_REQUIRED_DOMAIN` (default `plaud.ai`). The daemon trusts an upstream `Authentication-Results: ...; dkim=pass` from the configured authserv-id rather than re-verifying signatures
-- After code changes to the daemon, restart with `launchctl kickstart -k gui/$(id -u)/com.adrian.automation-daemon` (or `bootout` then `bootstrap`)
+- After code changes to the daemon, restart with `launchctl kickstart -k gui/$(id -u)/com.adrian.automation-daemon` (or `bootout` then re-run `daemon/scripts/install-launchagent.sh`)
 - PKM vault path: set via `PKM_VAULT_PATH` env var
 - Email-attachment routing: Plaud emails carry the audio file + cover infographic. `plaud_email_adapter.save_plaud_attachments` writes them to `<vault>/99-Attachments/plaud/<sanitized-message-id>/...` (subdir set by `VAULT_ATTACHMENTS_SUBDIR`)
 - Extraction uses Claude Agent SDK (Opus 4.6) with Obsidian MCP -- agent autonomously routes to appropriate PKM locations
