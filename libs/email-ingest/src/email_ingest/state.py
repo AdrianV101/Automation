@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -23,10 +24,20 @@ CREATE TABLE IF NOT EXISTS email_ingest_settings (
     key TEXT PRIMARY KEY,
     value TEXT NOT NULL
 );
+
+CREATE TABLE IF NOT EXISTS speaker_resolution_pending (
+    message_id TEXT PRIMARY KEY,
+    payload TEXT NOT NULL,
+    unknown_speakers TEXT NOT NULL,
+    name_map TEXT NOT NULL DEFAULT '{}',
+    prompt_message_ids TEXT NOT NULL DEFAULT '[]',
+    created_at TEXT NOT NULL
+);
 """
 
 VALID_STATUSES = frozenset({
     "received", "writing_pkm", "extracting", "completed", "failed", "dropped",
+    "awaiting_speaker_labels", "timed_out_unresolved",
 })
 
 # Only these columns may be passed as kwargs to `update_status`. Guards against
@@ -108,6 +119,91 @@ class EmailIngestStateDB:
             await db.commit()
             if cur.rowcount == 0:
                 raise KeyError(f"no event row for message_id={message_id!r}")
+
+    async def insert_pending(
+        self, message_id: str, *, payload: str,
+        unknown_speakers: list[str], created_at: str | None = None,
+    ) -> None:
+        async with aiosqlite.connect(self._path) as db:
+            await db.execute(
+                "INSERT OR REPLACE INTO speaker_resolution_pending "
+                "(message_id, payload, unknown_speakers, name_map, "
+                "prompt_message_ids, created_at) VALUES (?, ?, ?, '{}', '[]', ?)",
+                (message_id, payload, json.dumps(unknown_speakers),
+                 created_at or _now_iso()),
+            )
+            await db.commit()
+
+    async def get_pending(self, message_id: str) -> dict[str, Any] | None:
+        async with aiosqlite.connect(self._path) as db:
+            db.row_factory = aiosqlite.Row
+            async with db.execute(
+                "SELECT * FROM speaker_resolution_pending WHERE message_id = ?",
+                (message_id,),
+            ) as cur:
+                row = await cur.fetchone()
+        if row is None:
+            return None
+        d = dict(row)
+        d["unknown_speakers"] = json.loads(d["unknown_speakers"])
+        d["name_map"] = json.loads(d["name_map"])
+        d["prompt_message_ids"] = json.loads(d["prompt_message_ids"])
+        return d
+
+    async def set_pending_name(
+        self, message_id: str, speaker_label: str, name: str,
+    ) -> None:
+        cur_row = await self.get_pending(message_id)
+        if cur_row is None:
+            raise KeyError(f"no pending row for {message_id!r}")
+        name_map = cur_row["name_map"]
+        name_map[speaker_label] = name
+        async with aiosqlite.connect(self._path) as db:
+            await db.execute(
+                "UPDATE speaker_resolution_pending SET name_map = ? "
+                "WHERE message_id = ?",
+                (json.dumps(name_map), message_id),
+            )
+            await db.commit()
+
+    async def set_pending_prompt_ids(
+        self, message_id: str, message_ids: list[int],
+    ) -> None:
+        async with aiosqlite.connect(self._path) as db:
+            await db.execute(
+                "UPDATE speaker_resolution_pending SET prompt_message_ids = ? "
+                "WHERE message_id = ?",
+                (json.dumps(message_ids), message_id),
+            )
+            await db.commit()
+
+    async def list_pending_older_than(
+        self, cutoff_iso: str,
+    ) -> list[dict[str, Any]]:
+        async with aiosqlite.connect(self._path) as db:
+            db.row_factory = aiosqlite.Row
+            async with db.execute(
+                "SELECT * FROM speaker_resolution_pending "
+                "WHERE created_at < ? ORDER BY created_at",
+                (cutoff_iso,),
+            ) as cur:
+                rows = await cur.fetchall()
+        out: list[dict[str, Any]] = []
+        for row in rows:
+            d = dict(row)
+            d["unknown_speakers"] = json.loads(d["unknown_speakers"])
+            d["name_map"] = json.loads(d["name_map"])
+            d["prompt_message_ids"] = json.loads(d["prompt_message_ids"])
+            out.append(d)
+        return out
+
+    async def delete_pending(self, message_id: str) -> None:
+        async with aiosqlite.connect(self._path) as db:
+            await db.execute(
+                "DELETE FROM speaker_resolution_pending WHERE message_id = ?",
+                (message_id,),
+            )
+            await db.commit()
 
     async def get_uidnext_checkpoint(self) -> int:
         raw = await self.get_setting("uidnext")
