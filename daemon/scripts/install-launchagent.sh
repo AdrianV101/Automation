@@ -38,7 +38,11 @@ sed -e "s#@@DAEMON_DIR@@#$DAEMON_DIR#g" \
 launchctl bootout "$DOMAIN/$LABEL" 2>/dev/null || true
 launchctl bootout "$DOMAIN/$LEGACY_LABEL" 2>/dev/null || true
 rm -f "$LEGACY_PLIST"
+# Reap stragglers from both the pre-rename module (audio_ingest, still
+# running on hosts not yet migrated) and the current one. The legacy
+# arm can be dropped once every host has been reinstalled post-rename.
 pkill -f "$DAEMON_DIR/.venv/bin/python -m audio_ingest" 2>/dev/null || true
+pkill -f "$DAEMON_DIR/.venv/bin/python -m automation_daemon" 2>/dev/null || true
 sleep 2
 launchctl bootstrap "$DOMAIN" "$PLIST_DST"
 
