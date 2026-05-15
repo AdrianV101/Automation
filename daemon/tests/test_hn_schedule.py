@@ -40,3 +40,29 @@ def test_handles_local_timezone_offset():
     now = datetime(2026, 5, 1, 4, 0, 0, tzinfo=UTC)
     secs = _seconds_until_next_local_time(now=now, hour=5, minute=30, tz=tz)
     assert secs == 30 * 60
+
+
+def test_dst_fall_back_returns_wall_clock_seconds():
+    """Across the autumn fold the result is the *wall-clock* gap.
+
+    Europe/London falls back on 2026-10-25: at 02:00 BST clocks go to
+    01:00 GMT, so that day is physically 25 hours long. With
+    ``now`` = 00:30 UTC (= 01:30 BST, before the fold) and a 05:30 local
+    target (= 05:30 GMT, after the fold), the wall-clock gap is 4h but the
+    true elapsed time is 5h because of the extra repeated hour.
+
+    ``_seconds_until_next_local_time`` subtracts two datetimes that share
+    the same ``ZoneInfo`` (``target`` is built via ``local_now.replace``).
+    Python special-cases same-``tzinfo`` subtraction as a *naive* wall-clock
+    difference (no UTC conversion), so the function returns 4h (14400s).
+
+    Consequence worth pinning: on the autumn-fold day the digest fires one
+    physical hour earlier than ``local_time`` (here 04:30 GMT, not 05:30).
+    This test characterises that current behaviour so any future change to
+    the DST handling is a conscious, reviewed decision rather than a silent
+    regression.
+    """
+    tz = ZoneInfo("Europe/London")
+    now = datetime(2026, 10, 25, 0, 30, 0, tzinfo=UTC)
+    secs = _seconds_until_next_local_time(now=now, hour=5, minute=30, tz=tz)
+    assert secs == 4 * 3600

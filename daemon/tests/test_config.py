@@ -6,8 +6,9 @@ import pytest
 
 from automation_daemon.config import DaemonConfig
 
-# Patch load_dotenv to prevent .env file from polluting test environment
-_no_dotenv = patch("automation_daemon.config.load_dotenv")
+# load_dotenv is neutralised suite-wide by the _isolate_dotenv autouse
+# fixture in conftest.py, so .env can't pollute these tests. patch.dict
+# below provides the per-test os.environ isolation.
 
 
 def _base_env() -> dict:
@@ -24,14 +25,14 @@ class TestDaemonConfig:
 
     def test_telegram_fields(self):
         env = _base_env()
-        with _no_dotenv, patch.dict(os.environ, env, clear=True):
+        with patch.dict(os.environ, env, clear=True):
             config = DaemonConfig.from_env(env_file=None)
         assert config.telegram_bot_token == "bot123"
         assert config.telegram_chat_id == "456"
 
     def test_config_is_frozen(self):
         env = _base_env()
-        with _no_dotenv, patch.dict(os.environ, env, clear=True):
+        with patch.dict(os.environ, env, clear=True):
             config = DaemonConfig.from_env(env_file=None)
         with pytest.raises(AttributeError):
             config.telegram_bot_token = "new"  # type: ignore[misc]
@@ -40,7 +41,7 @@ class TestDaemonConfig:
 
     def test_pkm_vault_path(self):
         env = _base_env()
-        with _no_dotenv, patch.dict(os.environ, env, clear=True):
+        with patch.dict(os.environ, env, clear=True):
             config = DaemonConfig.from_env(env_file=None)
         assert config.pkm_vault_path == Path("/tmp/pkm")
 
@@ -48,20 +49,54 @@ class TestDaemonConfig:
 class TestConfigFromEnv:
     def test_missing_required_var_raises_with_name(self):
         env = {"TELEGRAM_BOT_TOKEN": "bot123"}
-        with _no_dotenv, patch.dict(os.environ, env, clear=True):
+        with patch.dict(os.environ, env, clear=True):
             with pytest.raises(ValueError, match="TELEGRAM_CHAT_ID"):
                 DaemonConfig.from_env(env_file=None)
 
     def test_invalid_int_env_var_includes_var_name(self):
         env = {**_base_env(), "IMAP_PORT": "not_a_number"}
-        with _no_dotenv, patch.dict(os.environ, env, clear=True):
+        with patch.dict(os.environ, env, clear=True):
             with pytest.raises(ValueError, match="IMAP_PORT"):
                 DaemonConfig.from_env(env_file=None)
 
 
+@pytest.mark.real_dotenv
+def test_from_env_loads_values_from_env_file(tmp_path: Path) -> None:
+    """Real ``load_dotenv`` path: ``from_env(env_file=...)`` parses the file.
+
+    Opts out of the ``_isolate_dotenv`` no-op (via the ``real_dotenv``
+    marker) so the actual python-dotenv wiring is exercised — guarding the
+    ``env_file`` branch and the dotenv import that the suite-wide stub would
+    otherwise hide.
+
+    The real ``load_dotenv`` writes straight to ``os.environ`` (bypassing
+    ``monkeypatch``), so the whole call is wrapped in ``patch.dict`` to
+    snapshot/restore the environment and keep the test hermetic — without
+    this, the loaded keys would leak into later tests.
+    """
+    env_file = tmp_path / "test.env"
+    env_file.write_text(
+        "TELEGRAM_BOT_TOKEN=fromfile\n"
+        "TELEGRAM_CHAT_ID=c\n"
+        "PKM_VAULT_PATH=/tmp/v\n"
+        "NEWS_DAILY_MASTER_ENABLED=true\n",
+    )
+    with patch.dict(os.environ, clear=False):
+        for key in (
+            "TELEGRAM_BOT_TOKEN", "TELEGRAM_CHAT_ID",
+            "PKM_VAULT_PATH", "NEWS_DAILY_MASTER_ENABLED",
+        ):
+            os.environ.pop(key, None)
+
+        cfg = DaemonConfig.from_env(env_file=str(env_file))
+
+        assert cfg.telegram_bot_token == "fromfile"
+        assert cfg.news_daily_master_enabled is True
+
+
 def test_email_ingest_defaults(monkeypatch: pytest.MonkeyPatch) -> None:
     env = {"TELEGRAM_BOT_TOKEN": "t", "TELEGRAM_CHAT_ID": "c", "PKM_VAULT_PATH": "/tmp/vault"}
-    with _no_dotenv, patch.dict(os.environ, env, clear=True):
+    with patch.dict(os.environ, env, clear=True):
         cfg = DaemonConfig.from_env(env_file=None)
     assert cfg.email_ingest_enabled is False
     assert cfg.imap_host == "127.0.0.1"

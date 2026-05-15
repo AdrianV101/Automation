@@ -44,4 +44,5 @@ where = ["src"]
 asyncio_mode = "auto"
 markers = [
     "integration: tests that call real external APIs (deselect with '-m not integration')",
+    "real_dotenv: opt out of the _isolate_dotenv autouse no-op to exercise real .env-file loading",
 ]
