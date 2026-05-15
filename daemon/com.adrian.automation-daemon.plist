@@ -1,0 +1,46 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!-- Template. Install with scripts/install-launchagent.sh, which
+     substitutes @@DAEMON_DIR@@ / @@LOG_DIR@@ and copies this into
+     ~/Library/LaunchAgents/. Do not edit the installed copy by hand;
+     re-run the install script instead. -->
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.adrian.automation-daemon</string>
+
+    <key>ProgramArguments</key>
+    <array>
+        <string>@@DAEMON_DIR@@/scripts/run-daemon.sh</string>
+    </array>
+
+    <key>WorkingDirectory</key>
+    <string>@@DAEMON_DIR@@</string>
+
+    <key>RunAtLoad</key>
+    <true/>
+
+    <!-- Restart only on abnormal exit (crash). A clean exit or a manual
+         `launchctl bootout` stays stopped. Equivalent to the systemd
+         unit's Restart=on-failure. -->
+    <key>KeepAlive</key>
+    <dict>
+        <key>SuccessfulExit</key>
+        <false/>
+    </dict>
+
+    <!-- Do not respawn more than once per 10s (systemd RestartSec=10). -->
+    <key>ThrottleInterval</key>
+    <integer>10</integer>
+
+    <!-- Standard scheduling so macOS does not App-Nap / throttle the
+         long-running poller and agent work. -->
+    <key>ProcessType</key>
+    <string>Standard</string>
+
+    <key>StandardOutPath</key>
+    <string>@@LOG_DIR@@/stdout.log</string>
+    <key>StandardErrorPath</key>
+    <string>@@LOG_DIR@@/stderr.log</string>
+</dict>
+</plist>
