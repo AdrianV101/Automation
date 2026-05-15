@@ -91,14 +91,27 @@ async def process_clipping(
     else:
         await state.insert_pending(key, path.name)
 
-    outcome = await route_clipping(
-        path, vault_root,
-        routing_targets=list_routing_targets(),
-        model=model,
-    )
+    try:
+        outcome = await route_clipping(
+            path, vault_root,
+            routing_targets=list_routing_targets(),
+            model=model,
+        )
+    except Exception:
+        log.exception(
+            "route_clipping raised for %s — marking failed so the "
+            "max_failed_retries cap applies", path.name,
+        )
+        await state.mark_failed(key)
+        await telegram_notifier(
+            f"⚠️ Clipping routing crashed: {path.name} "
+            f"(left in Clippings/, bounded retry)",
+            thread_id=news_topic_id,
+        )
+        return
 
     if outcome.kind == "routed":
-        await state.mark_routed(key, outcome.routed_path or "")
+        await state.mark_routed(key, outcome.routed_path)
         plan_note = f"\nPlan updated: {outcome.plan_attached}" if outcome.plan_attached else ""
         await telegram_notifier(
             f"📎 Clipping filed: {path.name}\n→ {outcome.routed_path}\n"
@@ -122,6 +135,13 @@ async def process_clipping(
                 log.exception(
                     "Failed to send clarification for %s — marking failed "
                     "so retries are bounded", path.name,
+                )
+                await state.mark_failed(key)
+                return
+            if msg_id is None:
+                log.error(
+                    "send_clarification returned no message id for %s — "
+                    "marking failed so retries are bounded", path.name,
                 )
                 await state.mark_failed(key)
                 return
@@ -171,13 +191,19 @@ async def reconcile_clippings(
                 continue
             if row["status"] == "failed" and row["retry_count"] >= max_failed_retries:
                 continue
-        await process_clipping(
-            path, vault_root=vault_root, state=state,
-            telegram_notifier=telegram_notifier,
-            list_routing_targets=list_routing_targets,
-            send_clarification=send_clarification,
-            news_topic_id=news_topic_id, model=model,
-        )
+        try:
+            await process_clipping(
+                path, vault_root=vault_root, state=state,
+                telegram_notifier=telegram_notifier,
+                list_routing_targets=list_routing_targets,
+                send_clarification=send_clarification,
+                news_topic_id=news_topic_id, model=model,
+            )
+        except Exception:
+            log.exception(
+                "Reconcile: process_clipping crashed for %s — continuing sweep",
+                path.name,
+            )
 
 
 class _ClippingHandler(FileSystemEventHandler):
@@ -243,7 +269,12 @@ async def run_clippings_watch_loop(
             try:
                 await asyncio.wait_for(stop.wait(), timeout=reconcile_interval_s)
             except asyncio.TimeoutError:
-                await _reconcile()
+                try:
+                    await _reconcile()
+                except Exception:
+                    log.exception(
+                        "Periodic reconcile sweep failed — will retry next interval",
+                    )
 
     observer = Observer()
     observer.schedule(_ClippingHandler(queue, loop), str(clippings_dir), recursive=False)

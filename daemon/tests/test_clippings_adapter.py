@@ -266,6 +266,59 @@ async def test_watch_loop_poison_clipping_does_not_kill_watcher(tmp_path, state)
     assert calls["n"] >= 1  # the poison clipping was attempted and the error swallowed+logged
 
 
+async def test_route_clipping_exception_marks_failed_bounded(tmp_path, state):
+    f = _clip(tmp_path)
+    from automation_daemon.clippings_state import parse_clipping, clipping_key
+    with patch("automation_daemon.clippings_adapter.route_clipping",
+               AsyncMock(side_effect=RuntimeError("agent down"))):
+        await process_clipping(f, vault_root=tmp_path, state=state,
+                               telegram_notifier=AsyncMock(),
+                               list_routing_targets=lambda: [])
+    row = await state.get(clipping_key(*parse_clipping(f)))
+    assert row["status"] == "failed" and row["retry_count"] == 1
+
+
+async def test_send_clarification_returns_none_marks_failed(tmp_path, state):
+    f = _clip(tmp_path)
+    from automation_daemon.clippings_router import RouteOutcome
+    from automation_daemon.clippings_state import parse_clipping, clipping_key
+    outcome = RouteOutcome(kind="needs_clarification", question="Q?", candidates=["A", "Skip"])
+    with patch("automation_daemon.clippings_adapter.route_clipping",
+               AsyncMock(return_value=outcome)):
+        await process_clipping(f, vault_root=tmp_path, state=state,
+                               telegram_notifier=AsyncMock(),
+                               send_clarification=AsyncMock(return_value=None),
+                               list_routing_targets=lambda: [])
+    row = await state.get(clipping_key(*parse_clipping(f)))
+    assert row["status"] == "failed"
+
+
+async def test_empty_clipping_marked_failed_and_notified(tmp_path, state):
+    cdir = tmp_path / "Clippings"; cdir.mkdir()
+    f = cdir / "empty.md"
+    f.write_text("---\n---\n   \n", encoding="utf-8")
+    notify = AsyncMock()
+    await process_clipping(f, vault_root=tmp_path, state=state,
+                           telegram_notifier=notify, list_routing_targets=lambda: [])
+    from automation_daemon.clippings_state import parse_clipping, clipping_key
+    row = await state.get(clipping_key(*parse_clipping(f)))
+    assert row["status"] == "failed"
+    notify.assert_awaited()
+
+
+async def test_pending_clarification_with_msgid_is_skipped(tmp_path, state):
+    f = _clip(tmp_path)
+    from automation_daemon.clippings_state import parse_clipping, clipping_key
+    key = clipping_key(*parse_clipping(f))
+    await state.insert_pending(key, f.name)
+    await state.set_pending_clarification(key, candidates=["A", "Skip"], telegram_message_id=77)
+    route_mock = AsyncMock()
+    with patch("automation_daemon.clippings_adapter.route_clipping", route_mock):
+        await process_clipping(f, vault_root=tmp_path, state=state,
+                               telegram_notifier=AsyncMock(), list_routing_targets=lambda: [])
+    route_mock.assert_not_awaited()
+
+
 async def test_reconcile_survives_non_utf8_file(tmp_path, state):
     cdir = tmp_path / "Clippings"; cdir.mkdir()
     (cdir / "good.md").write_text('---\ntitle: t\nsource: "https://x.com/g"\n---\nb\n', encoding="utf-8")

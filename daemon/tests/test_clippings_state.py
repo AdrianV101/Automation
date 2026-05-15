@@ -123,3 +123,32 @@ async def test_get_missing_returns_none(db):
     assert await db.get("nope") is None
     assert await db.find_pending_clarification_by_message(999) is None
     assert await db.oldest_pending_clarification() is None
+
+
+async def test_all_pending_clarifications_returns_ordered_rows(db):
+    # Insert two rows with deliberate ordering
+    await db.insert_pending("k1", "A.md")
+    await db.set_pending_clarification("k1", candidates=["X", "Skip"], telegram_message_id=11)
+    await db.insert_pending("k2", "B.md")
+    await db.set_pending_clarification("k2", candidates=["Y", "Skip"], telegram_message_id=22)
+    rows = await db.all_pending_clarifications()
+    assert len(rows) == 2
+    # Both rows present (order stable by processed_at ASC insertion order)
+    keys = [r["url_key"] for r in rows]
+    assert "k1" in keys and "k2" in keys
+    # k1 was inserted first so it should come first
+    assert keys[0] == "k1"
+
+
+async def test_all_pending_clarifications_empty(db):
+    assert await db.all_pending_clarifications() == []
+
+
+async def test_all_pending_clarifications_excludes_non_pending(db):
+    await db.insert_pending("k1", "A.md")
+    await db.set_pending_clarification("k1", candidates=["X", "Skip"], telegram_message_id=11)
+    await db.insert_pending("k2", "B.md")
+    await db.mark_failed("k2")
+    rows = await db.all_pending_clarifications()
+    assert len(rows) == 1
+    assert rows[0]["url_key"] == "k1"

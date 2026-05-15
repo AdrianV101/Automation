@@ -25,6 +25,25 @@ class RouteOutcome:
     summary: str = ""
     turns_used: int = 0
 
+    def __post_init__(self) -> None:
+        if self.kind == "routed" and not self.routed_path:
+            raise ValueError(
+                "RouteOutcome(kind='routed') requires a non-empty routed_path"
+            )
+        if self.kind == "needs_clarification":
+            if not self.question:
+                raise ValueError(
+                    "RouteOutcome(kind='needs_clarification') requires a question"
+                )
+            if not (2 <= len(self.candidates) <= 4):
+                raise ValueError(
+                    "RouteOutcome(kind='needs_clarification') requires 2-4 candidates"
+                )
+        if self.kind == "failed" and not self.error:
+            raise ValueError(
+                "RouteOutcome(kind='failed') requires a non-None error"
+            )
+
 
 def _last_sentinel_line(text: str) -> str | None:
     for line in reversed(text.splitlines()):

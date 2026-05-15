@@ -122,3 +122,30 @@ async def test_text_reply_no_pending_returns_false(tmp_path, state):
         state=state, rerun_with_guidance=AsyncMock(),
     )
     assert handled is False
+
+
+async def test_text_reply_targets_specific_message_when_multiple_pending(tmp_path, state):
+    from automation_daemon.clippings_state import parse_clipping, clipping_key
+    await state.insert_pending("k1", "A.md")
+    await state.set_pending_clarification("k1", candidates=["X", "Skip"], telegram_message_id=11)
+    await state.insert_pending("k2", "B.md")
+    await state.set_pending_clarification("k2", candidates=["Y", "Skip"], telegram_message_id=22)
+    rerun = AsyncMock()
+    handled = await handle_clip_text_reply(
+        text="for B", reply_to_message_id=22, state=state, rerun_with_guidance=rerun,
+    )
+    assert handled is True
+    assert rerun.call_args.kwargs["url_key"] == "k2"
+
+
+async def test_text_reply_ambiguous_no_replyto_returns_false(tmp_path, state):
+    await state.insert_pending("k1", "A.md")
+    await state.set_pending_clarification("k1", candidates=["X", "Skip"], telegram_message_id=11)
+    await state.insert_pending("k2", "B.md")
+    await state.set_pending_clarification("k2", candidates=["Y", "Skip"], telegram_message_id=22)
+    rerun = AsyncMock()
+    handled = await handle_clip_text_reply(
+        text="huh", reply_to_message_id=None, state=state, rerun_with_guidance=rerun,
+    )
+    assert handled is False
+    rerun.assert_not_awaited()

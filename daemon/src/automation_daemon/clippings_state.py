@@ -210,3 +210,14 @@ class ClippingsStateDB:
             ) as cur:
                 row = await cur.fetchone()
                 return _row_to_dict(row) if row else None
+
+    async def all_pending_clarifications(self) -> list[dict[str, Any]]:
+        """Return all pending_clarification rows ordered by processed_at ASC."""
+        async with aiosqlite.connect(self._path) as db:
+            db.row_factory = aiosqlite.Row
+            async with db.execute(
+                "SELECT * FROM clippings_ingest_events "
+                "WHERE status = 'pending_clarification' ORDER BY processed_at ASC",
+            ) as cur:
+                rows = await cur.fetchall()
+                return [_row_to_dict(r) for r in rows]

@@ -364,10 +364,15 @@ async def _run_email_ingest_path(config: DaemonConfig) -> None:
         ) -> None:
             async def _rerun(*, url_key: str, user_guidance: str) -> None:
                 await _clip_finalize(url_key=url_key, user_guidance=user_guidance)
-            await handle_clip_text_reply(
+            consumed = await handle_clip_text_reply(
                 text=text, reply_to_message_id=reply_to_message_id,
                 state=clip_state, rerun_with_guidance=_rerun,
             )
+            if not consumed:
+                log.info(
+                    "Clip text reply (reply_to=%s) matched no unambiguous "
+                    "pending clarification — ignoring", reply_to_message_id,
+                )
 
     async def on_callback_query(cbq_id: str, msg_id: int, data: str) -> None:
         await dispatch_callback_query(

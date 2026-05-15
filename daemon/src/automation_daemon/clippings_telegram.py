@@ -130,7 +130,7 @@ def make_finalize_route(
             model=model,
         )
         if outcome.kind == "routed":
-            await state.mark_routed(url_key, outcome.routed_path or "")
+            await state.mark_routed(url_key, outcome.routed_path)
             await telegram_notifier(
                 f"📎 Clipping filed: {path.name}\n→ {outcome.routed_path}\n"
                 f"Links added: {outcome.links_added}",
@@ -158,12 +158,19 @@ async def handle_clip_text_reply(
 
     Returns True if it consumed the message (so the dispatcher stops),
     False if there's no pending clarification it could belong to.
+    Only falls back to the single-pending heuristic when unambiguous —
+    guessing with multiple pending rows would hijack an unrelated reply.
     """
     row = None
     if reply_to_message_id is not None:
         row = await state.find_pending_clarification_by_message(reply_to_message_id)
     if row is None:
-        row = await state.oldest_pending_clarification()
+        # Only fall back to "the one pending clarification" when it is
+        # unambiguous. Guessing an arbitrary oldest row would hijack an
+        # unrelated reply onto the wrong clipping and burn a retry.
+        pending = await state.all_pending_clarifications()
+        if len(pending) == 1:
+            row = pending[0]
     if row is None:
         return False
     await rerun_with_guidance(url_key=row["url_key"], user_guidance=text)
