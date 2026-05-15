@@ -6,7 +6,7 @@ from pathlib import Path
 
 import pytest
 
-from audio_ingest.news_personal_digest.state import (
+from automation_daemon.news_personal_digest.state import (
     NewsDigestStateDB,
     NEWS_DIGEST_VALID_STATUSES,
     VALID_RATINGS,
@@ -125,7 +125,7 @@ async def test_update_run_missing_row_raises(db_path: Path) -> None:
 # news_digest_items
 # ---------------------------------------------------------------------------
 
-from audio_ingest.news_personal_digest.state import DigestItemInput  # noqa: E402
+from automation_daemon.news_personal_digest.state import DigestItemInput  # noqa: E402
 
 
 @pytest.mark.asyncio

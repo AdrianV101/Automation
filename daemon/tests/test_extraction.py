@@ -4,14 +4,14 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 
-from audio_ingest.extraction import (
+from automation_daemon.extraction import (
     AgentRoutingResult,
     _build_user_prompt,
     _find_summary_path,
     agent_extract_and_route,
 )
-from audio_ingest.prompts import build_extraction_system_prompt
-from audio_ingest.tools import TOOLS_EXTRACTION
+from automation_daemon.prompts import build_extraction_system_prompt
+from automation_daemon.tools import TOOLS_EXTRACTION
 from agent_infra import AgentLoopResult
 from pkm import TranscriptData, TranscriptSegment
 
@@ -183,7 +183,7 @@ class TestAgentExtractAndRoute:
             ],
         )
         with patch(
-            "audio_ingest.extraction.run_agent_loop_streaming",
+            "automation_daemon.extraction.run_agent_loop_streaming",
             new=AsyncMock(return_value=loop_result),
         ):
             result = await agent_extract_and_route(transcript, transcript_path, pkm_vault_path)
@@ -238,7 +238,7 @@ class TestAgentExtractAndRoute:
             ],
         )
         with patch(
-            "audio_ingest.extraction.run_agent_loop_streaming",
+            "automation_daemon.extraction.run_agent_loop_streaming",
             new=AsyncMock(return_value=loop_result),
         ):
             result = await agent_extract_and_route(transcript, transcript_path, pkm_vault_path)
@@ -316,8 +316,8 @@ class TestAgentExtractAndRoute:
         async def mock_streaming(prompt, options, on_event=None):
             return mock_result
 
-        with patch("audio_ingest.extraction.run_agent_loop_streaming", side_effect=mock_streaming):
-            with patch("audio_ingest.extraction.TelegramStreamSender") as MockSender:
+        with patch("automation_daemon.extraction.run_agent_loop_streaming", side_effect=mock_streaming):
+            with patch("automation_daemon.extraction.TelegramStreamSender") as MockSender:
                 mock_sender_instance = MockSender.return_value
                 mock_sender_instance.handle = AsyncMock()
                 mock_sender_instance.flush = AsyncMock()
@@ -345,7 +345,7 @@ class TestAgentExtractAndRoute:
             assert on_event is None
             return mock_result
 
-        with patch("audio_ingest.extraction.run_agent_loop_streaming", side_effect=mock_streaming):
+        with patch("automation_daemon.extraction.run_agent_loop_streaming", side_effect=mock_streaming):
             result = await agent_extract_and_route(
                 transcript, transcript_path, tmp_path / "pkm",
             )

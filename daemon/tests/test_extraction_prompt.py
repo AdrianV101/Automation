@@ -1,7 +1,7 @@
 """Test the dynamic extraction system-prompt builder."""
 from pathlib import Path
 
-from audio_ingest.extraction import build_extraction_system_prompt
+from automation_daemon.extraction import build_extraction_system_prompt
 
 
 def test_builder_includes_known_people_section_empty(tmp_path: Path):

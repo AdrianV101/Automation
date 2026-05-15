@@ -7,14 +7,14 @@ from news_pipeline import NewsSourceState
 
 @pytest.fixture
 async def db(tmp_path):
-    from audio_ingest.hn_state import HackerNewsStateDB
+    from automation_daemon.hn_state import HackerNewsStateDB
     state = HackerNewsStateDB(tmp_path / "state.db")
     await state.init_db()
     return state
 
 
 def test_satisfies_news_source_state_protocol(tmp_path):
-    from audio_ingest.hn_state import HackerNewsStateDB
+    from automation_daemon.hn_state import HackerNewsStateDB
     state = HackerNewsStateDB(tmp_path / "x.db")
     assert isinstance(state, NewsSourceState)
 
@@ -93,7 +93,7 @@ async def test_record_processed_rejects_non_hn_prefix_key(db):
 async def test_record_processed_raises_when_update_affects_zero_rows(tmp_path):
     """If the table is dropped between INSERT-OR-IGNORE and UPDATE, raise."""
     import aiosqlite
-    from audio_ingest.hn_state import HackerNewsStateDB
+    from automation_daemon.hn_state import HackerNewsStateDB
     db = HackerNewsStateDB(tmp_path / "n.db")
     await db.init_db()
     async with aiosqlite.connect(str(tmp_path / "n.db")) as conn:
@@ -106,7 +106,7 @@ async def test_record_processed_raises_when_update_affects_zero_rows(tmp_path):
 async def test_coexists_with_email_ingest_state_db(tmp_path):
     """Both classes must be able to init_db on the same SQLite file."""
     from email_ingest import EmailIngestStateDB
-    from audio_ingest.hn_state import HackerNewsStateDB
+    from automation_daemon.hn_state import HackerNewsStateDB
     path = tmp_path / "shared.db"
     email_db = EmailIngestStateDB(path)
     hn_db = HackerNewsStateDB(path)

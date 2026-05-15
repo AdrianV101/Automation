@@ -5,7 +5,7 @@ from unittest.mock import MagicMock
 
 import pytest
 
-# Set before any audio_ingest imports so MCP_SERVER_PATH is populated at import time.
+# Set before any automation_daemon imports so MCP_SERVER_PATH is populated at import time.
 os.environ.setdefault("OBSIDIAN_MCP_SERVER_PATH", "/tmp/test-obsidian-mcp/index.js")
 
 FIXTURES_DIR = Path(__file__).parent / "fixtures"
@@ -36,7 +36,7 @@ def _isolate_dotenv(
     """
     if request.node.get_closest_marker("real_dotenv"):
         return
-    monkeypatch.setattr("audio_ingest.config.load_dotenv", lambda *a, **k: False)
+    monkeypatch.setattr("automation_daemon.config.load_dotenv", lambda *a, **k: False)
 
 
 @pytest.fixture

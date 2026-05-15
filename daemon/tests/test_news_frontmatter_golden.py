@@ -15,7 +15,7 @@ import pytest
 
 from email_ingest import parse_email
 from news_pipeline import write_news_item
-from audio_ingest.news_email_adapter import email_to_news_item, render_body
+from automation_daemon.news_email_adapter import email_to_news_item, render_body
 
 FIXTURES = Path(__file__).parent / "fixtures" / "news"
 GOLDEN = FIXTURES / "golden"

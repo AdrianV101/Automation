@@ -9,7 +9,7 @@ import respx
 from unittest.mock import AsyncMock, MagicMock, patch
 
 from telegram_interface import BotConfig
-from audio_ingest.notifications import (
+from automation_daemon.notifications import (
     send_error,
     send_routing_summary,
     send_speaker_labeling_prompt,
@@ -84,7 +84,7 @@ class TestNotificationThreadId:
     async def test_send_speaker_labeling_prompt_text_passes_thread_id(self):
         response_data = {"ok": True, "result": {"message_id": 789}}
 
-        with patch("audio_ingest.notifications.httpx.AsyncClient") as MockClient:
+        with patch("automation_daemon.notifications.httpx.AsyncClient") as MockClient:
             mock_client = AsyncMock()
             MockClient.return_value.__aenter__ = AsyncMock(return_value=mock_client)
             MockClient.return_value.__aexit__ = AsyncMock(return_value=False)
@@ -107,7 +107,7 @@ class TestNotificationThreadId:
         clip = tmp_path / "clip.ogg"
         clip.write_bytes(b"fake ogg")
 
-        with patch("audio_ingest.notifications.httpx.AsyncClient") as MockClient:
+        with patch("automation_daemon.notifications.httpx.AsyncClient") as MockClient:
             mock_client = AsyncMock()
             MockClient.return_value.__aenter__ = AsyncMock(return_value=mock_client)
             MockClient.return_value.__aexit__ = AsyncMock(return_value=False)
@@ -130,7 +130,7 @@ class TestNotificationThreadId:
     async def test_send_speaker_labeling_prompt_omits_thread_id_when_none(self):
         response_data = {"ok": True, "result": {"message_id": 789}}
 
-        with patch("audio_ingest.notifications.httpx.AsyncClient") as MockClient:
+        with patch("automation_daemon.notifications.httpx.AsyncClient") as MockClient:
             mock_client = AsyncMock()
             MockClient.return_value.__aenter__ = AsyncMock(return_value=mock_client)
             MockClient.return_value.__aexit__ = AsyncMock(return_value=False)
@@ -157,7 +157,7 @@ class TestRoutingSummaryDedupFooter:
     @respx.mock
     @pytest.mark.asyncio
     async def test_includes_dedup_footer_when_aux_work_done(self):
-        from audio_ingest.extraction import AgentRoutingResult
+        from automation_daemon.extraction import AgentRoutingResult
 
         route = respx.post(f"{_API}/sendMessage").mock(
             return_value=httpx.Response(
@@ -188,7 +188,7 @@ class TestRoutingSummaryDedupFooter:
     @respx.mock
     @pytest.mark.asyncio
     async def test_no_footer_when_no_aux_work(self):
-        from audio_ingest.extraction import AgentRoutingResult
+        from automation_daemon.extraction import AgentRoutingResult
 
         route = respx.post(f"{_API}/sendMessage").mock(
             return_value=httpx.Response(

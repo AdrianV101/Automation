@@ -209,10 +209,10 @@ class TestFormatTraceEventHtml:
         assert "R&amp;D" in result
 
     def test_native_tool_path_escaped(self):
-        e = TraceEvent(kind="tool_start", tool_name="Read", tool_input={"file_path": "/home/user/src/audio_ingest/config.py"})
+        e = TraceEvent(kind="tool_start", tool_name="Read", tool_input={"file_path": "/home/user/src/automation_daemon/config.py"})
         result = format_trace_event(e)
         # Underscores should pass through (not HTML special)
-        assert "audio_ingest" in result
+        assert "automation_daemon" in result
 
     def test_search_query_escaped(self):
         e = TraceEvent(kind="tool_start", tool_name="mcp__obsidian-pkm__vault_semantic_search", tool_input={"query": "find <urgent> tasks"})

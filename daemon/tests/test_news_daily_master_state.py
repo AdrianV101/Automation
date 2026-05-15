@@ -6,7 +6,7 @@ from pathlib import Path
 
 import pytest
 
-from audio_ingest.news_daily_master.state import (
+from automation_daemon.news_daily_master.state import (
     NewsDailyMasterStateDB,
     NEWS_DAILY_MASTER_VALID_STATUSES,
 )

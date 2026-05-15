@@ -6,7 +6,7 @@ from unittest.mock import patch
 
 import pytest
 
-from audio_ingest.supervisor import supervise
+from automation_daemon.supervisor import supervise
 
 
 @pytest.mark.asyncio
@@ -77,7 +77,7 @@ async def test_supervise_resets_backoff_after_long_run():
             raise RuntimeError("fourth crash (unstable, doubling resumes)")
         await real_sleep(60)  # call 5+: block until cancelled
 
-    with patch("audio_ingest.supervisor.asyncio.sleep", side_effect=tracking_sleep):
+    with patch("automation_daemon.supervisor.asyncio.sleep", side_effect=tracking_sleep):
         task = asyncio.create_task(
             supervise(
                 "stable_then_crash", crash_then_stable_then_crash,

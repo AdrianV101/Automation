@@ -4,7 +4,7 @@ from unittest.mock import patch
 
 import pytest
 
-from audio_ingest.config import DaemonConfig
+from automation_daemon.config import DaemonConfig
 
 # load_dotenv is neutralised suite-wide by the _isolate_dotenv autouse
 # fixture in conftest.py, so .env can't pollute these tests. patch.dict

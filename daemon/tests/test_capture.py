@@ -14,16 +14,16 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 
-from audio_ingest.capture import (
+from automation_daemon.capture import (
     CAPTURE_SYSTEM_PROMPT,
     CaptureResult,
     _build_user_prompt,
     agent_capture_session,
 )
-from audio_ingest.config import DaemonConfig
-from audio_ingest.extraction import AgentRoutingResult
-from audio_ingest.models import RecordingJob
-from audio_ingest.tools import TOOLS_CAPTURE
+from automation_daemon.config import DaemonConfig
+from automation_daemon.extraction import AgentRoutingResult
+from automation_daemon.models import RecordingJob
+from automation_daemon.tools import TOOLS_CAPTURE
 from agent_infra import AgentLoopResult
 from pkm import TranscriptData, TranscriptSegment
 
@@ -170,7 +170,7 @@ class TestToolsCaptureSubset:
         that introduced `vault_quick_append` into _VAULT_WRITE and re-derived
         TOOLS_CAPTURE differently would still need to clear this assertion.
         """
-        from audio_ingest.tools import _VAULT_ADMIN, _VAULT_WRITE, VaultTool
+        from automation_daemon.tools import _VAULT_ADMIN, _VAULT_WRITE, VaultTool
 
         forbidden = (_VAULT_WRITE - {VaultTool.APPEND, VaultTool.ADD_LINKS}) | _VAULT_ADMIN
         assert TOOLS_CAPTURE.isdisjoint(forbidden), (
@@ -183,7 +183,7 @@ class TestVaultToolPrefixInvariant:
     member would silently fail to allowlist at runtime."""
 
     def test_every_vault_tool_has_prefix(self) -> None:
-        from audio_ingest.tools import VAULT_PREFIX, VaultTool
+        from automation_daemon.tools import VAULT_PREFIX, VaultTool
 
         for member in VaultTool:
             assert member.value.startswith(VAULT_PREFIX), (
@@ -197,7 +197,7 @@ class TestVaultToolPrefixInvariant:
         `.append(VaultTool.WRITE.value)` and silently widen the safety
         boundary process-wide.
         """
-        from audio_ingest.tools import (
+        from automation_daemon.tools import (
             TOOLS_ASK, TOOLS_CAPTURE, TOOLS_COMMAND, TOOLS_EXTRACTION, TOOLS_TASK,
         )
 
@@ -365,7 +365,7 @@ class TestAgentCaptureSession:
             tool_errors=["Tool 'vault_write' is not in allowed_tools list"],
         )
         with patch(
-            "audio_ingest.capture.run_agent_loop_streaming",
+            "automation_daemon.capture.run_agent_loop_streaming",
             new=AsyncMock(return_value=loop_result),
         ):
             result = await agent_capture_session(
@@ -389,7 +389,7 @@ class TestAgentCaptureSession:
             tool_errors=["MCP error: vault path not found"],
         )
         with patch(
-            "audio_ingest.capture.run_agent_loop_streaming",
+            "automation_daemon.capture.run_agent_loop_streaming",
             new=AsyncMock(return_value=loop_result),
         ):
             result = await agent_capture_session(
@@ -446,8 +446,8 @@ class TestAgentCaptureSession:
         async def mock_streaming(prompt, options, on_event=None):
             return mock_result
 
-        with patch("audio_ingest.capture.run_agent_loop_streaming", side_effect=mock_streaming):
-            with patch("audio_ingest.capture.TelegramStreamSender") as MockSender:
+        with patch("automation_daemon.capture.run_agent_loop_streaming", side_effect=mock_streaming):
+            with patch("automation_daemon.capture.TelegramStreamSender") as MockSender:
                 mock_sender = MockSender.return_value
                 mock_sender.handle = AsyncMock()
                 mock_sender.flush = AsyncMock()
@@ -477,7 +477,7 @@ class TestAgentCaptureSession:
             assert on_event is None
             return mock_result
 
-        with patch("audio_ingest.capture.run_agent_loop_streaming", side_effect=mock_streaming):
+        with patch("automation_daemon.capture.run_agent_loop_streaming", side_effect=mock_streaming):
             result = await agent_capture_session(
                 routing_result_success, transcript_path, pkm_vault_path,
             )
@@ -500,8 +500,8 @@ class TestAgentCaptureSession:
         async def mock_streaming(prompt, options, on_event=None):
             return mock_result
 
-        with patch("audio_ingest.capture.run_agent_loop_streaming", side_effect=mock_streaming):
-            with patch("audio_ingest.capture.TelegramStreamSender") as MockSender:
+        with patch("automation_daemon.capture.run_agent_loop_streaming", side_effect=mock_streaming):
+            with patch("automation_daemon.capture.TelegramStreamSender") as MockSender:
                 mock_sender = MockSender.return_value
                 mock_sender.handle = AsyncMock()
                 mock_sender.flush = AsyncMock(side_effect=RuntimeError("telegram down"))
@@ -566,18 +566,18 @@ def _make_routing_success() -> AgentRoutingResult:
 class TestPipelineCaptureWiring:
     @pytest.mark.asyncio
     async def test_a_flag_off_no_capture(self, tmp_path) -> None:
-        from audio_ingest.pipeline import process_recording
+        from automation_daemon.pipeline import process_recording
 
         config = _make_config(tmp_path, capture=False)
         with (
-            patch("audio_ingest.pipeline.create_forum_topic", new_callable=AsyncMock, return_value=None),
-            patch("audio_ingest.pipeline.write_raw_transcript", return_value=Path("/tmp/t.md")),
+            patch("automation_daemon.pipeline.create_forum_topic", new_callable=AsyncMock, return_value=None),
+            patch("automation_daemon.pipeline.write_raw_transcript", return_value=Path("/tmp/t.md")),
             patch(
-                "audio_ingest.pipeline.agent_extract_and_route",
+                "automation_daemon.pipeline.agent_extract_and_route",
                 new_callable=AsyncMock, return_value=_make_routing_success(),
             ),
-            patch("audio_ingest.pipeline.send_routing_summary", new_callable=AsyncMock),
-            patch("audio_ingest.pipeline.agent_capture_session", new_callable=AsyncMock) as mock_cap,
+            patch("automation_daemon.pipeline.send_routing_summary", new_callable=AsyncMock),
+            patch("automation_daemon.pipeline.agent_capture_session", new_callable=AsyncMock) as mock_cap,
         ):
             await process_recording(_make_job(), config, status=AsyncMock())
 
@@ -586,7 +586,7 @@ class TestPipelineCaptureWiring:
     @pytest.mark.asyncio
     async def test_b1_success_false_no_capture(self, tmp_path) -> None:
         """success=False alone (with files_written non-empty) skips capture."""
-        from audio_ingest.pipeline import process_recording
+        from automation_daemon.pipeline import process_recording
 
         config = _make_config(tmp_path, capture=True)
         success_false = AgentRoutingResult(
@@ -595,14 +595,14 @@ class TestPipelineCaptureWiring:
             error="agent reported failure",
         )
         with (
-            patch("audio_ingest.pipeline.create_forum_topic", new_callable=AsyncMock, return_value=None),
-            patch("audio_ingest.pipeline.write_raw_transcript", return_value=Path("/tmp/t.md")),
+            patch("automation_daemon.pipeline.create_forum_topic", new_callable=AsyncMock, return_value=None),
+            patch("automation_daemon.pipeline.write_raw_transcript", return_value=Path("/tmp/t.md")),
             patch(
-                "audio_ingest.pipeline.agent_extract_and_route",
+                "automation_daemon.pipeline.agent_extract_and_route",
                 new_callable=AsyncMock, return_value=success_false,
             ),
-            patch("audio_ingest.pipeline.send_routing_summary", new_callable=AsyncMock),
-            patch("audio_ingest.pipeline.agent_capture_session", new_callable=AsyncMock) as mock_cap,
+            patch("automation_daemon.pipeline.send_routing_summary", new_callable=AsyncMock),
+            patch("automation_daemon.pipeline.agent_capture_session", new_callable=AsyncMock) as mock_cap,
         ):
             await process_recording(_make_job(), config, status=AsyncMock())
 
@@ -617,7 +617,7 @@ class TestPipelineCaptureWiring:
         (extraction.py is supposed to set success=False if files_written is
         empty) cannot accidentally fire capture against nothing.
         """
-        from audio_ingest.pipeline import process_recording
+        from automation_daemon.pipeline import process_recording
 
         config = _make_config(tmp_path, capture=True)
         # Construct a deliberately-inconsistent result: success=True but no files.
@@ -628,14 +628,14 @@ class TestPipelineCaptureWiring:
             summary_path=None,
         )
         with (
-            patch("audio_ingest.pipeline.create_forum_topic", new_callable=AsyncMock, return_value=None),
-            patch("audio_ingest.pipeline.write_raw_transcript", return_value=Path("/tmp/t.md")),
+            patch("automation_daemon.pipeline.create_forum_topic", new_callable=AsyncMock, return_value=None),
+            patch("automation_daemon.pipeline.write_raw_transcript", return_value=Path("/tmp/t.md")),
             patch(
-                "audio_ingest.pipeline.agent_extract_and_route",
+                "automation_daemon.pipeline.agent_extract_and_route",
                 new_callable=AsyncMock, return_value=inconsistent,
             ),
-            patch("audio_ingest.pipeline.send_routing_summary", new_callable=AsyncMock),
-            patch("audio_ingest.pipeline.agent_capture_session", new_callable=AsyncMock) as mock_cap,
+            patch("automation_daemon.pipeline.send_routing_summary", new_callable=AsyncMock),
+            patch("automation_daemon.pipeline.agent_capture_session", new_callable=AsyncMock) as mock_cap,
         ):
             await process_recording(_make_job(), config, status=AsyncMock())
 
@@ -645,18 +645,18 @@ class TestPipelineCaptureWiring:
     async def test_b3_routing_result_none_no_capture(self, tmp_path) -> None:
         """When agent_extract_and_route raises, pipeline rebinds routing_result
         to None. Capture must not fire against None."""
-        from audio_ingest.pipeline import process_recording
+        from automation_daemon.pipeline import process_recording
 
         config = _make_config(tmp_path, capture=True)
         with (
-            patch("audio_ingest.pipeline.create_forum_topic", new_callable=AsyncMock, return_value=None),
-            patch("audio_ingest.pipeline.write_raw_transcript", return_value=Path("/tmp/t.md")),
+            patch("automation_daemon.pipeline.create_forum_topic", new_callable=AsyncMock, return_value=None),
+            patch("automation_daemon.pipeline.write_raw_transcript", return_value=Path("/tmp/t.md")),
             patch(
-                "audio_ingest.pipeline.agent_extract_and_route",
+                "automation_daemon.pipeline.agent_extract_and_route",
                 new_callable=AsyncMock, side_effect=RuntimeError("extraction blew up"),
             ),
-            patch("audio_ingest.pipeline.send_routing_summary", new_callable=AsyncMock),
-            patch("audio_ingest.pipeline.agent_capture_session", new_callable=AsyncMock) as mock_cap,
+            patch("automation_daemon.pipeline.send_routing_summary", new_callable=AsyncMock),
+            patch("automation_daemon.pipeline.agent_capture_session", new_callable=AsyncMock) as mock_cap,
         ):
             await process_recording(_make_job(), config, status=AsyncMock())
 
@@ -664,7 +664,7 @@ class TestPipelineCaptureWiring:
 
     @pytest.mark.asyncio
     async def test_c_extraction_failed_no_capture(self, tmp_path) -> None:
-        from audio_ingest.pipeline import process_recording
+        from automation_daemon.pipeline import process_recording
 
         config = _make_config(tmp_path, capture=True)
         # Even with files written, success=False must skip capture
@@ -674,14 +674,14 @@ class TestPipelineCaptureWiring:
             error="something failed",
         )
         with (
-            patch("audio_ingest.pipeline.create_forum_topic", new_callable=AsyncMock, return_value=None),
-            patch("audio_ingest.pipeline.write_raw_transcript", return_value=Path("/tmp/t.md")),
+            patch("automation_daemon.pipeline.create_forum_topic", new_callable=AsyncMock, return_value=None),
+            patch("automation_daemon.pipeline.write_raw_transcript", return_value=Path("/tmp/t.md")),
             patch(
-                "audio_ingest.pipeline.agent_extract_and_route",
+                "automation_daemon.pipeline.agent_extract_and_route",
                 new_callable=AsyncMock, return_value=failed_routing,
             ),
-            patch("audio_ingest.pipeline.send_routing_summary", new_callable=AsyncMock),
-            patch("audio_ingest.pipeline.agent_capture_session", new_callable=AsyncMock) as mock_cap,
+            patch("automation_daemon.pipeline.send_routing_summary", new_callable=AsyncMock),
+            patch("automation_daemon.pipeline.agent_capture_session", new_callable=AsyncMock) as mock_cap,
         ):
             await process_recording(_make_job(), config, status=AsyncMock())
 
@@ -689,20 +689,20 @@ class TestPipelineCaptureWiring:
 
     @pytest.mark.asyncio
     async def test_d_flag_on_and_success_runs_capture(self, tmp_path) -> None:
-        from audio_ingest.pipeline import process_recording
+        from automation_daemon.pipeline import process_recording
 
         config = _make_config(tmp_path, capture=True)
         routing_result = _make_routing_success()
         transcript_path = Path("/tmp/t.md")
         with (
-            patch("audio_ingest.pipeline.create_forum_topic", new_callable=AsyncMock, return_value=None),
-            patch("audio_ingest.pipeline.write_raw_transcript", return_value=transcript_path),
+            patch("automation_daemon.pipeline.create_forum_topic", new_callable=AsyncMock, return_value=None),
+            patch("automation_daemon.pipeline.write_raw_transcript", return_value=transcript_path),
             patch(
-                "audio_ingest.pipeline.agent_extract_and_route",
+                "automation_daemon.pipeline.agent_extract_and_route",
                 new_callable=AsyncMock, return_value=routing_result,
             ),
-            patch("audio_ingest.pipeline.send_routing_summary", new_callable=AsyncMock),
-            patch("audio_ingest.pipeline.agent_capture_session", new_callable=AsyncMock) as mock_cap,
+            patch("automation_daemon.pipeline.send_routing_summary", new_callable=AsyncMock),
+            patch("automation_daemon.pipeline.agent_capture_session", new_callable=AsyncMock) as mock_cap,
         ):
             await process_recording(_make_job(), config, status=AsyncMock())
 
@@ -731,25 +731,25 @@ class TestPipelineCaptureWiring:
         self, tmp_path, caplog: pytest.LogCaptureFixture,
     ) -> None:
         """When capture returns success=False, pipeline logs a warning."""
-        from audio_ingest.pipeline import process_recording
+        from automation_daemon.pipeline import process_recording
 
         config = _make_config(tmp_path, capture=True)
         unsuccess = CaptureResult(
             success=False, summary="", error="no devlog appended", turns_used=2,
         )
         with (
-            patch("audio_ingest.pipeline.create_forum_topic", new_callable=AsyncMock, return_value=None),
-            patch("audio_ingest.pipeline.write_raw_transcript", return_value=Path("/tmp/t.md")),
+            patch("automation_daemon.pipeline.create_forum_topic", new_callable=AsyncMock, return_value=None),
+            patch("automation_daemon.pipeline.write_raw_transcript", return_value=Path("/tmp/t.md")),
             patch(
-                "audio_ingest.pipeline.agent_extract_and_route",
+                "automation_daemon.pipeline.agent_extract_and_route",
                 new_callable=AsyncMock, return_value=_make_routing_success(),
             ),
-            patch("audio_ingest.pipeline.send_routing_summary", new_callable=AsyncMock),
+            patch("automation_daemon.pipeline.send_routing_summary", new_callable=AsyncMock),
             patch(
-                "audio_ingest.pipeline.agent_capture_session",
+                "automation_daemon.pipeline.agent_capture_session",
                 new_callable=AsyncMock, return_value=unsuccess,
             ),
-            caplog.at_level(logging.WARNING, logger="audio_ingest.pipeline"),
+            caplog.at_level(logging.WARNING, logger="automation_daemon.pipeline"),
         ):
             await process_recording(_make_job(), config, status=AsyncMock())
 
@@ -765,23 +765,23 @@ class TestPipelineCaptureWiring:
     @pytest.mark.asyncio
     async def test_capture_failure_does_not_break_pipeline(self, tmp_path) -> None:
         """A capture exception must be swallowed and logged, never propagated."""
-        from audio_ingest.pipeline import process_recording
+        from automation_daemon.pipeline import process_recording
 
         config = _make_config(tmp_path, capture=True)
         status = AsyncMock()
         with (
-            patch("audio_ingest.pipeline.create_forum_topic", new_callable=AsyncMock, return_value=None),
-            patch("audio_ingest.pipeline.write_raw_transcript", return_value=Path("/tmp/t.md")),
+            patch("automation_daemon.pipeline.create_forum_topic", new_callable=AsyncMock, return_value=None),
+            patch("automation_daemon.pipeline.write_raw_transcript", return_value=Path("/tmp/t.md")),
             patch(
-                "audio_ingest.pipeline.agent_extract_and_route",
+                "automation_daemon.pipeline.agent_extract_and_route",
                 new_callable=AsyncMock, return_value=_make_routing_success(),
             ),
-            patch("audio_ingest.pipeline.send_routing_summary", new_callable=AsyncMock),
+            patch("automation_daemon.pipeline.send_routing_summary", new_callable=AsyncMock),
             patch(
-                "audio_ingest.pipeline.agent_capture_session",
+                "automation_daemon.pipeline.agent_capture_session",
                 new_callable=AsyncMock, side_effect=RuntimeError("capture broke"),
             ),
-            patch("audio_ingest.pipeline.send_message", new_callable=AsyncMock),
+            patch("automation_daemon.pipeline.send_message", new_callable=AsyncMock),
         ):
             # Should not raise
             await process_recording(_make_job(), config, status=status)
@@ -795,7 +795,7 @@ class TestPipelineCaptureWiring:
         notification in the same forum thread that has the routing summary.
         Without this, a user who opted into capture has no signal that the
         feature failed (silent-failure-hunter C2)."""
-        from audio_ingest.pipeline import process_recording
+        from automation_daemon.pipeline import process_recording
 
         config = _make_config(tmp_path, capture=True)
         unsuccess = CaptureResult(
@@ -803,18 +803,18 @@ class TestPipelineCaptureWiring:
             turns_used=4,
         )
         with (
-            patch("audio_ingest.pipeline.create_forum_topic", new_callable=AsyncMock, return_value=99),
-            patch("audio_ingest.pipeline.write_raw_transcript", return_value=Path("/tmp/t.md")),
+            patch("automation_daemon.pipeline.create_forum_topic", new_callable=AsyncMock, return_value=99),
+            patch("automation_daemon.pipeline.write_raw_transcript", return_value=Path("/tmp/t.md")),
             patch(
-                "audio_ingest.pipeline.agent_extract_and_route",
+                "automation_daemon.pipeline.agent_extract_and_route",
                 new_callable=AsyncMock, return_value=_make_routing_success(),
             ),
-            patch("audio_ingest.pipeline.send_routing_summary", new_callable=AsyncMock),
+            patch("automation_daemon.pipeline.send_routing_summary", new_callable=AsyncMock),
             patch(
-                "audio_ingest.pipeline.agent_capture_session",
+                "automation_daemon.pipeline.agent_capture_session",
                 new_callable=AsyncMock, return_value=unsuccess,
             ),
-            patch("audio_ingest.pipeline.send_message", new_callable=AsyncMock) as mock_send,
+            patch("automation_daemon.pipeline.send_message", new_callable=AsyncMock) as mock_send,
         ):
             await process_recording(_make_job(), config, status=AsyncMock())
 
@@ -828,22 +828,22 @@ class TestPipelineCaptureWiring:
     async def test_capture_exception_notifies_telegram(self, tmp_path) -> None:
         """When capture raises, the user must still see a one-line
         notification (silent-failure-hunter C2)."""
-        from audio_ingest.pipeline import process_recording
+        from automation_daemon.pipeline import process_recording
 
         config = _make_config(tmp_path, capture=True)
         with (
-            patch("audio_ingest.pipeline.create_forum_topic", new_callable=AsyncMock, return_value=99),
-            patch("audio_ingest.pipeline.write_raw_transcript", return_value=Path("/tmp/t.md")),
+            patch("automation_daemon.pipeline.create_forum_topic", new_callable=AsyncMock, return_value=99),
+            patch("automation_daemon.pipeline.write_raw_transcript", return_value=Path("/tmp/t.md")),
             patch(
-                "audio_ingest.pipeline.agent_extract_and_route",
+                "automation_daemon.pipeline.agent_extract_and_route",
                 new_callable=AsyncMock, return_value=_make_routing_success(),
             ),
-            patch("audio_ingest.pipeline.send_routing_summary", new_callable=AsyncMock),
+            patch("automation_daemon.pipeline.send_routing_summary", new_callable=AsyncMock),
             patch(
-                "audio_ingest.pipeline.agent_capture_session",
+                "automation_daemon.pipeline.agent_capture_session",
                 new_callable=AsyncMock, side_effect=RuntimeError("kaboom"),
             ),
-            patch("audio_ingest.pipeline.send_message", new_callable=AsyncMock) as mock_send,
+            patch("automation_daemon.pipeline.send_message", new_callable=AsyncMock) as mock_send,
         ):
             await process_recording(_make_job(), config, status=AsyncMock())
 
@@ -863,24 +863,24 @@ class TestPipelineCaptureWiring:
         Telegram error notification.
         """
         from agent_infra import AgentInfraConfigError
-        from audio_ingest.pipeline import process_recording
+        from automation_daemon.pipeline import process_recording
 
         config = _make_config(tmp_path, capture=True)
         status = AsyncMock()
         with (
-            patch("audio_ingest.pipeline.create_forum_topic", new_callable=AsyncMock, return_value=99),
-            patch("audio_ingest.pipeline.write_raw_transcript", return_value=Path("/tmp/t.md")),
+            patch("automation_daemon.pipeline.create_forum_topic", new_callable=AsyncMock, return_value=99),
+            patch("automation_daemon.pipeline.write_raw_transcript", return_value=Path("/tmp/t.md")),
             patch(
-                "audio_ingest.pipeline.agent_extract_and_route",
+                "automation_daemon.pipeline.agent_extract_and_route",
                 new_callable=AsyncMock, return_value=_make_routing_success(),
             ),
-            patch("audio_ingest.pipeline.send_routing_summary", new_callable=AsyncMock),
+            patch("automation_daemon.pipeline.send_routing_summary", new_callable=AsyncMock),
             patch(
-                "audio_ingest.pipeline.agent_capture_session",
+                "automation_daemon.pipeline.agent_capture_session",
                 new_callable=AsyncMock,
                 side_effect=AgentInfraConfigError("OBSIDIAN_MCP_SERVER_PATH not set"),
             ),
-            patch("audio_ingest.pipeline.send_transcription_error", new_callable=AsyncMock) as mock_err,
+            patch("automation_daemon.pipeline.send_transcription_error", new_callable=AsyncMock) as mock_err,
         ):
             await process_recording(_make_job(), config, status=status)
 
@@ -899,7 +899,7 @@ class TestPipelineCaptureWiring:
         self, tmp_path,
     ) -> None:
         """If even the notification call fails, the pipeline still completes."""
-        from audio_ingest.pipeline import process_recording
+        from automation_daemon.pipeline import process_recording
 
         config = _make_config(tmp_path, capture=True)
         status = AsyncMock()
@@ -907,19 +907,19 @@ class TestPipelineCaptureWiring:
             success=False, summary="", error="no devlog", turns_used=1,
         )
         with (
-            patch("audio_ingest.pipeline.create_forum_topic", new_callable=AsyncMock, return_value=None),
-            patch("audio_ingest.pipeline.write_raw_transcript", return_value=Path("/tmp/t.md")),
+            patch("automation_daemon.pipeline.create_forum_topic", new_callable=AsyncMock, return_value=None),
+            patch("automation_daemon.pipeline.write_raw_transcript", return_value=Path("/tmp/t.md")),
             patch(
-                "audio_ingest.pipeline.agent_extract_and_route",
+                "automation_daemon.pipeline.agent_extract_and_route",
                 new_callable=AsyncMock, return_value=_make_routing_success(),
             ),
-            patch("audio_ingest.pipeline.send_routing_summary", new_callable=AsyncMock),
+            patch("automation_daemon.pipeline.send_routing_summary", new_callable=AsyncMock),
             patch(
-                "audio_ingest.pipeline.agent_capture_session",
+                "automation_daemon.pipeline.agent_capture_session",
                 new_callable=AsyncMock, return_value=unsuccess,
             ),
             patch(
-                "audio_ingest.pipeline.send_message",
+                "automation_daemon.pipeline.send_message",
                 new_callable=AsyncMock, side_effect=RuntimeError("telegram down"),
             ),
         ):

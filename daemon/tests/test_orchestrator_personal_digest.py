@@ -5,7 +5,7 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-from audio_ingest.orchestrator import dispatch_callback_query
+from automation_daemon.orchestrator import dispatch_callback_query
 
 
 @pytest.mark.asyncio

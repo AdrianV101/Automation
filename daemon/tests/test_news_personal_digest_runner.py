@@ -7,13 +7,13 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-from audio_ingest.news_personal_digest.runner import (
+from automation_daemon.news_personal_digest.runner import (
     AgentRunInput,
     AgentRunOutput,
     DigestRunnerConfig,
     run_for_date,
 )
-from audio_ingest.news_personal_digest.state import (
+from automation_daemon.news_personal_digest.state import (
     DigestItemInput,
     NewsDigestStateDB,
 )
@@ -97,7 +97,7 @@ async def test_unexpected_exception_marks_failed_and_alerts(
 # Happy path
 # ---------------------------------------------------------------------------
 
-from audio_ingest.news_personal_digest.render import (  # noqa: E402
+from automation_daemon.news_personal_digest.render import (  # noqa: E402
     DigestCategory,
     DigestItem,
 )
@@ -555,7 +555,7 @@ async def test_agent_returns_failure_marks_failed_verification(
 # parse_agent_summary
 # ---------------------------------------------------------------------------
 
-from audio_ingest.news_personal_digest.runner import (  # noqa: E402
+from automation_daemon.news_personal_digest.runner import (  # noqa: E402
     parse_agent_summary,
 )
 

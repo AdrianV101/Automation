@@ -9,7 +9,7 @@ import yaml
 
 from email_ingest import MalformedEmailError, NewsIngestStateDB, parse_email
 from news_pipeline import NewsItem
-from audio_ingest.news_email_adapter import (
+from automation_daemon.news_email_adapter import (
     _classify_source_type, email_to_news_item, handle_news_email, render_body,
 )
 
@@ -249,7 +249,7 @@ async def test_handle_news_email_unexpected_exception_marks_failed(tmp_path):
     notifier = AsyncMock()
 
     with patch(
-        "audio_ingest.news_email_adapter.render_body",
+        "automation_daemon.news_email_adapter.render_body",
         side_effect=RuntimeError("simulated bs4 explosion"),
     ):
         await handle_news_email(

@@ -4,7 +4,7 @@ import json
 import httpx
 import pytest
 
-from audio_ingest.hn_client import HackerNewsClient, HN_API_BASE
+from automation_daemon.hn_client import HackerNewsClient, HN_API_BASE
 
 
 def _mock_transport(routes):

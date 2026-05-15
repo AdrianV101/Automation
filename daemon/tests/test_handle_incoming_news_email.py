@@ -7,7 +7,7 @@ from unittest.mock import AsyncMock
 import pytest
 import yaml
 
-from audio_ingest.news_email_adapter import handle_news_email
+from automation_daemon.news_email_adapter import handle_news_email
 from email_ingest import NewsIngestStateDB
 
 FIXTURES = Path(__file__).parent / "fixtures" / "news"

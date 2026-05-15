@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from audio_ingest.hacker_news_adapter import _filter_items
+from automation_daemon.hacker_news_adapter import _filter_items
 
 
 def _story(item_id, score=200, type_="story", time=1, **extras):

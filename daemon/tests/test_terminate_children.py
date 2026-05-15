@@ -14,7 +14,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import psutil
 import pytest
 
-from audio_ingest.__main__ import _terminate_children, main
+from automation_daemon.__main__ import _terminate_children, main
 
 
 def _make_child(pid: int, name: str = "claude") -> MagicMock:
@@ -31,8 +31,8 @@ def test_terminate_children_no_children_is_noop():
     me.children.return_value = []
 
     with (
-        patch("audio_ingest.__main__.psutil.Process", return_value=me),
-        patch("audio_ingest.__main__.psutil.wait_procs") as mock_wait,
+        patch("automation_daemon.__main__.psutil.Process", return_value=me),
+        patch("automation_daemon.__main__.psutil.wait_procs") as mock_wait,
     ):
         _terminate_children()
 
@@ -49,9 +49,9 @@ def test_terminate_children_sigterms_all_then_returns_when_all_exit():
     me.children.return_value = [c1, c2]
 
     with (
-        patch("audio_ingest.__main__.psutil.Process", return_value=me),
+        patch("automation_daemon.__main__.psutil.Process", return_value=me),
         patch(
-            "audio_ingest.__main__.psutil.wait_procs",
+            "automation_daemon.__main__.psutil.wait_procs",
             return_value=([c1, c2], []),
         ) as mock_wait,
     ):
@@ -72,9 +72,9 @@ def test_terminate_children_sigkills_survivors_after_timeout():
     me.children.return_value = [c1, c2]
 
     with (
-        patch("audio_ingest.__main__.psutil.Process", return_value=me),
+        patch("automation_daemon.__main__.psutil.Process", return_value=me),
         patch(
-            "audio_ingest.__main__.psutil.wait_procs",
+            "automation_daemon.__main__.psutil.wait_procs",
             return_value=([c1], [c2]),
         ),
     ):
@@ -96,9 +96,9 @@ def test_terminate_children_swallows_no_such_process_during_terminate():
     me.children.return_value = [c1, c2]
 
     with (
-        patch("audio_ingest.__main__.psutil.Process", return_value=me),
+        patch("automation_daemon.__main__.psutil.Process", return_value=me),
         patch(
-            "audio_ingest.__main__.psutil.wait_procs",
+            "automation_daemon.__main__.psutil.wait_procs",
             return_value=([c1, c2], []),
         ),
     ):
@@ -118,12 +118,12 @@ def test_terminate_children_logs_access_denied_during_kill(caplog):
     me = MagicMock(spec=psutil.Process)
     me.children.return_value = [c1]
 
-    caplog.set_level(logging.WARNING, logger="audio_ingest.__main__")
+    caplog.set_level(logging.WARNING, logger="automation_daemon.__main__")
 
     with (
-        patch("audio_ingest.__main__.psutil.Process", return_value=me),
+        patch("automation_daemon.__main__.psutil.Process", return_value=me),
         patch(
-            "audio_ingest.__main__.psutil.wait_procs",
+            "automation_daemon.__main__.psutil.wait_procs",
             return_value=([], [c1]),
         ),
     ):
@@ -144,12 +144,12 @@ def test_terminate_children_logs_access_denied_during_terminate(caplog):
     me = MagicMock(spec=psutil.Process)
     me.children.return_value = [c1]
 
-    caplog.set_level(logging.WARNING, logger="audio_ingest.__main__")
+    caplog.set_level(logging.WARNING, logger="automation_daemon.__main__")
 
     with (
-        patch("audio_ingest.__main__.psutil.Process", return_value=me),
+        patch("automation_daemon.__main__.psutil.Process", return_value=me),
         patch(
-            "audio_ingest.__main__.psutil.wait_procs",
+            "automation_daemon.__main__.psutil.wait_procs",
             return_value=([c1], []),
         ),
     ):
@@ -169,12 +169,12 @@ def test_terminate_children_force_kills_when_wait_procs_raises(caplog):
     me = MagicMock(spec=psutil.Process)
     me.children.return_value = [c1, c2]
 
-    caplog.set_level(logging.ERROR, logger="audio_ingest.__main__")
+    caplog.set_level(logging.ERROR, logger="automation_daemon.__main__")
 
     with (
-        patch("audio_ingest.__main__.psutil.Process", return_value=me),
+        patch("automation_daemon.__main__.psutil.Process", return_value=me),
         patch(
-            "audio_ingest.__main__.psutil.wait_procs",
+            "automation_daemon.__main__.psutil.wait_procs",
             side_effect=psutil.Error("simulated wait_procs failure"),
         ),
     ):
@@ -198,16 +198,16 @@ def test_terminate_children_logs_count_at_info_level(caplog):
     me.children.return_value = children
 
     with (
-        patch("audio_ingest.__main__.psutil.Process", return_value=me),
+        patch("automation_daemon.__main__.psutil.Process", return_value=me),
         patch(
-            "audio_ingest.__main__.psutil.wait_procs",
+            "automation_daemon.__main__.psutil.wait_procs",
             return_value=(children, []),
         ),
     ):
-        caplog.set_level(logging.INFO, logger="audio_ingest.__main__")
+        caplog.set_level(logging.INFO, logger="automation_daemon.__main__")
         _terminate_children(timeout_s=0.5)
 
-    messages = [r.message for r in caplog.records if r.name == "audio_ingest.__main__"]
+    messages = [r.message for r in caplog.records if r.name == "automation_daemon.__main__"]
     assert any("Terminating 3 child" in m for m in messages), (
         f"missing termination log; got: {messages}"
     )
@@ -226,12 +226,12 @@ def test_terminate_children_name_raises_no_such_process_in_terminate_handler(cap
     me = MagicMock(spec=psutil.Process)
     me.children.return_value = [c1, c2]
 
-    caplog.set_level(logging.WARNING, logger="audio_ingest.__main__")
+    caplog.set_level(logging.WARNING, logger="automation_daemon.__main__")
 
     with (
-        patch("audio_ingest.__main__.psutil.Process", return_value=me),
+        patch("automation_daemon.__main__.psutil.Process", return_value=me),
         patch(
-            "audio_ingest.__main__.psutil.wait_procs",
+            "automation_daemon.__main__.psutil.wait_procs",
             return_value=([c1, c2], []),
         ),
     ):
@@ -260,12 +260,12 @@ def test_terminate_children_name_raises_no_such_process_in_kill_handler(caplog):
     me = MagicMock(spec=psutil.Process)
     me.children.return_value = [c1, c2]
 
-    caplog.set_level(logging.WARNING, logger="audio_ingest.__main__")
+    caplog.set_level(logging.WARNING, logger="automation_daemon.__main__")
 
     with (
-        patch("audio_ingest.__main__.psutil.Process", return_value=me),
+        patch("automation_daemon.__main__.psutil.Process", return_value=me),
         patch(
-            "audio_ingest.__main__.psutil.wait_procs",
+            "automation_daemon.__main__.psutil.wait_procs",
             return_value=([], [c1, c2]),
         ),
     ):
@@ -287,7 +287,7 @@ def test_main_shutdown_asyncgens_timeout_logs_warning_and_calls_terminate_childr
     async def _hanging_asyncgens():
         await asyncio.sleep(9999)
 
-    caplog.set_level(logging.WARNING, logger="audio_ingest.__main__")
+    caplog.set_level(logging.WARNING, logger="automation_daemon.__main__")
 
     # Patch DaemonConfig.from_env and argparse so main() reaches the loop path
     mock_config = MagicMock()
@@ -299,11 +299,11 @@ def test_main_shutdown_asyncgens_timeout_logs_warning_and_calls_terminate_childr
         return
 
     with (
-        patch("audio_ingest.__main__.DaemonConfig.from_env", return_value=mock_config),
-        patch("audio_ingest.__main__.argparse.ArgumentParser") as mock_parser_cls,
-        patch("audio_ingest.__main__.run_daemon", side_effect=_noop_run_daemon),
-        patch("audio_ingest.__main__.loop") if False else patch("audio_ingest.__main__._install_signal_handlers"),
-        patch("audio_ingest.__main__._terminate_children") as mock_terminate,
+        patch("automation_daemon.__main__.DaemonConfig.from_env", return_value=mock_config),
+        patch("automation_daemon.__main__.argparse.ArgumentParser") as mock_parser_cls,
+        patch("automation_daemon.__main__.run_daemon", side_effect=_noop_run_daemon),
+        patch("automation_daemon.__main__.loop") if False else patch("automation_daemon.__main__._install_signal_handlers"),
+        patch("automation_daemon.__main__._terminate_children") as mock_terminate,
     ):
         mock_parser = MagicMock()
         mock_parser_cls.return_value = mock_parser
@@ -318,7 +318,7 @@ def test_main_shutdown_asyncgens_timeout_logs_warning_and_calls_terminate_childr
             loop.shutdown_asyncgens = _hanging_asyncgens
             return loop
 
-        with patch("audio_ingest.__main__.asyncio.new_event_loop", side_effect=_patched_new_event_loop):
+        with patch("automation_daemon.__main__.asyncio.new_event_loop", side_effect=_patched_new_event_loop):
             main()
 
     mock_terminate.assert_called_once()

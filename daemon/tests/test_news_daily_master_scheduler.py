@@ -6,7 +6,7 @@ from zoneinfo import ZoneInfo
 
 import pytest
 
-from audio_ingest.news_daily_master.scheduler import (
+from automation_daemon.news_daily_master.scheduler import (
     compute_target_date, seconds_until_next_fire,
 )
 
@@ -56,7 +56,7 @@ class TestSecondsUntilNextFire:
         assert secs > 0
 
 
-from audio_ingest.news_daily_master.scheduler import compute_backfill_dates
+from automation_daemon.news_daily_master.scheduler import compute_backfill_dates
 
 
 class TestComputeBackfillDates:
@@ -106,7 +106,7 @@ class TestComputeBackfillDates:
 
 class TestComputeOlderThanWindow:
     def test_lists_dates_older_than_window(self) -> None:
-        from audio_ingest.news_daily_master.scheduler import (
+        from automation_daemon.news_daily_master.scheduler import (
             compute_older_than_window,
         )
         today = date(2026, 4, 30)
@@ -121,7 +121,7 @@ class TestComputeOlderThanWindow:
         ]
 
     def test_returns_empty_when_within_window(self) -> None:
-        from audio_ingest.news_daily_master.scheduler import (
+        from automation_daemon.news_daily_master.scheduler import (
             compute_older_than_window,
         )
         today = date(2026, 4, 30)
@@ -138,8 +138,8 @@ class TestComputeOlderThanWindow:
 import asyncio
 from unittest.mock import AsyncMock
 
-from audio_ingest.news_daily_master.scheduler import NewsDailyScheduler
-from audio_ingest.news_daily_master.state import NewsDailyMasterStateDB
+from automation_daemon.news_daily_master.scheduler import NewsDailyScheduler
+from automation_daemon.news_daily_master.state import NewsDailyMasterStateDB
 
 
 @pytest.fixture

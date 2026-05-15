@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from audio_ingest.hacker_news_adapter import (
+from automation_daemon.hacker_news_adapter import (
     PollSummary, build_telegram_summary,
 )
 

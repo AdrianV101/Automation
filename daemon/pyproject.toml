@@ -1,7 +1,7 @@
 [project]
-name = "audio-ingest"
+name = "automation-daemon"
 version = "0.1.0"
-description = "Audio ingestion pipeline daemon - Plaud transcripts to PKM"
+description = "Automation daemon — thin orchestrator over Plaud/agent/telegram/email/news libraries, routing to PKM"
 requires-python = ">=3.11"
 dependencies = [
     "agent-infra",

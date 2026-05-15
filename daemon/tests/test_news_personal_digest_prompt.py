@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from datetime import date
 
-from audio_ingest.news_personal_digest.prompt import (
+from automation_daemon.news_personal_digest.prompt import (
     build_runner_prompt,
     render_feedback_block,
 )

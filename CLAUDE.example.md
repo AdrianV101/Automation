@@ -54,8 +54,8 @@ Automation/
 │       ├── src/email_ingest/   # IMAP IDLE + DKIM + MIME primitives
 │       ├── tests/
 │       └── pyproject.toml
-├── daemon/                     → import audio_ingest (depends on the libs)
-│   ├── src/audio_ingest/       # Thin orchestrator — wires libraries together
+├── daemon/                     → import automation_daemon (depends on the libs)
+│   ├── src/automation_daemon/       # Thin orchestrator — wires libraries together
 │   ├── tests/
 │   └── pyproject.toml          # Path deps on libs
 └── docs/
@@ -106,7 +106,7 @@ Automation/
 
 ### Daemon Modules
 
-The daemon (`audio_ingest`) is a thin orchestrator wiring the libraries together:
+The daemon (`automation_daemon`) is a thin orchestrator wiring the libraries together:
 
 | File | Role |
 |---|---|
@@ -126,7 +126,7 @@ The daemon (`audio_ingest`) is a thin orchestrator wiring the libraries together
 
 ### Tech Stack (Current/Referenced)
 - Obsidian + Obsidian Sync, Claude Code + Opus 4.6, Claude Agent SDK, MCP, Plaud Note Pro, Proton Mail Bridge (local IMAP), Google Calendar
-- Host: Mac mini (Apple Silicon), launchd `com.adrian.audio-ingest` LaunchAgent
+- Host: Mac mini (Apple Silicon), launchd `com.adrian.automation-daemon` LaunchAgent
 - *Optional path:* WhisperX local re-transcription on a CUDA GPU (off by default)
 
 ### Cautionary Reference
@@ -138,7 +138,7 @@ The daemon (`audio_ingest`) is a thin orchestrator wiring the libraries together
 ## Deployed Services
 
 ### Audio Ingestion Pipeline
-- **Python daemon**: launchd LaunchAgent `com.adrian.audio-ingest` on the Mac mini -- plist at `~/Library/LaunchAgents/com.adrian.audio-ingest.plist`, manage with `launchctl {bootstrap|bootout|kickstart} gui/$(id -u) ~/Library/LaunchAgents/com.adrian.audio-ingest.plist` (or `launchctl print gui/$(id -u)/com.adrian.audio-ingest`), logs at `~/Library/Logs/audio-ingest.{out,err}.log`
+- **Python daemon**: launchd LaunchAgent `com.adrian.automation-daemon` on the Mac mini -- plist installed by `daemon/scripts/install-launchagent.sh` at `~/Library/LaunchAgents/com.adrian.automation-daemon.plist`, manage with `launchctl {bootout|kickstart -k} gui/$(id -u)/com.adrian.automation-daemon` (or `launchctl print gui/$(id -u)/com.adrian.automation-daemon`; reinstall/re-bootstrap by re-running `daemon/scripts/install-launchagent.sh`), logs at `~/Library/Logs/automation-daemon/{stdout,stderr}.log`
 - **Email bridge**: Proton Mail Bridge installed as a per-user LaunchAgent on the same host; exposes the Proton mailbox at `127.0.0.1:1143` (STARTTLS, self-signed cert -- `IMAP_SSL_VERIFY=false`)
 - **Config**: `daemon/.env` (secrets, not committed) -- created from `daemon/.env.example`
 - **Telegram notifications**: bot token + chat ID configured via env vars
@@ -152,7 +152,7 @@ The daemon (`audio_ingest`) is a thin orchestrator wiring the libraries together
 - Each library and the daemon have their own venv (managed by `uv`)
 - Daemon depends on the libraries via editable path deps in `pyproject.toml`
 - Install deps: `uv sync --extra dev` (run from the relevant package directory)
-- Restarting the daemon after code changes: `launchctl kickstart -k gui/$(id -u)/com.adrian.audio-ingest`
+- Restarting the daemon after code changes: `launchctl kickstart -k gui/$(id -u)/com.adrian.automation-daemon`
 
 ### Running Tests
 
@@ -175,11 +175,11 @@ System python lacks packages -- always use `.venv/bin/python`.
 - IMAP bridge: Proton Mail Bridge presents a self-signed cert on `127.0.0.1:1143` -- `IMAP_USE_STARTTLS=true` + `IMAP_SSL_VERIFY=false` are required. The Bridge runs as a per-user LaunchAgent and may briefly drop on login/logout cycles; `ImapBridge` retries with backoff
 - IMAP exception logging: `ImapBridge` formats connect-failure exceptions with `%s`; some asyncio exceptions (e.g. `TimeoutError`) have empty `__str__`, so log lines may show "IMAP connect attempt N failed: " with a blank repr. Use `%r` to surface the type. Cosmetic, deferred
 - DKIM: configured via `DKIM_TRUSTED_AUTHSERV_ID` (default `mail.protonmail.ch`) + `DKIM_REQUIRED_DOMAIN` (default `plaud.ai`). The daemon trusts an upstream `Authentication-Results: ...; dkim=pass` from the configured authserv-id rather than re-verifying signatures
-- After code changes to the daemon, restart with `launchctl kickstart -k gui/$(id -u)/com.adrian.audio-ingest` (or `bootout` then `bootstrap`)
+- After code changes to the daemon, restart with `launchctl kickstart -k gui/$(id -u)/com.adrian.automation-daemon` (or `bootout` then re-run `daemon/scripts/install-launchagent.sh`)
 - PKM vault path: set via `PKM_VAULT_PATH` env var
 - Email-attachment routing: Plaud emails carry the audio file + cover infographic. `plaud_email_adapter.save_plaud_attachments` writes them to `<vault>/99-Attachments/plaud/<sanitized-message-id>/...` (subdir set by `VAULT_ATTACHMENTS_SUBDIR`)
 - Extraction uses Claude Agent SDK (Opus 4.6) with Obsidian MCP -- agent autonomously routes to appropriate PKM locations
-- Extraction agent: `daemon/src/audio_ingest/extraction.py` -- spawns Claude agent with `bypassPermissions`, max 15 turns, all `mcp__obsidian-pkm__vault_*` tools
+- Extraction agent: `daemon/src/automation_daemon/extraction.py` -- spawns Claude agent with `bypassPermissions`, max 15 turns, all `mcp__obsidian-pkm__vault_*` tools
 - On agent failure, raw transcript is preserved but no extraction/routing occurs
 - PKM output: raw transcript -> `04-Archive/transcripts/`, agent routes summaries/tasks/notes to appropriate locations
 - State: `email_ingest_state.db` and `plaud_state.db` are separate SQLite files in `daemon/`. The daemon's pipeline thread (`pipeline_thread_id`), Telegram `ThreadStore`, and last IMAP UID/UIDVALIDITY persist across restarts
@@ -192,4 +192,4 @@ System python lacks packages -- always use `.venv/bin/python`.
   - Speaker embeddings are 192-dim float32 vectors, stored as BLOB (768 bytes) in `speaker_clusters` SQLite table
   - Speaker tracking in pipeline is non-fatal (try/except) -- transcription proceeds even if clustering fails
   - Audio files (OGG + WAV) are retained locally in `daemon/audio_downloads/` -- no automatic cleanup
-  - Test the worker directly: `echo '<json config>' | .venv/bin/python -m audio_ingest.whisperx_worker` -- much faster iteration than restarting the daemon
+  - Test the worker directly: `echo '<json config>' | .venv/bin/python -m automation_daemon.whisperx_worker` -- much faster iteration than restarting the daemon

@@ -7,7 +7,7 @@ from pathlib import Path
 import pytest
 
 from news_pipeline import NewsItem
-from audio_ingest.hacker_news_adapter import _to_news_item
+from automation_daemon.hacker_news_adapter import _to_news_item
 
 FIXTURES = Path(__file__).parent / "fixtures" / "hn"
 

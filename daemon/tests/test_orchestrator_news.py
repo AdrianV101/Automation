@@ -6,7 +6,7 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 
-from audio_ingest.config import DaemonConfig
+from automation_daemon.config import DaemonConfig
 
 
 @pytest.mark.asyncio
@@ -38,10 +38,10 @@ async def test_run_daemon_starts_news_listener_when_enabled(tmp_path):
     async def fake_supervise(name, factory, **kw):
         await factory()
 
-    with patch("audio_ingest.orchestrator.ImapIdleListener.run", fake_run), \
-         patch("audio_ingest.orchestrator.check_topics_enabled", AsyncMock(return_value=True)), \
-         patch("audio_ingest.orchestrator.supervise", side_effect=fake_supervise):
-        from audio_ingest.orchestrator import run_daemon
+    with patch("automation_daemon.orchestrator.ImapIdleListener.run", fake_run), \
+         patch("automation_daemon.orchestrator.check_topics_enabled", AsyncMock(return_value=True)), \
+         patch("automation_daemon.orchestrator.supervise", side_effect=fake_supervise):
+        from automation_daemon.orchestrator import run_daemon
         task = asyncio.create_task(run_daemon(cfg))
         try:
             await asyncio.wait_for(started.wait(), timeout=2.0)
@@ -63,7 +63,7 @@ async def test_run_daemon_exits_when_no_path_enabled(tmp_path, caplog):
         email_ingest_enabled=False,
         news_ingest_enabled=False,
     )
-    from audio_ingest.orchestrator import run_daemon
+    from automation_daemon.orchestrator import run_daemon
     await run_daemon(cfg)  # should return cleanly without trying to connect
 
 
@@ -94,9 +94,9 @@ async def test_run_daemon_starts_both_paths_when_both_enabled(tmp_path):
         started_paths.append("news")
         await asyncio.sleep(3600)
 
-    with patch("audio_ingest.orchestrator._run_email_ingest_path", fake_email_path), \
-         patch("audio_ingest.orchestrator._run_news_ingest_path", fake_news_path):
-        from audio_ingest.orchestrator import run_daemon
+    with patch("automation_daemon.orchestrator._run_email_ingest_path", fake_email_path), \
+         patch("automation_daemon.orchestrator._run_news_ingest_path", fake_news_path):
+        from automation_daemon.orchestrator import run_daemon
         task = asyncio.create_task(run_daemon(cfg))
         try:
             for _ in range(50):
