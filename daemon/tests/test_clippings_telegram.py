@@ -63,3 +63,62 @@ async def test_callback_skip_marks_skipped(tmp_path, state):
         state=state, finalize_route=AsyncMock(), answer_callback_query=AsyncMock(),
     )
     assert (await state.get("k"))["status"] == "skipped"
+
+
+from pathlib import Path
+from automation_daemon.clippings_telegram import (
+    make_finalize_route, handle_clip_text_reply,
+)
+from automation_daemon.clippings_router import RouteOutcome
+
+
+async def test_finalize_route_routes_with_pinned_dest_and_marks_routed(tmp_path, state):
+    cdir = tmp_path / "Clippings"; cdir.mkdir()
+    f = cdir / "A.md"
+    f.write_text('---\ntitle: t\nsource: "https://x.com/a"\n---\nb\n', encoding="utf-8")
+    from automation_daemon.clippings_state import parse_clipping, clipping_key
+    key = clipping_key(*parse_clipping(f))
+    await state.insert_pending(key, "A.md")
+    await state.set_pending_clarification(key, candidates=["Automation", "Skip"],
+                                          telegram_message_id=12)
+    outcome = RouteOutcome(kind="routed", routed_path="01-Projects/Automation/c/A.md",
+                           links_added=1)
+    notify = AsyncMock()
+    with patch("automation_daemon.clippings_telegram.route_clipping",
+               AsyncMock(return_value=outcome)) as rc:
+        finalize = make_finalize_route(
+            clippings_dir=cdir, vault_root=tmp_path, state=state,
+            telegram_notifier=notify, list_routing_targets=lambda: [],
+        )
+        await finalize(url_key=key, pinned_destination="Automation")
+    assert rc.call_args.kwargs["pinned_destination"] == "Automation"
+    assert (await state.get(key))["status"] == "routed"
+    notify.assert_awaited()
+
+
+async def test_text_reply_correlates_to_oldest_pending_and_reroutes(tmp_path, state):
+    cdir = tmp_path / "Clippings"; cdir.mkdir()
+    f = cdir / "A.md"
+    f.write_text('---\ntitle: t\nsource: "https://x.com/a"\n---\nb\n', encoding="utf-8")
+    from automation_daemon.clippings_state import parse_clipping, clipping_key
+    key = clipping_key(*parse_clipping(f))
+    await state.insert_pending(key, "A.md")
+    await state.set_pending_clarification(key, candidates=["Automation", "Skip"],
+                                          telegram_message_id=None)
+    rerun = AsyncMock()
+    handled = await handle_clip_text_reply(
+        text="it's for the Pretext plugin demo", reply_to_message_id=None,
+        state=state, rerun_with_guidance=rerun,
+    )
+    assert handled is True
+    rerun.assert_awaited_once()
+    assert rerun.call_args.kwargs["url_key"] == key
+    assert "Pretext" in rerun.call_args.kwargs["user_guidance"]
+
+
+async def test_text_reply_no_pending_returns_false(tmp_path, state):
+    handled = await handle_clip_text_reply(
+        text="hello", reply_to_message_id=None,
+        state=state, rerun_with_guidance=AsyncMock(),
+    )
+    assert handled is False
