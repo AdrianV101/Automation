@@ -34,5 +34,5 @@ def test_states_notes_preservation_contract(skill_text: str) -> None:
 def test_states_bounded_depth(skill_text: str) -> None:
     # The bounded-depth rule (D6) must be explicit so the agent does not
     # follow links unboundedly.
-    assert "3" in skill_text
+    assert "at most 3 additional links per item" in skill_text
     assert "git clone" in skill_text  # explicitly forbidden

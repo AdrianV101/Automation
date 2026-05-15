@@ -29,7 +29,7 @@ From the master doc's items, pick the ≤N most worth a deep dive, weighing: ali
 
 For each:
 - `WebFetch` the item's external URL (full article).
-- Follow at most 3 additional links total that materially add context (primary sources, the actual paper/repo/announcement — not navigation or related-articles chrome).
+- Follow at most 3 additional links per item that materially add context (primary sources, the actual paper/repo/announcement — not navigation or related-articles chrome).
 - For any `org/repo` GitHub mention, `WebFetch` `https://github.com/org/repo` (the README renders there). No clone.
 - `vault_search` / `vault_read` for prior vault context on the key entities (have we covered this company/repo/topic before?).
 
