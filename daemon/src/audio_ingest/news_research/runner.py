@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import json
 import logging
 import re
 from collections.abc import Awaitable, Callable
@@ -9,6 +10,13 @@ from dataclasses import dataclass
 from datetime import date, timedelta
 from pathlib import Path
 from typing import Any
+
+from agent_infra import (
+    AgentLoopResult,
+    build_agent_options,
+    run_agent_loop_streaming,
+)
+from agent_infra.runner import TraceEvent
 
 from .prompt import build_runner_prompt, render_ratings_block
 from .state import NewsResearchStateDB
@@ -246,4 +254,96 @@ async def _run_for_date_inner(
     log.error(
         "Research failed for %s after %d attempts: %s",
         target_date, len(backoffs), last_error,
+    )
+
+
+# ---------------------------------------------------------------------------
+# Concrete AgentRunFn — wires agent_infra to the news-research skill
+# ---------------------------------------------------------------------------
+
+_JSON_BLOCK_RE = re.compile(r"```json\s*(\{.*?\})\s*```", re.DOTALL)
+
+
+def _parse_agent_summary(
+    text_parts: list[str], *, turns_used: int, cost_usd: float | None,
+) -> AgentRunOutput:
+    """Pull the LAST fenced ```json``` block out of the agent's text.
+
+    The news-research skill instructs the agent to emit one as its final
+    action: {"success": bool, "items_researched": int, "error"?: str}.
+    """
+    joined = "\n".join(text_parts)
+    matches = _JSON_BLOCK_RE.findall(joined)
+    if not matches:
+        return AgentRunOutput(
+            success=False, turns_used=turns_used, cost_usd=cost_usd,
+            error="no JSON summary block in agent output", text=joined,
+        )
+    try:
+        data = json.loads(matches[-1])
+    except json.JSONDecodeError as exc:
+        return AgentRunOutput(
+            success=False, turns_used=turns_used, cost_usd=cost_usd,
+            error=f"invalid JSON summary: {exc}", text=joined,
+        )
+    success = bool(data.get("success", False))
+    if success:
+        error = None
+    else:
+        error = data.get("error") or (
+            "agent reported success=false without an error message"
+        )
+    return AgentRunOutput(
+        success=success,
+        items_researched=int(data.get("items_researched", 0)),
+        turns_used=turns_used,
+        cost_usd=cost_usd,
+        text=joined,
+        error=error,
+    )
+
+
+async def run_agent_via_agent_infra(
+    inp: AgentRunInput,
+    *,
+    mcp_server_path: str | None = None,
+) -> AgentRunOutput:
+    """Concrete AgentRunFn — invokes the news-research skill via Agent SDK.
+
+    Captures cost via an on_event closure because AgentLoopResult does not
+    carry cost_usd; only the streaming 'complete' TraceEvent does.
+    """
+    options = build_agent_options(
+        system_prompt=(
+            "You are the news research agent. Follow the news-research "
+            "skill exactly."
+        ),
+        pkm_vault_path=inp.vault_root,
+        model=inp.model,
+        setting_sources=["project"],
+        allow_skill_tool=True,
+        mcp_server_path=mcp_server_path,
+    )
+
+    cost_holder: dict[str, float | None] = {"cost_usd": None}
+
+    async def _on_event(event: TraceEvent) -> None:
+        if event.kind == "complete" and event.cost_usd is not None:
+            cost_holder["cost_usd"] = event.cost_usd
+
+    result: AgentLoopResult = await run_agent_loop_streaming(
+        inp.prompt, options, _on_event,
+    )
+    if result.error:
+        return AgentRunOutput(
+            success=False,
+            turns_used=result.turns_used,
+            cost_usd=cost_holder["cost_usd"],
+            error=result.error,
+            text="\n".join(result.text_parts),
+        )
+    return _parse_agent_summary(
+        result.text_parts,
+        turns_used=result.turns_used,
+        cost_usd=cost_holder["cost_usd"],
     )

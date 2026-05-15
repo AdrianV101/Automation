@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from datetime import date
 from pathlib import Path
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, patch
 
 import pytest
 
@@ -10,6 +10,8 @@ from audio_ingest.news_research.runner import (
     AgentRunInput,
     AgentRunOutput,
     RunnerConfig,
+    _parse_agent_summary,
+    run_agent_via_agent_infra,
     run_for_date,
 )
 from audio_ingest.news_research.state import NewsResearchStateDB
@@ -190,3 +192,78 @@ async def test_agent_reports_failure_marks_failed(
     row = await db.get_run(date(2026, 5, 15))
     assert row["status"] == "failed"
     assert row["error"] == "mcp unavailable"
+
+
+class TestParseAgentSummary:
+    def test_parses_last_json_block(self) -> None:
+        out = _parse_agent_summary([
+            'progress\n```json\n{"success": false}\n```\n',
+            'done\n```json\n{"success": true, "items_researched": 4}\n```',
+        ], turns_used=9, cost_usd=0.5)
+        assert out.success is True
+        assert out.items_researched == 4
+        assert out.turns_used == 9
+        assert out.cost_usd == 0.5
+        assert out.error is None
+
+    def test_no_json_block_is_failure(self) -> None:
+        out = _parse_agent_summary(
+            ["no json here"], turns_used=1, cost_usd=None,
+        )
+        assert out.success is False
+        assert "no JSON summary" in out.error
+
+    def test_success_false_synthesises_error(self) -> None:
+        out = _parse_agent_summary(
+            ['```json\n{"success": false}\n```'],
+            turns_used=2, cost_usd=None,
+        )
+        assert out.success is False
+        assert out.error  # non-None per pair invariant
+
+    def test_success_true_drops_stray_error(self) -> None:
+        out = _parse_agent_summary(
+            ['```json\n{"success": true, "error": "ignore me"}\n```'],
+            turns_used=2, cost_usd=None,
+        )
+        assert out.success is True
+        assert out.error is None
+
+
+@pytest.mark.asyncio
+async def test_run_agent_via_agent_infra_captures_cost() -> None:
+    from agent_infra import AgentLoopResult
+    from agent_infra.runner import TraceEvent
+
+    async def fake_streaming(prompt, options, on_event=None):
+        # Emit a completion trace carrying the cost, like the real runner.
+        if on_event is not None:
+            await on_event(TraceEvent(
+                kind="complete", turns_used=7, cost_usd=0.27,
+                files_written=[],
+            ))
+        return AgentLoopResult(
+            text_parts=['```json\n{"success": true, '
+                        '"items_researched": 2}\n```'],
+            turns_used=7,
+        )
+
+    with patch(
+        "audio_ingest.news_research.runner.run_agent_loop_streaming",
+        side_effect=fake_streaming,
+    ), patch(
+        "audio_ingest.news_research.runner.build_agent_options",
+        return_value=object(),
+    ):
+        out = await run_agent_via_agent_infra(AgentRunInput(
+            target_date=date(2026, 5, 15),
+            vault_root=Path("/tmp/vault"),
+            model="claude-sonnet-4-6",
+            max_items=3,
+            prompt="do research",
+        ))
+
+    assert out.success is True
+    assert out.items_researched == 2
+    assert out.turns_used == 7
+    assert out.cost_usd == pytest.approx(0.27)
