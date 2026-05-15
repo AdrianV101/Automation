@@ -635,3 +635,96 @@ async def test_text_reply_unmappable_notifies_operator(tmp_path) -> None:
         await db.set_pending_prompt_ids("m1", [101, 102])  # 2 prompts, 1 unknown
         await on_text_reply(reply_to_message_id=102, text="Bob")  # idx 1 >= len(unknown)=1
     notify.assert_awaited()  # operator told it couldn't be mapped
+
+
+# ---------------------------------------------------------------------------
+# Review test-gap coverage: OTHER branch, out-of-bounds idx, no-pending row,
+# mixed-roster end-to-end (speaker_idx out of range answers gracefully, etc.)
+# ---------------------------------------------------------------------------
+
+from automation_daemon.speaker_resolution import OTHER, IGNORE  # noqa: E402
+from automation_daemon.orchestrator import make_speaker_callback_handler  # noqa: E402
+
+
+@pytest.mark.asyncio
+async def test_callback_other_prompts_for_freetext_no_resume(tmp_path) -> None:
+    """Tapping 'Other...' must answer asking for a free-text reply, must NOT
+    set a name or route the job, and the pending row must stay unchanged."""
+    db = EmailIngestStateDB(tmp_path / "s.db"); await db.init_db()
+    await db.insert_event("m1", uid=1)
+    job = _job_gate(["Speaker 1"])
+    await db.insert_pending("m1", payload=serialize_job(job), unknown_speakers=["Speaker 1"])
+    await db.set_pending_prompt_ids("m1", [101])
+    cfg = DaemonConfig(telegram_bot_token="t", telegram_chat_id="c", pkm_vault_path=tmp_path)
+    bot = BotConfig(bot_token="t", chat_id="c")
+    routed = AsyncMock()
+    handler = make_speaker_callback_handler(email_db=db, config=cfg, bot=bot, process_recording_fn=routed)
+    with patch("automation_daemon.orchestrator.answer_callback_query", new=AsyncMock()) as ack:
+        await handler(callback_query_id="q", message_id=101, data=encode_choice(0, "__other__"))
+    routed.assert_not_awaited()
+    row = await db.get_pending("m1")
+    assert row is not None and row["name_map"] == {}     # no name recorded
+    ack.assert_awaited()                                  # operator told to reply with a name
+
+
+@pytest.mark.asyncio
+async def test_callback_out_of_bounds_speaker_idx_no_resume(tmp_path) -> None:
+    """A callback with speaker_idx beyond the unknown list answers gracefully
+    ('Unknown speaker'), does not route, and leaves the pending row unchanged."""
+    db = EmailIngestStateDB(tmp_path / "s.db"); await db.init_db()
+    await db.insert_event("m1", uid=1)
+    job = _job_gate(["Speaker 1"])
+    await db.insert_pending("m1", payload=serialize_job(job), unknown_speakers=["Speaker 1"])
+    await db.set_pending_prompt_ids("m1", [101])
+    cfg = DaemonConfig(telegram_bot_token="t", telegram_chat_id="c", pkm_vault_path=tmp_path)
+    bot = BotConfig(bot_token="t", chat_id="c")
+    routed = AsyncMock()
+    handler = make_speaker_callback_handler(email_db=db, config=cfg, bot=bot, process_recording_fn=routed)
+    with patch("automation_daemon.orchestrator.answer_callback_query", new=AsyncMock()) as ack:
+        await handler(callback_query_id="q", message_id=101, data=encode_choice(5, "Alice"))  # idx 5, only 1 unknown
+    routed.assert_not_awaited()
+    assert (await db.get_pending("m1"))["name_map"] == {}
+    ack.assert_awaited()
+
+
+@pytest.mark.asyncio
+async def test_callback_no_pending_row_answers_gracefully(tmp_path) -> None:
+    """A callback whose prompt message_id maps to no pending row must answer
+    gracefully ('No longer pending') without crashing and without routing."""
+    db = EmailIngestStateDB(tmp_path / "s.db"); await db.init_db()
+    cfg = DaemonConfig(telegram_bot_token="t", telegram_chat_id="c", pkm_vault_path=tmp_path)
+    bot = BotConfig(bot_token="t", chat_id="c")
+    routed = AsyncMock()
+    handler = make_speaker_callback_handler(email_db=db, config=cfg, bot=bot, process_recording_fn=routed)
+    with patch("automation_daemon.orchestrator.answer_callback_query", new=AsyncMock()) as ack:
+        await handler(callback_query_id="q", message_id=999, data=encode_choice(0, "Alice"))
+    routed.assert_not_awaited()
+    ack.assert_awaited()
+
+
+@pytest.mark.asyncio
+async def test_mixed_roster_holds_only_unknown_then_routes_both(tmp_path) -> None:
+    """A transcript with one recognised name ('Alice') + one generic label
+    ('Speaker 2') must: (a) hold only the unknown speaker for prompting,
+    (b) send exactly one prompt, and (c) route with both names correct once
+    the operator resolves 'Speaker 2'."""
+    db = EmailIngestStateDB(tmp_path / "s.db"); await db.init_db()
+    await db.insert_event("m1", uid=1)
+    cfg = DaemonConfig(telegram_bot_token="t", telegram_chat_id="c", pkm_vault_path=tmp_path)
+    bot = BotConfig(bot_token="t", chat_id="c")
+    routed = AsyncMock()
+    job = _job_gate(["Alice", "Speaker 2"])  # Alice recognised, Speaker 2 unknown
+    with patch("automation_daemon.orchestrator.send_speaker_prompt", new=AsyncMock(side_effect=[301])) as sp:
+        gated = await gate_or_pass(job, cfg, db, bot, thread_id=None)
+    assert gated is True
+    row = await db.get_pending("m1")
+    assert row["unknown_speakers"] == ["Speaker 2"]          # only the unknown is held
+    assert sp.await_count == 1                                # only one prompt sent
+    handler = make_speaker_callback_handler(email_db=db, config=cfg, bot=bot, process_recording_fn=routed)
+    with (
+        patch("automation_daemon.orchestrator.answer_callback_query", new=AsyncMock()),
+        patch("automation_daemon.orchestrator.send_speaker_resolution_complete", new=AsyncMock()),
+    ):
+        await handler(callback_query_id="q", message_id=301, data=encode_choice(0, "Bob"))
+    routed.assert_awaited_once()
+    assert routed.await_args.args[0].transcript_data.speakers == ["Alice", "Bob"]  # recognised name untouched
