@@ -65,8 +65,8 @@ async def process_clipping(
     """
     try:
         frontmatter, body = parse_clipping(path)
-    except OSError:
-        log.exception("Cannot read clipping %s", path)
+    except (OSError, ValueError):
+        log.exception("Cannot read/parse clipping %s", path)
         return
     if not frontmatter and not body.strip():
         log.warning("Empty/unparseable clipping %s — marking failed", path.name)
@@ -85,7 +85,7 @@ async def process_clipping(
         if existing["status"] in _TERMINAL:
             log.info("Clipping %s already %s — skipping", path.name, existing["status"])
             return
-        if existing["status"] == "pending_clarification" and existing["telegram_message_id"]:
+        if existing["status"] == "pending_clarification" and existing["telegram_message_id"] is not None:
             log.info("Clipping %s awaiting clarification — skipping", path.name)
             return
     else:
@@ -108,11 +108,23 @@ async def process_clipping(
     elif outcome.kind == "needs_clarification":
         msg_id: int | None = None
         if send_clarification is not None:
-            msg_id = await send_clarification(
-                question=outcome.question or "Where should this clipping go?",
-                candidates=outcome.candidates,
-                clipping_name=path.name,
-            )
+            try:
+                msg_id = await send_clarification(
+                    question=outcome.question or "Where should this clipping go?",
+                    candidates=outcome.candidates,
+                    clipping_name=path.name,
+                )
+            except Exception:
+                # Telegram send failed: do NOT leave the row as bare 'pending'
+                # (reconcile would re-invoke the expensive agent uncapped).
+                # Mark failed so the bounded max_failed_retries cap applies;
+                # a later reconcile retries the whole ask within the cap.
+                log.exception(
+                    "Failed to send clarification for %s — marking failed "
+                    "so retries are bounded", path.name,
+                )
+                await state.mark_failed(key)
+                return
         await state.set_pending_clarification(
             key, candidates=outcome.candidates, telegram_message_id=msg_id,
         )
@@ -147,15 +159,15 @@ async def reconcile_clippings(
     for path in sorted(clippings_dir.glob("*.md")):
         try:
             fm, body = parse_clipping(path)
-        except OSError:
-            log.exception("Reconcile: cannot read %s", path)
+        except (OSError, ValueError):
+            log.exception("Reconcile: cannot read/parse %s", path)
             continue
         key = clipping_key(fm, body)
         row = await state.get(key)
         if row is not None:
             if row["status"] in _TERMINAL:
                 continue
-            if row["status"] == "pending_clarification" and row["telegram_message_id"]:
+            if row["status"] == "pending_clarification" and row["telegram_message_id"] is not None:
                 continue
             if row["status"] == "failed" and row["retry_count"] >= max_failed_retries:
                 continue

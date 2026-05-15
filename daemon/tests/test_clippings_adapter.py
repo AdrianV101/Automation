@@ -264,3 +264,37 @@ async def test_watch_loop_poison_clipping_does_not_kill_watcher(tmp_path, state)
         stop.set()
         await asyncio.wait_for(task, timeout=5.0)
     assert calls["n"] >= 1  # the poison clipping was attempted and the error swallowed+logged
+
+
+async def test_reconcile_survives_non_utf8_file(tmp_path, state):
+    cdir = tmp_path / "Clippings"; cdir.mkdir()
+    (cdir / "good.md").write_text('---\ntitle: t\nsource: "https://x.com/g"\n---\nb\n', encoding="utf-8")
+    (cdir / "bad.md").write_bytes(b"\xff\xfe\x00bad not utf8")
+    seen = []
+    async def fake_process(path, **kw): seen.append(path.name)
+    with patch("automation_daemon.clippings_adapter.process_clipping", fake_process):
+        await reconcile_clippings(
+            clippings_dir=cdir, vault_root=tmp_path, state=state,
+            telegram_notifier=AsyncMock(), list_routing_targets=lambda: [],
+            send_clarification=AsyncMock(), max_failed_retries=3,
+        )
+    assert "good.md" in seen  # bad file did not abort the sweep
+
+
+async def test_clarification_send_failure_marks_failed_not_stuck_pending(tmp_path, state):
+    f = _clip(tmp_path)
+    from automation_daemon.clippings_router import RouteOutcome
+    from automation_daemon.clippings_state import parse_clipping, clipping_key
+    outcome = RouteOutcome(kind="needs_clarification", question="Q?",
+                           candidates=["A", "Skip"])
+    boom = AsyncMock(side_effect=RuntimeError("telegram down"))
+    with patch("automation_daemon.clippings_adapter.route_clipping",
+               AsyncMock(return_value=outcome)):
+        await process_clipping(f, vault_root=tmp_path, state=state,
+                               telegram_notifier=AsyncMock(),
+                               send_clarification=boom,
+                               list_routing_targets=lambda: [])
+    fm, body = parse_clipping(f)
+    row = await state.get(clipping_key(fm, body))
+    assert row["status"] == "failed"      # bounded by max_failed_retries, not stuck 'pending'
+    assert row["retry_count"] == 1

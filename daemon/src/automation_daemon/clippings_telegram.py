@@ -109,6 +109,7 @@ def make_finalize_route(
     applies the same disposition rules as process_clipping's routed branch.
     """
 
+    # Two rapid taps can both pass the _TERMINAL re-check; the SKILL.md is replay-safe so the vault converges (worst case: a duplicate Telegram confirm + one extra agent run).
     async def finalize(
         *, url_key: str, pinned_destination: str | None = None,
         user_guidance: str | None = None,

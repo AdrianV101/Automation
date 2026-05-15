@@ -101,7 +101,7 @@ A re-run on a fully-routed clipping performs no mutations and still emits a well
 This is the only thing the daemon reads from you. Get it exactly right.
 
 - Your response MUST end with **exactly one** sentinel line, and it MUST be the **last** line matching a sentinel prefix (the daemon scans from the bottom and takes the last `ROUTED |` / `NEEDS_CLARIFICATION |` line — earlier progress text is fine, but don't emit a second, contradicting sentinel).
-- It MUST be one of these two forms, verbatim, pipe-delimited with `|`:
+- It MUST be one of these two forms, verbatim, pipe-delimited with `|` — the prefix token is followed by a space then `|` (e.g. `ROUTED |`), exactly as in the examples; do not omit the space.:
 
   ```
   ROUTED | <new vault-relative path> | links:<n> | plan:<plan path or none>

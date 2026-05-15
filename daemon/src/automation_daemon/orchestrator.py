@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import logging
 from collections.abc import Awaitable, Callable
+from pathlib import Path
 from typing import Protocol
 from zoneinfo import ZoneInfo
 
@@ -336,29 +337,12 @@ async def _run_email_ingest_path(config: DaemonConfig) -> None:
         async def _clip_notifier(text: str, *, thread_id: int | None = None) -> None:
             await send_message(text, bot, thread_id=thread_id)
 
-        def _clip_targets() -> list[str]:
-            targets: list[str] = []
-            projects_root = config.pkm_vault_path / "01-Projects"
-            if not projects_root.is_dir():
-                return targets
-            for proj in sorted(p for p in projects_root.iterdir() if p.is_dir()):
-                idx = proj / "_index.md"
-                if idx.exists():
-                    targets.append(str(idx.relative_to(config.pkm_vault_path)))
-                plans = proj / "plans"
-                if plans.is_dir():
-                    targets += [
-                        str(p.relative_to(config.pkm_vault_path))
-                        for p in sorted(plans.glob("*.md"))
-                    ]
-            return targets
-
         _clip_finalize = make_finalize_route(
             clippings_dir=config.pkm_vault_path / config.clippings_dir,
             vault_root=config.pkm_vault_path,
             state=clip_state,
             telegram_notifier=_clip_notifier,
-            list_routing_targets=_clip_targets,
+            list_routing_targets=lambda: _clippings_routing_targets(config.pkm_vault_path),
             news_topic_id=config.news_telegram_topic_id,
             model=config.clippings_model,
         )
@@ -750,6 +734,25 @@ async def _run_hacker_news_path(config: DaemonConfig) -> None:
     )
 
 
+def _clippings_routing_targets(vault_root: Path) -> list[str]:
+    """Enumerate active project indexes + plans as clipping routing targets."""
+    targets: list[str] = []
+    projects_root = vault_root / "01-Projects"
+    if not projects_root.is_dir():
+        return targets
+    for proj in sorted(p for p in projects_root.iterdir() if p.is_dir()):
+        idx = proj / "_index.md"
+        if idx.exists():
+            targets.append(str(idx.relative_to(vault_root)))
+        plans = proj / "plans"
+        if plans.is_dir():
+            targets += [
+                str(p.relative_to(vault_root))
+                for p in sorted(plans.glob("*.md"))
+            ]
+    return targets
+
+
 async def _run_clippings_path(config: DaemonConfig) -> None:
     from .clippings_telegram import build_clarification_keyboard
 
@@ -762,23 +765,6 @@ async def _run_clippings_path(config: DaemonConfig) -> None:
 
     async def telegram_notifier(text: str, *, thread_id: int | None = None) -> None:
         await send_message(text, bot, thread_id=thread_id)
-
-    def list_routing_targets() -> list[str]:
-        targets: list[str] = []
-        projects_root = config.pkm_vault_path / "01-Projects"
-        if not projects_root.is_dir():
-            return targets
-        for proj in sorted(p for p in projects_root.iterdir() if p.is_dir()):
-            idx = proj / "_index.md"
-            if idx.exists():
-                targets.append(str(idx.relative_to(config.pkm_vault_path)))
-            plans = proj / "plans"
-            if plans.is_dir():
-                targets += [
-                    str(p.relative_to(config.pkm_vault_path))
-                    for p in sorted(plans.glob("*.md"))
-                ]
-        return targets
 
     async def send_clarification(
         *, question: str, candidates: list[str], clipping_name: str,
@@ -809,7 +795,7 @@ async def _run_clippings_path(config: DaemonConfig) -> None:
             vault_root=config.pkm_vault_path,
             state=state_db,
             telegram_notifier=telegram_notifier,
-            list_routing_targets=list_routing_targets,
+            list_routing_targets=lambda: _clippings_routing_targets(config.pkm_vault_path),
             send_clarification=send_clarification,
             settle_s=float(config.clippings_settle_seconds),
             reconcile_interval_s=float(config.clippings_reconcile_interval_seconds),
