@@ -5,6 +5,9 @@ import logging
 from collections.abc import Awaitable, Callable
 from pathlib import Path
 
+from watchdog.events import FileSystemEventHandler
+from watchdog.observers import Observer
+
 from .clippings_router import route_clipping
 from .clippings_state import ClippingsStateDB, clipping_key, parse_clipping
 
@@ -163,3 +166,103 @@ async def reconcile_clippings(
             send_clarification=send_clarification,
             news_topic_id=news_topic_id, model=model,
         )
+
+
+class _ClippingHandler(FileSystemEventHandler):
+    """Pushes newly created/moved *.md paths onto an asyncio queue."""
+
+    def __init__(self, queue: "asyncio.Queue[Path]", loop: asyncio.AbstractEventLoop) -> None:
+        self._queue = queue
+        self._loop = loop
+
+    def _enqueue(self, raw_path: str) -> None:
+        p = Path(raw_path)
+        if p.suffix == ".md":
+            self._loop.call_soon_threadsafe(self._queue.put_nowait, p)
+
+    def on_created(self, event) -> None:
+        if not event.is_directory:
+            self._enqueue(event.src_path)
+
+    def on_moved(self, event) -> None:
+        if not event.is_directory:
+            self._enqueue(event.dest_path)
+
+
+async def run_clippings_watch_loop(
+    *,
+    clippings_dir: Path,
+    vault_root: Path,
+    state: ClippingsStateDB,
+    telegram_notifier: Callable[..., Awaitable[None]],
+    list_routing_targets: Callable[[], list[str]],
+    send_clarification: Callable[..., Awaitable[int | None]] | None,
+    settle_s: float = 5.0,
+    poll_s: float = 0.5,
+    timeout_s: float = 60.0,
+    reconcile_interval_s: float = 3600.0,
+    max_failed_retries: int = 3,
+    news_topic_id: int | None = None,
+    model: str = "claude-opus-4-7",
+    _stop_event: asyncio.Event | None = None,
+) -> None:
+    """Long-running task: watchdog observer + debounce + periodic reconcile.
+
+    Crash-safe: wrapped by supervise() in the orchestrator. `_stop_event`
+    exists for tests; production passes None (runs until cancelled).
+    """
+    clippings_dir.mkdir(parents=True, exist_ok=True)
+    stop = _stop_event or asyncio.Event()
+    loop = asyncio.get_running_loop()
+    queue: asyncio.Queue[Path] = asyncio.Queue()
+
+    async def _reconcile() -> None:
+        await reconcile_clippings(
+            clippings_dir=clippings_dir, vault_root=vault_root, state=state,
+            telegram_notifier=telegram_notifier,
+            list_routing_targets=list_routing_targets,
+            send_clarification=send_clarification,
+            max_failed_retries=max_failed_retries,
+            news_topic_id=news_topic_id, model=model,
+        )
+
+    await _reconcile()  # startup catch-up
+
+    observer = Observer()
+    observer.schedule(_ClippingHandler(queue, loop), str(clippings_dir), recursive=False)
+    observer.start()
+
+    async def _periodic_reconcile() -> None:
+        while not stop.is_set():
+            try:
+                await asyncio.wait_for(stop.wait(), timeout=reconcile_interval_s)
+            except asyncio.TimeoutError:
+                await _reconcile()
+
+    periodic = asyncio.create_task(_periodic_reconcile())
+    try:
+        while not stop.is_set():
+            try:
+                path = await asyncio.wait_for(queue.get(), timeout=0.1)
+            except asyncio.TimeoutError:
+                continue
+            if not await wait_until_stable(
+                path, settle_s=settle_s, poll_s=poll_s, timeout_s=timeout_s,
+            ):
+                log.warning("Clipping %s never settled — leaving for reconcile", path.name)
+                continue
+            await process_clipping(
+                path, vault_root=vault_root, state=state,
+                telegram_notifier=telegram_notifier,
+                list_routing_targets=list_routing_targets,
+                send_clarification=send_clarification,
+                news_topic_id=news_topic_id, model=model,
+            )
+    finally:
+        observer.stop()
+        observer.join(timeout=5)
+        periodic.cancel()
+        try:
+            await periodic
+        except asyncio.CancelledError:
+            pass

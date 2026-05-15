@@ -163,3 +163,56 @@ async def test_reconcile_stops_retrying_after_cap(tmp_path, state):
             send_clarification=AsyncMock(), max_failed_retries=3,
         )
     assert seen == []  # at cap -> not retried
+
+
+from automation_daemon.clippings_adapter import run_clippings_watch_loop
+
+
+async def test_watch_loop_does_initial_reconcile_then_watches(tmp_path, state):
+    cdir = tmp_path / "Clippings"; cdir.mkdir()
+    calls = {"reconcile": 0}
+
+    async def fake_reconcile(**kw):
+        calls["reconcile"] += 1
+
+    stop = asyncio.Event()
+
+    async def stop_soon():
+        await asyncio.sleep(0.05)
+        stop.set()
+
+    with patch("automation_daemon.clippings_adapter.reconcile_clippings", fake_reconcile):
+        asyncio.create_task(stop_soon())
+        await run_clippings_watch_loop(
+            clippings_dir=cdir, vault_root=tmp_path, state=state,
+            telegram_notifier=AsyncMock(), list_routing_targets=lambda: [],
+            send_clarification=AsyncMock(),
+            settle_s=0.01, poll_s=0.005, reconcile_interval_s=10_000,
+            _stop_event=stop,
+        )
+    assert calls["reconcile"] >= 1  # initial reconcile ran
+
+
+@pytest.mark.integration
+async def test_watch_loop_picks_up_a_dropped_file(tmp_path, state):
+    cdir = tmp_path / "Clippings"; cdir.mkdir()
+    processed: list[str] = []
+
+    async def fake_process(path, **kw): processed.append(path.name)
+
+    stop = asyncio.Event()
+    with patch("automation_daemon.clippings_adapter.process_clipping", fake_process), \
+         patch("automation_daemon.clippings_adapter.reconcile_clippings", AsyncMock()):
+        loop_task = asyncio.create_task(run_clippings_watch_loop(
+            clippings_dir=cdir, vault_root=tmp_path, state=state,
+            telegram_notifier=AsyncMock(), list_routing_targets=lambda: [],
+            send_clarification=AsyncMock(),
+            settle_s=0.02, poll_s=0.01, reconcile_interval_s=10_000,
+            _stop_event=stop,
+        ))
+        await asyncio.sleep(0.1)
+        (cdir / "dropped.md").write_text('---\ntitle: t\nsource: "https://x.com/d"\n---\nb\n', encoding="utf-8")
+        await asyncio.sleep(0.5)
+        stop.set()
+        await loop_task
+    assert "dropped.md" in processed
