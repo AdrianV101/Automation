@@ -204,7 +204,7 @@ async def gate_or_pass(
         job.id, payload=serialize_job(job), unknown_speakers=unknown,
     )
     known = [p.name for p in load_people(config.pkm_vault_path)]
-    prompt_ids: list[int] = []
+    prompt_ids: list[int | None] = []
     for idx, label in enumerate(unknown):
         mid = await send_speaker_prompt(
             speaker_idx=idx, speaker_label=label,
@@ -212,8 +212,10 @@ async def gate_or_pass(
             sample_text=_speaker_snippet(job, label),
             tg=bot, known_names=known, thread_id=thread_id,
         )
-        if mid is not None:
-            prompt_ids.append(mid)
+        # Keep prompt_ids positionally aligned with `unknown`: index i is
+        # always speaker i, so a free-text reply can be mapped back by the
+        # replied-to message id's position even with multiple unknowns.
+        prompt_ids.append(mid)
     await email_db.set_pending_prompt_ids(job.id, prompt_ids)
     await email_db.update_status(job.id, "awaiting_speaker_labels")
     return True
@@ -301,12 +303,19 @@ def make_text_reply_handler(
         row = await _find_pending_by_prompt_id(email_db, reply_to_message_id)
         if row is None:
             return  # not a speaker-prompt reply
-        remaining = set(row["unknown_speakers"]) - set(row["name_map"])
-        if len(remaining) != 1:
-            return  # ambiguous — can't determine which speaker this maps to
-        label = next(iter(remaining))
+        prompt_ids = row["prompt_message_ids"]
+        try:
+            idx = prompt_ids.index(reply_to_message_id)
+        except ValueError:
+            return  # reply id not among this row's prompts
+        unknown = row["unknown_speakers"]
+        if idx >= len(unknown):
+            return  # defensive: misaligned/legacy row
+        label = unknown[idx]
         await email_db.set_pending_name(row["message_id"], label, text.strip())
-        await _maybe_resume(row["message_id"], email_db, config, bot, process_recording_fn)
+        await _maybe_resume(
+            row["message_id"], email_db, config, bot, process_recording_fn,
+        )
     return on_text_reply
 
 

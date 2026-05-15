@@ -446,6 +446,36 @@ async def test_email_path_starts_reaper(tmp_path) -> None:
 # ---------------------------------------------------------------------------
 
 @pytest.mark.asyncio
+async def test_freetext_reply_targets_speaker_by_prompt_id_with_multiple_unknowns(tmp_path) -> None:
+    db = EmailIngestStateDB(tmp_path / "s.db"); await db.init_db()
+    await db.insert_event("m1", uid=1)
+    job = _job_gate(["Speaker 1", "Speaker 2"])
+    await db.insert_pending("m1", payload=serialize_job(job),
+                            unknown_speakers=["Speaker 1", "Speaker 2"])
+    await db.set_pending_prompt_ids("m1", [201, 202])  # aligned: 201→Speaker 1, 202→Speaker 2
+    await db.update_status("m1", "awaiting_speaker_labels")
+    cfg = DaemonConfig(telegram_bot_token="t", telegram_chat_id="c", pkm_vault_path=tmp_path)
+    bot = BotConfig(bot_token="t", chat_id="c")
+    routed = AsyncMock()
+    from automation_daemon.orchestrator import make_text_reply_handler
+    on_text_reply = make_text_reply_handler(
+        email_db=db, config=cfg, bot=bot, process_recording_fn=routed,
+    )
+    # Operator replies free-text to the SECOND speaker's prompt while BOTH unknown.
+    await on_text_reply(reply_to_message_id=202, text="Bob")
+    row = await db.get_pending("m1")
+    assert row is not None  # not resumed yet — Speaker 1 still unresolved
+    assert row["name_map"] == {"Speaker 2": "Bob"}  # correctly targeted, NOT dropped
+    routed.assert_not_awaited()
+    # Now resolve the first speaker too → resume.
+    with patch("automation_daemon.orchestrator.send_speaker_resolution_complete", new=AsyncMock()):
+        await on_text_reply(reply_to_message_id=201, text="Alice")
+    routed.assert_awaited_once()
+    assert routed.await_args.args[0].transcript_data.speakers == ["Alice", "Bob"]
+    assert await db.get_pending("m1") is None
+
+
+@pytest.mark.asyncio
 async def test_late_reply_after_timeout_reroutes(tmp_path) -> None:
     db = EmailIngestStateDB(tmp_path / "s.db"); await db.init_db()
     await db.insert_event("old", uid=1)
