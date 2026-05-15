@@ -29,6 +29,7 @@ class RunnerConfig:
     vault_root: Path
     model: str = "claude-sonnet-4-6"
     max_items: int = 3
+    max_turns: int = 60
     feedback_window_days: int = 7
     # First entry is the wait before attempt 1 (always 0); rest gate retries.
     retry_backoff_seconds: tuple[float, ...] = (0.0, 60.0)
@@ -40,6 +41,7 @@ class AgentRunInput:
     vault_root: Path
     model: str
     max_items: int
+    max_turns: int
     prompt: str
 
 
@@ -208,6 +210,7 @@ async def _run_for_date_inner(
                 vault_root=config.vault_root,
                 model=config.model,
                 max_items=config.max_items,
+                max_turns=config.max_turns,
                 prompt=prompt,
             ))
         except Exception as exc:
@@ -320,6 +323,7 @@ async def run_agent_via_agent_infra(
         ),
         pkm_vault_path=inp.vault_root,
         model=inp.model,
+        max_turns=inp.max_turns,
         setting_sources=["project"],
         allow_skill_tool=True,
         mcp_server_path=mcp_server_path,

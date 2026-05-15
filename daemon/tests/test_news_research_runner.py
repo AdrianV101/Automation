@@ -270,6 +270,7 @@ async def test_run_agent_via_agent_infra_captures_cost() -> None:
             vault_root=Path("/tmp/vault"),
             model="claude-sonnet-4-6",
             max_items=3,
+            max_turns=60,
             prompt="do research",
         ))
 
@@ -277,6 +278,63 @@ async def test_run_agent_via_agent_infra_captures_cost() -> None:
     assert out.items_researched == 2
     assert out.turns_used == 7
     assert out.cost_usd == pytest.approx(0.27)
+
+
+@pytest.mark.asyncio
+async def test_run_agent_via_agent_infra_passes_max_turns() -> None:
+    """build_agent_options must receive max_turns from AgentRunInput."""
+    from unittest.mock import MagicMock
+    from agent_infra import AgentLoopResult
+    from agent_infra.runner import TraceEvent
+
+    async def fake_streaming(prompt, options, on_event=None):
+        if on_event is not None:
+            await on_event(TraceEvent(
+                kind="complete", turns_used=5, cost_usd=0.10,
+                files_written=[],
+            ))
+        return AgentLoopResult(
+            text_parts=['```json\n{"success": true, "items_researched": 1}\n```'],
+            turns_used=5,
+        )
+
+    mock_build = MagicMock(return_value=object())
+    with patch(
+        "audio_ingest.news_research.runner.run_agent_loop_streaming",
+        side_effect=fake_streaming,
+    ), patch(
+        "audio_ingest.news_research.runner.build_agent_options",
+        mock_build,
+    ):
+        await run_agent_via_agent_infra(AgentRunInput(
+            target_date=date(2026, 5, 15),
+            vault_root=Path("/tmp/vault"),
+            model="claude-sonnet-4-6",
+            max_items=3,
+            max_turns=42,
+            prompt="do research",
+        ))
+
+    assert mock_build.call_args.kwargs["max_turns"] == 42
+
+
+def test_runner_config_default_max_turns() -> None:
+    """RunnerConfig must default max_turns to 60."""
+    cfg = RunnerConfig(vault_root=Path("/tmp/vault"))
+    assert cfg.max_turns == 60
+
+
+def test_agent_run_input_carries_max_turns() -> None:
+    """AgentRunInput must expose the max_turns field."""
+    inp = AgentRunInput(
+        target_date=date(2026, 5, 15),
+        vault_root=Path("/tmp/vault"),
+        model="claude-sonnet-4-6",
+        max_items=3,
+        max_turns=99,
+        prompt="test",
+    )
+    assert inp.max_turns == 99
 
 
 @pytest.mark.asyncio
@@ -308,6 +366,7 @@ async def test_run_agent_via_agent_infra_error_branch_keeps_cost() -> None:
             vault_root=Path("/tmp/vault"),
             model="claude-sonnet-4-6",
             max_items=3,
+            max_turns=60,
             prompt="do research",
         ))
 

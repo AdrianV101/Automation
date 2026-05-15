@@ -647,6 +647,7 @@ async def _run_news_daily_master_path(config: DaemonConfig) -> None:
             vault_root=config.pkm_vault_path,
             model=config.news_research_model,
             max_items=config.news_research_max_items,
+            max_turns=config.news_research_max_turns,
             feedback_window_days=(
                 config.news_personal_digest_feedback_window_days
             ),
