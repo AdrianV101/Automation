@@ -337,3 +337,64 @@ async def test_parsed_email_gated_does_not_route(tmp_path) -> None:
             pipeline_thread=None, process_recording_fn=called,
         )
     called.assert_not_awaited()
+
+
+# ---------------------------------------------------------------------------
+# Task E4: speaker callback + free-text reply handler → resume
+# ---------------------------------------------------------------------------
+
+from automation_daemon.speaker_resolution import encode_choice, serialize_job
+
+
+@pytest.mark.asyncio
+async def test_callback_records_name_and_resumes_when_complete(tmp_path) -> None:
+    db = EmailIngestStateDB(tmp_path / "s.db"); await db.init_db()
+    await db.insert_event("m1", uid=1)
+    job = _job_gate(["Speaker 1"])
+    await db.insert_pending("m1", payload=serialize_job(job),
+                            unknown_speakers=["Speaker 1"])
+    await db.set_pending_prompt_ids("m1", [101])
+    await db.update_status("m1", "awaiting_speaker_labels")
+    cfg = DaemonConfig(telegram_bot_token="t", telegram_chat_id="c", pkm_vault_path=tmp_path)
+    bot = BotConfig(bot_token="t", chat_id="c")
+    routed = AsyncMock()
+    from automation_daemon.orchestrator import make_speaker_callback_handler
+    handler = make_speaker_callback_handler(
+        email_db=db, config=cfg, bot=bot, process_recording_fn=routed,
+    )
+    with (
+        patch("automation_daemon.orchestrator.answer_callback_query", new=AsyncMock()),
+        patch("automation_daemon.orchestrator.send_speaker_resolution_complete", new=AsyncMock()),
+    ):
+        await handler(callback_query_id="q", message_id=101,
+                      data=encode_choice(0, "Alice"))
+    routed.assert_awaited_once()
+    routed_job = routed.await_args.args[0]
+    assert routed_job.transcript_data.speakers == ["Alice"]
+    assert await db.get_pending("m1") is None
+    assert (await db.get_event("m1"))["status"] in ("writing_pkm", "extracting", "completed")
+
+
+@pytest.mark.asyncio
+async def test_text_reply_records_name_and_resumes_when_complete(tmp_path) -> None:
+    db = EmailIngestStateDB(tmp_path / "s.db"); await db.init_db()
+    await db.insert_event("m1", uid=1)
+    job = _job_gate(["Speaker 1"])
+    await db.insert_pending("m1", payload=serialize_job(job),
+                            unknown_speakers=["Speaker 1"])
+    await db.set_pending_prompt_ids("m1", [101])
+    await db.update_status("m1", "awaiting_speaker_labels")
+    cfg = DaemonConfig(telegram_bot_token="t", telegram_chat_id="c", pkm_vault_path=tmp_path)
+    bot = BotConfig(bot_token="t", chat_id="c")
+    routed = AsyncMock()
+    from automation_daemon.orchestrator import make_text_reply_handler
+    handler = make_text_reply_handler(
+        email_db=db, config=cfg, bot=bot, process_recording_fn=routed,
+    )
+    with patch("automation_daemon.orchestrator.send_speaker_resolution_complete", new=AsyncMock()):
+        await handler(reply_to_message_id=101, text="Carol")
+    routed.assert_awaited_once()
+    routed_job = routed.await_args.args[0]
+    assert routed_job.transcript_data.speakers == ["Carol"]
+    assert await db.get_pending("m1") is None
+    assert (await db.get_event("m1"))["status"] in ("writing_pkm", "extracting", "completed")

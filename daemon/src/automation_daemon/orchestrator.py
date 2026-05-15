@@ -24,9 +24,15 @@ from .hacker_news_adapter import run_scheduler_loop
 from .hn_state import HackerNewsStateDB
 from .supervisor import supervise
 from .models import RecordingJob, StatusTracker
-from .notifications import format_file_list, send_speaker_prompt
+from .notifications import (
+    answer_callback_query, format_file_list, send_speaker_prompt,
+    send_speaker_resolution_complete,
+)
 from .people import load_people
-from .speaker_resolution import unrecognised_speakers, serialize_job
+from .speaker_resolution import (
+    apply_speaker_names, decode_choice, deserialize_job,
+    IGNORE, OTHER, serialize_job, unrecognised_speakers,
+)
 from .news_email_adapter import handle_news_email
 from .pipeline import process_recording
 from .plaud_email_adapter import MalformedPlaudEmailError, recording_job_from_email
@@ -212,6 +218,97 @@ async def gate_or_pass(
     return True
 
 
+async def _find_pending_by_prompt_id(
+    email_db: EmailIngestStateDB, message_id: int,
+) -> dict | None:
+    # message_id is the Telegram id of a prompt; map it to its pending row.
+    for row in await email_db.list_pending_older_than("2999-01-01T00:00:00+00:00"):
+        if message_id in row["prompt_message_ids"]:
+            return row
+    return None
+
+
+async def _maybe_resume(
+    msg_id: str, email_db: EmailIngestStateDB, config: DaemonConfig,
+    bot: BotConfig, process_recording_fn,
+) -> None:
+    row = await email_db.get_pending(msg_id)
+    if row is None:
+        return
+    if set(row["name_map"]) != set(row["unknown_speakers"]):
+        return  # still waiting on at least one speaker
+    job = deserialize_job(row["payload"])
+    job = job.__class__(
+        id=job.id, recorded_at=job.recorded_at, filename=job.filename,
+        source=job.source,
+        transcript_data=apply_speaker_names(job.transcript_data, row["name_map"]),
+        duration_ms=job.duration_ms, source_metadata=job.source_metadata,
+    )
+    await send_speaker_resolution_complete(job.filename, row["name_map"], bot)
+    await email_db.delete_pending(msg_id)
+    # Advance the status away from awaiting_speaker_labels before routing so
+    # the event row reflects pipeline activity even if process_recording never
+    # writes its own status update (e.g. in tests with a mock).
+    await email_db.update_status(msg_id, "extracting")
+    tracker = EmailIngestStatusTracker(email_db, msg_id)
+    await process_recording_fn(job, config, status=tracker)
+
+
+def make_speaker_callback_handler(
+    *,
+    email_db: EmailIngestStateDB,
+    config: DaemonConfig,
+    bot: BotConfig,
+    process_recording_fn=process_recording,
+):
+    async def handler(*, callback_query_id: str, message_id: int, data: str) -> None:
+        decoded = decode_choice(data)
+        if decoded is None:
+            return  # not ours; dispatch_callback_query already filtered, be safe
+        speaker_idx, choice = decoded
+        row = await _find_pending_by_prompt_id(email_db, message_id)
+        if row is None:
+            await answer_callback_query(callback_query_id, "No longer pending", bot)
+            return
+        msg_id = row["message_id"]
+        unknown = row["unknown_speakers"]
+        if speaker_idx >= len(unknown):
+            await answer_callback_query(callback_query_id, "Unknown speaker", bot)
+            return
+        label = unknown[speaker_idx]
+        if choice == OTHER:
+            # Ask for free text; the reply handler completes the mapping.
+            await answer_callback_query(
+                callback_query_id, f"Reply with the name for {label}", bot,
+            )
+            return
+        name = label if choice == IGNORE else choice
+        await email_db.set_pending_name(msg_id, label, name)
+        await answer_callback_query(callback_query_id, f"{label} → {name}", bot)
+        await _maybe_resume(msg_id, email_db, config, bot, process_recording_fn)
+    return handler
+
+
+def make_text_reply_handler(
+    *,
+    email_db: EmailIngestStateDB,
+    config: DaemonConfig,
+    bot: BotConfig,
+    process_recording_fn=process_recording,
+):
+    async def on_text_reply(reply_to_message_id: int, text: str) -> None:
+        row = await _find_pending_by_prompt_id(email_db, reply_to_message_id)
+        if row is None:
+            return  # not a speaker-prompt reply
+        remaining = set(row["unknown_speakers"]) - set(row["name_map"])
+        if len(remaining) != 1:
+            return  # ambiguous — can't determine which speaker this maps to
+        label = next(iter(remaining))
+        await email_db.set_pending_name(row["message_id"], label, text.strip())
+        await _maybe_resume(row["message_id"], email_db, config, bot, process_recording_fn)
+    return on_text_reply
+
+
 async def _process_parsed_email(
     parsed,
     message_id: str,
@@ -361,12 +458,20 @@ async def _run_email_ingest_path(config: DaemonConfig) -> None:
     # Wire digest rating callbacks only when the digest feature is enabled.
     digest_handler = await _build_digest_callback_handler(config, bot)
 
+    speaker_cb = make_speaker_callback_handler(
+        email_db=email_db, config=config, bot=bot,
+    )
+
     async def on_callback_query(cbq_id: str, msg_id: int, data: str) -> None:
         await dispatch_callback_query(
             callback_query_id=cbq_id, message_id=msg_id, data=data,
             digest_handler=digest_handler,
-            fallback_handler=None,  # speaker-labeling routes via on_labeling_reply
+            fallback_handler=speaker_cb,
         )
+
+    on_text_reply = make_text_reply_handler(
+        email_db=email_db, config=config, bot=bot,
+    )
 
     try:
         async with asyncio.TaskGroup() as tg:
@@ -378,7 +483,8 @@ async def _run_email_ingest_path(config: DaemonConfig) -> None:
                 "telegram-poller",
                 lambda: tii.run_poller(
                     max_concurrent_dispatch=config.max_concurrent_dispatch,
-                    on_callback_query=on_callback_query if digest_handler else None,
+                    on_callback_query=on_callback_query,
+                    on_labeling_reply=on_text_reply,
                 ),
                 on_persistent_failure=on_supervised_task_crashloop,
             ))
