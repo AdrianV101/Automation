@@ -1,5 +1,10 @@
 from __future__ import annotations
 
+import hashlib
+from pathlib import Path
+from typing import Any
+
+import yaml
 from urllib.parse import urlsplit, urlunsplit, parse_qsl, urlencode
 
 _TRACKING_PREFIXES = ("utm_",)
@@ -36,3 +41,37 @@ def normalize_url(url: str) -> str:
     if path.endswith("/") and path != "/":
         path = path.rstrip("/")
     return urlunsplit((scheme, netloc, path, query, ""))
+
+
+def parse_clipping(path: Path) -> tuple[dict[str, Any], str]:
+    """Return (frontmatter dict, body) for a clipping markdown file.
+
+    Frontmatter is the leading ``---\\n ... \\n---`` YAML block. Files
+    without it yield ({}, full_text). Malformed YAML yields ({}, body)
+    rather than raising — the adapter classifies empty-frontmatter
+    clippings as ``failed`` downstream.
+    """
+    text = path.read_text(encoding="utf-8")
+    if not text.startswith("---"):
+        return {}, text
+    parts = text.split("\n---", 1)
+    if len(parts) != 2:
+        return {}, text
+    raw_fm = parts[0][len("---"):]
+    body = parts[1].lstrip("\n")
+    try:
+        loaded = yaml.safe_load(raw_fm)
+    except yaml.YAMLError:
+        return {}, body
+    fm = loaded if isinstance(loaded, dict) else {}
+    return fm, body
+
+
+def clipping_key(frontmatter: dict[str, Any], body: str) -> str:
+    """Idempotency key: normalized source URL, else sha256 of the body."""
+    source = str(frontmatter.get("source") or "").strip()
+    normalized = normalize_url(source)
+    if normalized:
+        return f"url:{normalized}"
+    digest = hashlib.sha256(body.encode("utf-8")).hexdigest()
+    return f"hash:{digest}"
