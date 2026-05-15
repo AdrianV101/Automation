@@ -9,7 +9,7 @@ from watchdog.events import FileSystemEvent, FileSystemEventHandler
 from watchdog.observers import Observer
 
 from .clippings_router import route_clipping
-from .clippings_state import ClippingsStateDB, clipping_key, parse_clipping
+from .clippings_state import ClippingsStateDB, TERMINAL_STATUSES, clipping_key, parse_clipping
 
 log = logging.getLogger(__name__)
 
@@ -40,10 +40,6 @@ async def wait_until_stable(
             stable_since = now
         await asyncio.sleep(poll_s)
     return False
-
-
-# Terminal statuses: clipping already handled, never re-route.
-_TERMINAL = {"routed", "skipped"}
 
 
 async def process_clipping(
@@ -82,7 +78,7 @@ async def process_clipping(
     key = clipping_key(frontmatter, body)
     existing = await state.get(key)
     if existing is not None:
-        if existing["status"] in _TERMINAL:
+        if existing["status"] in TERMINAL_STATUSES:
             log.info("Clipping %s already %s — skipping", path.name, existing["status"])
             return
         if existing["status"] == "pending_clarification" and existing["telegram_message_id"] is not None:
@@ -185,7 +181,7 @@ async def reconcile_clippings(
         key = clipping_key(fm, body)
         row = await state.get(key)
         if row is not None:
-            if row["status"] in _TERMINAL:
+            if row["status"] in TERMINAL_STATUSES:
                 continue
             if row["status"] == "pending_clarification" and row["telegram_message_id"] is not None:
                 continue

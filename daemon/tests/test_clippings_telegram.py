@@ -2,8 +2,8 @@ import pytest
 from unittest.mock import AsyncMock, patch
 
 from automation_daemon.clippings_telegram import (
-    build_clarification_keyboard, encode_clip_cb, decode_clip_cb,
-    handle_clip_callback,
+    build_clarification_keyboard, encode_clip_cb, encode_clip_other,
+    decode_clip_cb, handle_clip_callback,
 )
 from automation_daemon.clippings_state import ClippingsStateDB
 
@@ -149,3 +149,74 @@ async def test_text_reply_ambiguous_no_replyto_returns_false(tmp_path, state):
     )
     assert handled is False
     rerun.assert_not_awaited()
+
+
+async def test_callback_other_requests_free_text(tmp_path, state):
+    await state.insert_pending("k", "A.md")
+    await state.set_pending_clarification("k", candidates=["A", "Skip"], telegram_message_id=99)
+    req = AsyncMock()
+    ans = AsyncMock()
+    await handle_clip_callback(
+        callback_query_id="cq", message_id=99,
+        data=encode_clip_other(msg_id=99),
+        state=state, finalize_route=AsyncMock(),
+        answer_callback_query=ans, request_free_text=req,
+    )
+    req.assert_awaited_once()
+    assert req.call_args.kwargs["message_id"] == 99
+    ans.assert_awaited()
+
+
+async def test_callback_unknown_message_is_expired(tmp_path, state):
+    ans = AsyncMock()
+    await handle_clip_callback(
+        callback_query_id="cq", message_id=12345,
+        data=encode_clip_cb(msg_id=12345, choice_index=0),
+        state=state, finalize_route=AsyncMock(), answer_callback_query=ans,
+    )
+    assert "Expired" in ans.call_args.kwargs["text"]
+
+
+async def test_callback_out_of_range_index_is_invalid(tmp_path, state):
+    await state.insert_pending("k", "A.md")
+    await state.set_pending_clarification("k", candidates=["A", "Skip"], telegram_message_id=99)
+    ans = AsyncMock()
+    await handle_clip_callback(
+        callback_query_id="cq", message_id=99,
+        data=encode_clip_cb(msg_id=99, choice_index=9),
+        state=state, finalize_route=AsyncMock(), answer_callback_query=ans,
+    )
+    assert "Invalid" in ans.call_args.kwargs["text"]
+
+
+async def test_finalize_skips_when_already_terminal(tmp_path, state):
+    cdir = tmp_path / "Clippings"
+    cdir.mkdir()
+    f = cdir / "A.md"
+    f.write_text('---\ntitle: t\nsource: "https://x.com/a"\n---\nb\n', encoding="utf-8")
+    from automation_daemon.clippings_state import parse_clipping, clipping_key
+    key = clipping_key(*parse_clipping(f))
+    await state.insert_pending(key, "A.md")
+    await state.mark_routed(key, "somewhere.md")
+    rc = AsyncMock()
+    with patch("automation_daemon.clippings_telegram.route_clipping", rc):
+        finalize = make_finalize_route(
+            clippings_dir=cdir, vault_root=tmp_path, state=state,
+            telegram_notifier=AsyncMock(), list_routing_targets=lambda: [],
+        )
+        await finalize(url_key=key, pinned_destination="X")
+    rc.assert_not_awaited()
+
+
+async def test_finalize_marks_failed_when_file_gone(tmp_path, state):
+    cdir = tmp_path / "Clippings"
+    cdir.mkdir()
+    await state.insert_pending("k", "gone.md")
+    await state.set_pending_clarification("k", candidates=["A", "Skip"], telegram_message_id=5)
+    notify = AsyncMock()
+    finalize = make_finalize_route(
+        clippings_dir=cdir, vault_root=tmp_path, state=state,
+        telegram_notifier=notify, list_routing_targets=lambda: [],
+    )
+    await finalize(url_key="k", pinned_destination="X")
+    assert (await state.get("k"))["status"] == "failed"

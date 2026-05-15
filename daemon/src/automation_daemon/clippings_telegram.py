@@ -4,9 +4,8 @@ import logging
 from collections.abc import Awaitable, Callable
 from pathlib import Path
 
-from .clippings_adapter import _TERMINAL  # reuse terminal-status set
 from .clippings_router import route_clipping
-from .clippings_state import ClippingsStateDB
+from .clippings_state import ClippingsStateDB, TERMINAL_STATUSES
 
 log = logging.getLogger(__name__)
 
@@ -86,10 +85,20 @@ async def handle_clip_callback(
 
     choice = candidates[choice_index]
     if choice.strip().lower() == "skip":
-        await state.mark_skipped(row["url_key"])
+        try:
+            await state.mark_skipped(row["url_key"])
+        except Exception:
+            log.exception("mark_skipped failed for %s", row["url_key"])
+            await answer_callback_query(callback_query_id=callback_query_id, text="Failed — see logs")
+            raise
         await answer_callback_query(callback_query_id=callback_query_id, text="Skipped")
         return
-    await finalize_route(url_key=row["url_key"], pinned_destination=choice)
+    try:
+        await finalize_route(url_key=row["url_key"], pinned_destination=choice)
+    except Exception:
+        log.exception("finalize_route failed for %s", row["url_key"])
+        await answer_callback_query(callback_query_id=callback_query_id, text="Failed — see logs")
+        raise
     await answer_callback_query(callback_query_id=callback_query_id, text=f"Filing → {choice}")
 
 
@@ -109,13 +118,13 @@ def make_finalize_route(
     applies the same disposition rules as process_clipping's routed branch.
     """
 
-    # Two rapid taps can both pass the _TERMINAL re-check; the SKILL.md is replay-safe so the vault converges (worst case: a duplicate Telegram confirm + one extra agent run).
+    # Two rapid taps can both pass the TERMINAL_STATUSES re-check; the SKILL.md is replay-safe so the vault converges (worst case: a duplicate Telegram confirm + one extra agent run).
     async def finalize(
         *, url_key: str, pinned_destination: str | None = None,
         user_guidance: str | None = None,
     ) -> None:
         row = await state.get(url_key)
-        if row is None or row["status"] in _TERMINAL:
+        if row is None or row["status"] in TERMINAL_STATUSES:
             return
         path = clippings_dir / (row["original_filename"] or "")
         if not path.exists():

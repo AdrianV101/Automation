@@ -63,8 +63,9 @@ async def dispatch_callback_query(
 ) -> None:
     """Route a Telegram callback_query by data prefix.
 
-    `nr:` → digest rating handler. Anything else → fallback (e.g. speaker
-    labeling). With no digest_handler, even nr: routes to fallback. With
+    `nr:` → digest rating handler. Anything unrecognised → fallback
+    (currently the clippings clarification handler when clippings are
+    enabled). With no digest_handler, even nr: routes to fallback. With
     no fallback, unrecognised data is dropped silently — no toast, no DB
     write — because the bot is shared across features and we don't want
     one feature to claim ownership of unfamiliar callbacks.
@@ -321,8 +322,9 @@ async def _run_email_ingest_path(config: DaemonConfig) -> None:
     digest_handler = await _build_digest_callback_handler(config, bot)
 
     # Wire clippings clarification callbacks when the clippings feature is enabled.
-    # When disabled, clip_callback and clip_text_reply remain None, which preserves
-    # byte-identical behavior to the pre-clippings code path.
+    # When disabled, clip_callback and clip_text_reply remain None, giving the same
+    # runtime behavior as the pre-clippings code path (no additional handlers are
+    # registered with the poller or dispatcher).
     clip_callback = None
     clip_text_reply = None
     if config.clippings_enabled:

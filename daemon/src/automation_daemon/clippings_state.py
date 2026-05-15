@@ -4,11 +4,29 @@ import hashlib
 import json
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal, TypedDict
 
 import aiosqlite
 import yaml
 from urllib.parse import urlsplit, urlunsplit, parse_qsl, urlencode
+
+ClippingStatus = Literal[
+    "pending", "routed", "skipped", "pending_clarification", "failed",
+]
+
+TERMINAL_STATUSES: frozenset[str] = frozenset({"routed", "skipped"})
+
+
+class ClippingRow(TypedDict):
+    url_key: str
+    status: str
+    original_filename: str | None
+    candidates_json: str | None
+    telegram_message_id: int | None
+    routed_path: str | None
+    retry_count: int
+    processed_at: str
+    candidates: list[str]
 
 _TRACKING_PREFIXES = ("utm_",)
 _TRACKING_EXACT = {"fbclid", "gclid", "gbraid", "wbraid", "ref", "ref_src", "mc_cid", "mc_eid"}
@@ -102,11 +120,11 @@ def _now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
-def _row_to_dict(row: aiosqlite.Row) -> dict[str, Any]:
+def _row_to_dict(row: aiosqlite.Row) -> ClippingRow:
     d = dict(row)
     raw = d.get("candidates_json")
     d["candidates"] = json.loads(raw) if raw else []
-    return d
+    return d  # type: ignore[return-value]
 
 
 class ClippingsStateDB:
@@ -126,7 +144,7 @@ class ClippingsStateDB:
             await db.executescript(_SCHEMA)
             await db.commit()
 
-    async def get(self, url_key: str) -> dict[str, Any] | None:
+    async def get(self, url_key: str) -> ClippingRow | None:
         async with aiosqlite.connect(self._path) as db:
             db.row_factory = aiosqlite.Row
             async with db.execute(
@@ -190,7 +208,7 @@ class ClippingsStateDB:
 
     async def find_pending_clarification_by_message(
         self, telegram_message_id: int,
-    ) -> dict[str, Any] | None:
+    ) -> ClippingRow | None:
         async with aiosqlite.connect(self._path) as db:
             db.row_factory = aiosqlite.Row
             async with db.execute(
@@ -201,7 +219,7 @@ class ClippingsStateDB:
                 row = await cur.fetchone()
                 return _row_to_dict(row) if row else None
 
-    async def oldest_pending_clarification(self) -> dict[str, Any] | None:
+    async def oldest_pending_clarification(self) -> ClippingRow | None:
         async with aiosqlite.connect(self._path) as db:
             db.row_factory = aiosqlite.Row
             async with db.execute(
@@ -211,7 +229,7 @@ class ClippingsStateDB:
                 row = await cur.fetchone()
                 return _row_to_dict(row) if row else None
 
-    async def all_pending_clarifications(self) -> list[dict[str, Any]]:
+    async def all_pending_clarifications(self) -> list[ClippingRow]:
         """Return all pending_clarification rows ordered by processed_at ASC."""
         async with aiosqlite.connect(self._path) as db:
             db.row_factory = aiosqlite.Row

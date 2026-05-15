@@ -1,4 +1,5 @@
 import os
+import pytest
 from unittest.mock import patch
 from automation_daemon.config import DaemonConfig
 
@@ -27,3 +28,18 @@ def test_clippings_from_env(monkeypatch):
     assert c.clippings_settle_seconds == 9
     assert c.clippings_dir == "00-Inbox/Clippings"
     assert c.clippings_model == "claude-opus-4-7"
+
+
+def test_clippings_reconcile_interval_zero_rejected():
+    with pytest.raises(ValueError, match="CLIPPINGS_RECONCILE_INTERVAL_SECONDS"):
+        DaemonConfig(clippings_reconcile_interval_seconds=0)
+
+
+def test_clippings_settle_negative_rejected():
+    with pytest.raises(ValueError, match="CLIPPINGS_SETTLE_SECONDS"):
+        DaemonConfig(clippings_settle_seconds=-1)
+
+
+def test_clippings_max_failed_retries_negative_rejected():
+    with pytest.raises(ValueError, match="CLIPPINGS_MAX_FAILED_RETRIES"):
+        DaemonConfig(clippings_max_failed_retries=-1)

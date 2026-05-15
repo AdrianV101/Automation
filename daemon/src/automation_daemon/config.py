@@ -305,3 +305,18 @@ class DaemonConfig:
                 f"news_personal_digest_feedback_window_days must be >= 1, "
                 f"got {self.news_personal_digest_feedback_window_days}"
             )
+        if self.clippings_settle_seconds < 0:
+            raise ValueError(
+                f"CLIPPINGS_SETTLE_SECONDS must be >= 0, "
+                f"got {self.clippings_settle_seconds}"
+            )
+        if self.clippings_reconcile_interval_seconds < 1:
+            raise ValueError(
+                f"CLIPPINGS_RECONCILE_INTERVAL_SECONDS must be >= 1, "
+                f"got {self.clippings_reconcile_interval_seconds}"
+            )
+        if self.clippings_max_failed_retries < 0:
+            raise ValueError(
+                f"CLIPPINGS_MAX_FAILED_RETRIES must be >= 0, "
+                f"got {self.clippings_max_failed_retries}"
+            )
