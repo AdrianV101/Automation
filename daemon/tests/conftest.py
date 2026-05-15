@@ -11,6 +11,34 @@ os.environ.setdefault("OBSIDIAN_MCP_SERVER_PATH", "/tmp/test-obsidian-mcp/index.
 FIXTURES_DIR = Path(__file__).parent / "fixtures"
 
 
+@pytest.fixture(autouse=True)
+def _isolate_dotenv(
+    request: pytest.FixtureRequest, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Neutralise ``DaemonConfig.from_env``'s ``load_dotenv()`` call.
+
+    ``from_env`` calls ``load_dotenv()`` with no path; python-dotenv
+    discovers ``daemon/.env`` (searching upward from the package dir, or
+    cwd under a REPL/debugger). It defaults to ``override=False``, so it
+    sets a ``.env`` key only when that key is *absent* from ``os.environ``.
+    That is exactly why the ``*_defaults_when_unset`` config tests are
+    non-hermetic: they leave the optional ``*_ENABLED`` vars unset, so the
+    real ``.env`` fills them in and the "disabled by default" assertions
+    fail (they pass only on a checkout without a ``.env``, e.g. fresh CI).
+
+    Tests that set a var via ``monkeypatch.setenv`` already have it in
+    ``os.environ``, so real ``load_dotenv`` would skip it anyway — this
+    no-op is belt-and-braces for them and the load-bearing fix for the
+    unset/``delenv`` case.
+
+    Opt out with ``@pytest.mark.real_dotenv`` for tests that must exercise
+    actual ``.env``-file parsing (e.g. the ``from_env(env_file=...)`` path).
+    """
+    if request.node.get_closest_marker("real_dotenv"):
+        return
+    monkeypatch.setattr("audio_ingest.config.load_dotenv", lambda *a, **k: False)
+
+
 @pytest.fixture
 def sample_plaud_raw() -> dict:
     return json.loads((FIXTURES_DIR / "sample_plaud_transcript.json").read_text())
