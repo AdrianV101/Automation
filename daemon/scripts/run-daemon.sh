@@ -1,5 +1,5 @@
 #!/bin/sh
-# Launcher for the audio-ingest daemon under macOS launchd.
+# Launcher for the automation-daemon under macOS launchd.
 #
 # launchd starts jobs with a minimal PATH (/usr/bin:/bin:/usr/sbin:/sbin).
 # The daemon shells out to the `claude` CLI and node (Claude Agent SDK),

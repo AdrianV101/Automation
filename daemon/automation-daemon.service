@@ -1,5 +1,5 @@
 [Unit]
-Description=Audio Ingestion Pipeline Daemon
+Description=Automation Daemon (PKM orchestrator)
 After=network-online.target
 Wants=network-online.target
 

@@ -93,7 +93,7 @@ def _terminate_children(timeout_s: float = 5.0) -> None:
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(prog="audio-ingest")
+    parser = argparse.ArgumentParser(prog="automation-daemon")
     subparsers = parser.add_subparsers(dest="command")
     add_subparsers(subparsers)
 

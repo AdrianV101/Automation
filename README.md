@@ -116,11 +116,11 @@ cp CLAUDE.example.md CLAUDE.md
 daemon/.venv/bin/python -m automation_daemon
 
 # Or run as a managed service:
-#   macOS: install a launchd LaunchAgent (Label `com.adrian.audio-ingest`,
-#          ProgramArguments → daemon/.venv/bin/python -m automation_daemon,
-#          KeepAlive=true, logs to ~/Library/Logs/audio-ingest.{out,err}.log)
-#   Linux: sudo cp daemon/audio-ingest.service /etc/systemd/system/
-#          sudo systemctl enable --now audio-ingest
+#   macOS: install a launchd LaunchAgent via daemon/scripts/install-launchagent.sh
+#          (Label `com.adrian.automation-daemon`, RunAtLoad, KeepAlive on crash,
+#          logs to ~/Library/Logs/automation-daemon/{stdout,stderr}.log)
+#   Linux: sudo cp daemon/automation-daemon.service /etc/systemd/system/
+#          sudo systemctl enable --now automation-daemon
 ```
 
 ## Running tests
