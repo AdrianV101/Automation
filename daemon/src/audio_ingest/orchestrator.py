@@ -476,6 +476,37 @@ async def _run_news_ingest_path(config: DaemonConfig) -> None:
     )
 
 
+def _build_news_chain_fn(
+    *,
+    master_fn,
+    research_fn,
+    digest_fn,
+    master_completed,
+):
+    """Compose the daily news chain: master → research → digest.
+
+    research_fn and digest_fn are optional (None when disabled). research
+    and digest run only when master_completed(d) is True. A research
+    failure is logged and swallowed so it can never block the digest —
+    research is best-effort enrichment (see the auto-research design, D2).
+    """
+    async def _chain(d) -> None:
+        await master_fn(d)
+        if not await master_completed(d):
+            return
+        if research_fn is not None:
+            try:
+                await research_fn(d)
+            except Exception:
+                log.exception("Research run failed for %s", d)
+        if digest_fn is not None:
+            try:
+                await digest_fn(d)
+            except Exception:
+                log.exception("Digest run failed for %s", d)
+    return _chain
+
+
 async def _run_news_daily_master_path(config: DaemonConfig) -> None:
     from datetime import time as _time
     from .news_daily_master.runner import (
@@ -597,26 +628,66 @@ async def _run_news_daily_master_path(config: DaemonConfig) -> None:
                 notify=notify, send_messages=_send_digest_messages,
             )
 
-    async def run_for_date_fn(d) -> None:
+    research_run_for_date_fn = None
+    if config.news_research_enabled:
+        from .news_research.runner import (
+            RunnerConfig as ResearchRunnerConfig,
+            run_for_date as _research_run_for_date,
+            run_agent_via_agent_infra as _research_run_agent,
+        )
+        from .news_research.state import NewsResearchStateDB
+
+        research_db = NewsResearchStateDB(config.email_ingest_state_db_path)
+        await research_db.init_db()
+        research_runner_cfg = ResearchRunnerConfig(
+            vault_root=config.pkm_vault_path,
+            model=config.news_research_model,
+            max_items=config.news_research_max_items,
+            feedback_window_days=(
+                config.news_personal_digest_feedback_window_days
+            ),
+        )
+
+        # Ratings come from the digest DB when the digest is enabled;
+        # otherwise an empty provider keeps news_research decoupled and
+        # functional (interests-profile + judgment only).
+        if digest_db is not None:
+            async def _recent_ratings(start, end):
+                return await digest_db.recent_ratings(start, end)
+        else:
+            async def _recent_ratings(start, end):
+                return []
+
+        async def research_run_for_date_fn(d) -> None:
+            await _research_run_for_date(
+                d, db=research_db, config=research_runner_cfg,
+                run_agent=_research_run_agent,
+                recent_ratings=_recent_ratings,
+            )
+
+    async def _master_only(d) -> None:
         await run_for_date(
             d, db=db, config=runner_cfg,
             run_agent=run_agent_via_agent_infra,
             notify=notify,
         )
-        # Chain digest only when master completed cleanly.
-        if digest_run_for_date_fn is None:
-            return
-        master_row = await db.get_run(d)
-        if master_row is None or master_row.get("status") != "completed":
+
+    async def _master_completed(d) -> bool:
+        row = await db.get_run(d)
+        if row is None or row.get("status") != "completed":
             log.info(
-                "Skipping digest for %s — master status=%s",
-                d, master_row.get("status") if master_row else None,
+                "Skipping research/digest for %s — master status=%s",
+                d, row.get("status") if row else None,
             )
-            return
-        try:
-            await digest_run_for_date_fn(d)
-        except Exception:
-            log.exception("Digest run failed for %s", d)
+            return False
+        return True
+
+    run_for_date_fn = _build_news_chain_fn(
+        master_fn=_master_only,
+        research_fn=research_run_for_date_fn,
+        digest_fn=digest_run_for_date_fn,
+        master_completed=_master_completed,
+    )
 
     h, m = config.news_daily_master_local_time.split(":", 1)
     fire = _time(int(h), int(m))
