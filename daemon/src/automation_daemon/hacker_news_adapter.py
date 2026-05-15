@@ -256,7 +256,14 @@ def _seconds_until_next_local_time(
         target = target_today + timedelta(days=1)
     else:
         target = target_today
-    return int((target - local_now).total_seconds())
+    # Both datetimes share the same ZoneInfo, so a direct subtraction is a
+    # naive wall-clock diff (equal utcoffsets cancel) and is wrong across a
+    # DST transition. Convert to UTC so the result is the true physical
+    # duration asyncio.sleep will actually consume.
+    return int(
+        (target.astimezone(timezone.utc) - local_now.astimezone(timezone.utc))
+        .total_seconds()
+    )
 
 
 async def run_scheduler_loop(

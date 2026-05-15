@@ -42,27 +42,34 @@ def test_handles_local_timezone_offset():
     assert secs == 30 * 60
 
 
-def test_dst_fall_back_returns_wall_clock_seconds():
-    """Across the autumn fold the result is the *wall-clock* gap.
+def test_dst_fall_back_returns_physical_seconds():
+    """Across the autumn fold the result is the true *physical* duration.
 
     Europe/London falls back on 2026-10-25: at 02:00 BST clocks go to
-    01:00 GMT, so that day is physically 25 hours long. With
+    01:00 GMT, so the night contains an extra repeated hour. With
     ``now`` = 00:30 UTC (= 01:30 BST, before the fold) and a 05:30 local
     target (= 05:30 GMT, after the fold), the wall-clock gap is 4h but the
-    true elapsed time is 5h because of the extra repeated hour.
-
-    ``_seconds_until_next_local_time`` subtracts two datetimes that share
-    the same ``ZoneInfo`` (``target`` is built via ``local_now.replace``).
-    Python special-cases same-``tzinfo`` subtraction as a *naive* wall-clock
-    difference (no UTC conversion), so the function returns 4h (14400s).
-
-    Consequence worth pinning: on the autumn-fold day the digest fires one
-    physical hour earlier than ``local_time`` (here 04:30 GMT, not 05:30).
-    This test characterises that current behaviour so any future change to
-    the DST handling is a conscious, reviewed decision rather than a silent
-    regression.
+    true elapsed physical time is 5h. ``asyncio.sleep`` consumes physical
+    time, so the scheduler must sleep 5h to fire at 05:30 local — not 4h,
+    which would fire an hour early.
     """
     tz = ZoneInfo("Europe/London")
     now = datetime(2026, 10, 25, 0, 30, 0, tzinfo=UTC)
+    secs = _seconds_until_next_local_time(now=now, hour=5, minute=30, tz=tz)
+    assert secs == 5 * 3600
+
+
+def test_dst_spring_forward_returns_physical_seconds():
+    """Across spring-forward the result is the true *physical* duration.
+
+    Europe/London springs forward on 2026-03-29: at 01:00 GMT clocks jump
+    to 02:00 BST, so the night loses an hour. With ``now`` = 00:30 UTC
+    (= 00:30 GMT, before the jump) and a 05:30 local target (= 05:30 BST
+    = 04:30 UTC, after the jump), the wall-clock gap is 5h but the true
+    elapsed physical time is 4h. The scheduler must sleep the physical 4h
+    so the digest fires at 05:30 BST, not an hour late.
+    """
+    tz = ZoneInfo("Europe/London")
+    now = datetime(2026, 3, 29, 0, 30, 0, tzinfo=UTC)
     secs = _seconds_until_next_local_time(now=now, hour=5, minute=30, tz=tz)
     assert secs == 4 * 3600
