@@ -40,7 +40,8 @@ async def test_reap_routes_stale_with_flag_and_marks_timed_out(tmp_path) -> None
     assert n == 1
     routed.assert_awaited_once()
     assert routed.await_args.kwargs["speakers_unresolved"] is True
-    assert await db.get_pending("old") is None
+    # G1: row retained after timeout so a late reply can still correct it
+    assert await db.get_pending("old") is not None
     assert (await db.get_event("old"))["status"] == "timed_out_unresolved"
 
 

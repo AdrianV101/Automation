@@ -439,3 +439,33 @@ async def test_email_path_starts_reaper(tmp_path) -> None:
         from automation_daemon.orchestrator import _run_email_ingest_path
         await _run_email_ingest_path(cfg)
     assert any("speaker-reaper" in s for s in started)
+
+
+# ---------------------------------------------------------------------------
+# Task G1: late reply after timeout re-routes with corrected names
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_late_reply_after_timeout_reroutes(tmp_path) -> None:
+    db = EmailIngestStateDB(tmp_path / "s.db"); await db.init_db()
+    await db.insert_event("old", uid=1)
+    job = _job_gate(["Speaker 1"])
+    await db.insert_pending("old", payload=serialize_job(job),
+                            unknown_speakers=["Speaker 1"])
+    await db.set_pending_prompt_ids("old", [101])
+    await db.update_status("old", "timed_out_unresolved")  # reaper already ran, row kept
+    cfg = DaemonConfig(telegram_bot_token="t", telegram_chat_id="c", pkm_vault_path=tmp_path)
+    bot = BotConfig(bot_token="t", chat_id="c")
+    routed = AsyncMock()
+    from automation_daemon.orchestrator import make_speaker_callback_handler
+    handler = make_speaker_callback_handler(
+        email_db=db, config=cfg, bot=bot, process_recording_fn=routed,
+    )
+    with (
+        patch("automation_daemon.orchestrator.answer_callback_query", new=AsyncMock()),
+        patch("automation_daemon.orchestrator.send_speaker_resolution_complete", new=AsyncMock()),
+    ):
+        await handler(callback_query_id="q", message_id=101,
+                      data=encode_choice(0, "Alice"))
+    routed.assert_awaited_once()
+    assert routed.await_args.args[0].transcript_data.speakers == ["Alice"]

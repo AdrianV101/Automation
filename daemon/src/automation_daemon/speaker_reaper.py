@@ -39,7 +39,6 @@ async def reap_once(
             await process_recording_fn(
                 job, config, status=tracker, speakers_unresolved=True,
             )
-            await email_db.delete_pending(mid)
             await email_db.update_status(mid, "timed_out_unresolved")
         except Exception:
             log.exception("speaker reaper failed for %s", mid)
