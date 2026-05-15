@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import logging
 from collections.abc import Awaitable, Callable
+from datetime import date
 from typing import Protocol
 from zoneinfo import ZoneInfo
 
@@ -476,13 +477,16 @@ async def _run_news_ingest_path(config: DaemonConfig) -> None:
     )
 
 
+NewsStageFn = Callable[[date], Awaitable[None]]
+
+
 def _build_news_chain_fn(
     *,
-    master_fn,
-    research_fn,
-    digest_fn,
-    master_completed,
-):
+    master_fn: NewsStageFn,
+    research_fn: NewsStageFn | None,
+    digest_fn: NewsStageFn | None,
+    master_completed: Callable[[date], Awaitable[bool]],
+) -> NewsStageFn:
     """Compose the daily news chain: master → research → digest.
 
     research_fn and digest_fn are optional (None when disabled). research
@@ -490,7 +494,7 @@ def _build_news_chain_fn(
     failure is logged and swallowed so it can never block the digest —
     research is best-effort enrichment (see the auto-research design, D2).
     """
-    async def _chain(d) -> None:
+    async def _chain(d: date) -> None:
         await master_fn(d)
         if not await master_completed(d):
             return
