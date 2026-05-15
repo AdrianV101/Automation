@@ -7,10 +7,14 @@ them). See ADR-010 (speaker-resolution-gate).
 """
 from __future__ import annotations
 
+import json
 import re
-from dataclasses import replace
+from dataclasses import asdict, replace
+from pathlib import Path
 
 from pkm import TranscriptData, TranscriptSegment
+
+from .models import RecordingJob
 
 _GENERIC_SPEAKER = re.compile(r"^speaker[ _]?\d+$", re.IGNORECASE)
 
@@ -63,3 +67,42 @@ def apply_speaker_names(
     ]
     new_speakers = [name_map.get(sp, sp) for sp in transcript.speakers]
     return replace(transcript, speakers=new_speakers, segments=new_segments)
+
+
+def serialize_job(job: RecordingJob) -> str:
+    """Serialise a held RecordingJob to a JSON string for SQLite storage.
+
+    ``infographic_path`` (a ``Path``) is stringified so it survives JSON
+    round-trip; ``deserialize_job`` restores it back to ``Path``."""
+    meta = dict(job.source_metadata)
+    if isinstance(meta.get("infographic_path"), Path):
+        meta["infographic_path"] = str(meta["infographic_path"])
+    return json.dumps({
+        "id": job.id,
+        "recorded_at": job.recorded_at,
+        "filename": job.filename,
+        "source": job.source,
+        "duration_ms": job.duration_ms,
+        "transcript_data": asdict(job.transcript_data),
+        "source_metadata": meta,
+    })
+
+
+def deserialize_job(blob: str) -> RecordingJob:
+    """Rehydrate a RecordingJob from a JSON string produced by ``serialize_job``."""
+    d = json.loads(blob)
+    td = d["transcript_data"]
+    transcript = TranscriptData(
+        job_id=td["job_id"], recorded_at=td["recorded_at"],
+        duration_seconds=td["duration_seconds"], speakers=list(td["speakers"]),
+        segments=[TranscriptSegment(**s) for s in td["segments"]],
+        full_text=td["full_text"],
+    )
+    meta = dict(d["source_metadata"])
+    if "infographic_path" in meta and meta["infographic_path"] is not None:
+        meta["infographic_path"] = Path(meta["infographic_path"])
+    return RecordingJob(
+        id=d["id"], recorded_at=d["recorded_at"], filename=d["filename"],
+        source=d["source"], transcript_data=transcript,
+        duration_ms=d["duration_ms"], source_metadata=meta,
+    )

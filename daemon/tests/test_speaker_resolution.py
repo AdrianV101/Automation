@@ -82,3 +82,42 @@ def test_apply_empty_map_is_identity_copy() -> None:
     out = apply_speaker_names(td, {})
     assert out.speakers == ["Speaker 1"]
     assert out is not td
+
+
+from pathlib import Path
+
+from automation_daemon.models import RecordingJob
+from automation_daemon.speaker_resolution import (
+    serialize_job, deserialize_job,
+)
+
+
+def _job() -> RecordingJob:
+    return RecordingJob(
+        id="m@x", recorded_at="2026-05-15T10:00:00+00:00",
+        filename="Subject line", source="plaud-email",
+        transcript_data=_td(["Speaker 1", "Alice"]),
+        duration_ms=10000,
+        source_metadata={
+            "plaud_summaries": {"brief": "hi"},
+            "infographic_path": Path("99-Attachments/plaud/m.jpg"),
+        },
+    )
+
+
+def test_job_roundtrips_through_json() -> None:
+    blob = serialize_job(_job())
+    assert isinstance(blob, str)
+    out = deserialize_job(blob)
+    assert out == _job()
+    assert isinstance(out.source_metadata["infographic_path"], Path)
+
+
+def test_roundtrip_without_infographic() -> None:
+    j = RecordingJob(
+        id="m2", recorded_at="2026-05-15T10:00:00+00:00",
+        filename="s", source="plaud-email",
+        transcript_data=_td(["Speaker 1"]), duration_ms=None,
+        source_metadata={},
+    )
+    assert deserialize_job(serialize_job(j)) == j
