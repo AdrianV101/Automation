@@ -11,6 +11,23 @@ os.environ.setdefault("OBSIDIAN_MCP_SERVER_PATH", "/tmp/test-obsidian-mcp/index.
 FIXTURES_DIR = Path(__file__).parent / "fixtures"
 
 
+@pytest.fixture(autouse=True)
+def _isolate_dotenv(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Neutralise ``DaemonConfig.from_env``'s ``load_dotenv()`` call.
+
+    ``from_env`` calls ``load_dotenv()`` with no path, which walks up from
+    the cwd and injects keys from a developer's ``daemon/.env`` into
+    ``os.environ``. That makes the ``*_defaults_when_unset`` config tests
+    non-hermetic: they assert a feature is disabled when its env var is
+    unset, but ``load_dotenv`` re-populates it from the real ``.env``
+    (so they pass only on a checkout without one, e.g. fresh CI).
+
+    Tests that exercise env-driven config use ``monkeypatch.setenv``, which
+    writes ``os.environ`` directly and is unaffected by this no-op.
+    """
+    monkeypatch.setattr("audio_ingest.config.load_dotenv", lambda *a, **k: False)
+
+
 @pytest.fixture
 def sample_plaud_raw() -> dict:
     return json.loads((FIXTURES_DIR / "sample_plaud_transcript.json").read_text())
