@@ -216,3 +216,51 @@ async def test_watch_loop_picks_up_a_dropped_file(tmp_path, state):
         stop.set()
         await loop_task
     assert "dropped.md" in processed
+
+
+async def test_watch_loop_shutdown_reaps_observer_and_periodic(tmp_path, state):
+    import threading
+    cdir = tmp_path / "Clippings"; cdir.mkdir()
+    stop = asyncio.Event()
+    before = threading.active_count()
+    with patch("automation_daemon.clippings_adapter.reconcile_clippings", AsyncMock()):
+        task = asyncio.create_task(run_clippings_watch_loop(
+            clippings_dir=cdir, vault_root=tmp_path, state=state,
+            telegram_notifier=AsyncMock(), list_routing_targets=lambda: [],
+            send_clarification=AsyncMock(),
+            settle_s=0.01, poll_s=0.005, reconcile_interval_s=10_000,
+            _stop_event=stop,
+        ))
+        await asyncio.sleep(0.1)
+        stop.set()
+        await asyncio.wait_for(task, timeout=5.0)
+    await asyncio.sleep(0.2)  # let the daemon observer thread fully exit
+    assert threading.active_count() <= before  # no leaked observer thread
+
+
+async def test_watch_loop_poison_clipping_does_not_kill_watcher(tmp_path, state):
+    cdir = tmp_path / "Clippings"; cdir.mkdir()
+    calls = {"n": 0}
+
+    async def boom(path, **kw):
+        calls["n"] += 1
+        raise RuntimeError("poison")
+
+    stop = asyncio.Event()
+    with patch("automation_daemon.clippings_adapter.process_clipping", boom), \
+         patch("automation_daemon.clippings_adapter.reconcile_clippings", AsyncMock()):
+        task = asyncio.create_task(run_clippings_watch_loop(
+            clippings_dir=cdir, vault_root=tmp_path, state=state,
+            telegram_notifier=AsyncMock(), list_routing_targets=lambda: [],
+            send_clarification=AsyncMock(),
+            settle_s=0.01, poll_s=0.005, timeout_s=1.0, reconcile_interval_s=10_000,
+            _stop_event=stop,
+        ))
+        await asyncio.sleep(0.1)
+        (cdir / "bad.md").write_text('---\ntitle: t\nsource: "https://x.com/b"\n---\nb\n', encoding="utf-8")
+        await asyncio.sleep(0.4)
+        # watcher must still be alive despite the raising process_clipping
+        assert not task.done()
+        stop.set()
+        await asyncio.wait_for(task, timeout=5.0)
+    assert calls["n"] >= 1  # the poison clipping was attempted and the error swallowed+logged

@@ -5,7 +5,7 @@ import logging
 from collections.abc import Awaitable, Callable
 from pathlib import Path
 
-from watchdog.events import FileSystemEventHandler
+from watchdog.events import FileSystemEvent, FileSystemEventHandler
 from watchdog.observers import Observer
 
 from .clippings_router import route_clipping
@@ -180,11 +180,11 @@ class _ClippingHandler(FileSystemEventHandler):
         if p.suffix == ".md":
             self._loop.call_soon_threadsafe(self._queue.put_nowait, p)
 
-    def on_created(self, event) -> None:
+    def on_created(self, event: FileSystemEvent) -> None:
         if not event.is_directory:
             self._enqueue(event.src_path)
 
-    def on_moved(self, event) -> None:
+    def on_moved(self, event: FileSystemEvent) -> None:
         if not event.is_directory:
             self._enqueue(event.dest_path)
 
@@ -226,12 +226,6 @@ async def run_clippings_watch_loop(
             news_topic_id=news_topic_id, model=model,
         )
 
-    await _reconcile()  # startup catch-up
-
-    observer = Observer()
-    observer.schedule(_ClippingHandler(queue, loop), str(clippings_dir), recursive=False)
-    observer.start()
-
     async def _periodic_reconcile() -> None:
         while not stop.is_set():
             try:
@@ -239,8 +233,16 @@ async def run_clippings_watch_loop(
             except asyncio.TimeoutError:
                 await _reconcile()
 
-    periodic = asyncio.create_task(_periodic_reconcile())
+    observer = Observer()
+    observer.schedule(_ClippingHandler(queue, loop), str(clippings_dir), recursive=False)
+    periodic: asyncio.Task | None = None
     try:
+        observer.start()
+        # Start watching BEFORE the initial reconcile so files dropped
+        # during the reconcile scan are queued (not lost); process_clipping
+        # dedupes the overlap on clipping_key.
+        await _reconcile()  # startup catch-up
+        periodic = asyncio.create_task(_periodic_reconcile())
         while not stop.is_set():
             try:
                 path = await asyncio.wait_for(queue.get(), timeout=0.1)
@@ -251,18 +253,30 @@ async def run_clippings_watch_loop(
             ):
                 log.warning("Clipping %s never settled — leaving for reconcile", path.name)
                 continue
-            await process_clipping(
-                path, vault_root=vault_root, state=state,
-                telegram_notifier=telegram_notifier,
-                list_routing_targets=list_routing_targets,
-                send_clarification=send_clarification,
-                news_topic_id=news_topic_id, model=model,
-            )
+            try:
+                await process_clipping(
+                    path, vault_root=vault_root, state=state,
+                    telegram_notifier=telegram_notifier,
+                    list_routing_targets=list_routing_targets,
+                    send_clarification=send_clarification,
+                    news_topic_id=news_topic_id, model=model,
+                )
+            except Exception:
+                log.exception(
+                    "Unhandled error processing clipping %s — skipping, "
+                    "leaving for reconcile", path.name,
+                )
     finally:
         observer.stop()
         observer.join(timeout=5)
-        periodic.cancel()
-        try:
-            await periodic
-        except asyncio.CancelledError:
-            pass
+        if observer.is_alive():
+            log.error(
+                "Clippings observer thread did not stop within 5s — "
+                "leaking the filesystem watch on %s", clippings_dir,
+            )
+        if periodic is not None:
+            periodic.cancel()
+            try:
+                await periodic
+            except asyncio.CancelledError:
+                pass
