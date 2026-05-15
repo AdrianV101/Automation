@@ -15,6 +15,21 @@ def _fmt_time(seconds: float) -> str:
     return f"{m:02d}:{s:02d}"
 
 
+# Characters that, unquoted, would corrupt a YAML flow-sequence entry.
+_YAML_UNSAFE = set(",:[]{}\"'#&*!|>%@`")
+
+
+def _yaml_seq_item(name: str) -> str:
+    """Render `name` as one YAML flow-sequence item: bare when safe,
+    double-quoted (with escaping) when it contains YAML-significant
+    characters or surrounding whitespace. Keeps normal names (e.g.
+    'Speaker 1', 'Alice') byte-identical to the previous bare output."""
+    if name and name == name.strip() and not (_YAML_UNSAFE & set(name)):
+        return name
+    escaped = name.replace("\\", "\\\\").replace('"', '\\"')
+    return f'"{escaped}"'
+
+
 def write_raw_transcript(
     transcript: TranscriptData,
     pkm_vault_path: Path,
@@ -38,6 +53,7 @@ def write_raw_transcript(
         duration_min = f"{transcript.duration_seconds / 60:.0f} minutes"
 
     speakers_str = ", ".join(transcript.speakers)
+    speakers_fm = ", ".join(_yaml_seq_item(s) for s in transcript.speakers)
     unresolved_line = "speakers_unresolved: true\n" if speakers_unresolved else ""
     if transcript.segments:
         segments_md = "\n".join(
@@ -53,7 +69,7 @@ type: transcript
 source: {source}
 recorded_at: {transcript.recorded_at}
 duration: {duration_min}
-speakers: [{speakers_str}]
+speakers: [{speakers_fm}]
 job_id: {transcript.job_id}
 {unresolved_line}tags: [{tags_str}]
 ---

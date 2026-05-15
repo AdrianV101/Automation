@@ -62,3 +62,37 @@ def test_flag_present_when_set(tmp_path) -> None:
     p = write_raw_transcript(_td(), tmp_path, source="plaud-email",
                              speakers_unresolved=True)
     assert "speakers_unresolved: true" in p.read_text()
+
+
+import yaml  # pyyaml is a daemon dep; available in the daemon test env
+
+
+def _td_speakers(speakers):
+    from pkm import TranscriptData, TranscriptSegment
+    return TranscriptData(
+        job_id="m1", recorded_at="2026-05-15T10:00:00+00:00",
+        duration_seconds=60.0, speakers=speakers,
+        segments=[TranscriptSegment(0.0, 1.0, speakers[0], "hi")],
+        full_text="hi",
+    )
+
+
+def _frontmatter(path):
+    text = path.read_text()
+    assert text.startswith("---\n")
+    end = text.index("\n---\n", 4)
+    return yaml.safe_load(text[4:end + 1])
+
+
+def test_normal_names_stay_bare(tmp_path):
+    from pkm import write_raw_transcript
+    p = write_raw_transcript(_td_speakers(["Speaker 1", "Alice"]), tmp_path, source="plaud-email")
+    assert "speakers: [Speaker 1, Alice]" in p.read_text()  # byte-identical to before
+
+
+def test_yaml_hostile_names_do_not_break_frontmatter(tmp_path):
+    from pkm import write_raw_transcript
+    hostile = ["Alice, Bob", "weird]name", "key: val", 'has"quote', "  spaced  "]
+    p = write_raw_transcript(_td_speakers(hostile), tmp_path, source="plaud-email")
+    fm = _frontmatter(p)  # must parse without error
+    assert fm["speakers"] == hostile  # round-trips exactly
