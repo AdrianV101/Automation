@@ -60,7 +60,10 @@ async def test_valid_email_reaches_process_recording(
     process_recording_spy: AsyncMock,
 ) -> None:
     raw = _load("plaud_real_01.eml")
-    with patch("automation_daemon.orchestrator.send_message", new_callable=AsyncMock):
+    with (
+        patch("automation_daemon.orchestrator.send_message", new_callable=AsyncMock),
+        patch("automation_daemon.orchestrator.gate_or_pass", new=AsyncMock(return_value=False)),
+    ):
         await handle_incoming_email(
             uid=1, raw=raw,
             email_db=email_db, config=config, bot=bot, pipeline_thread=42,
@@ -168,7 +171,10 @@ async def test_duplicate_message_id_skipped(
     process_recording_spy: AsyncMock,
 ) -> None:
     raw = _load("plaud_real_01.eml")
-    with patch("automation_daemon.orchestrator.send_message", new_callable=AsyncMock):
+    with (
+        patch("automation_daemon.orchestrator.send_message", new_callable=AsyncMock),
+        patch("automation_daemon.orchestrator.gate_or_pass", new=AsyncMock(return_value=False)),
+    ):
         await handle_incoming_email(
             uid=6, raw=raw,
             email_db=email_db, config=config, bot=bot, pipeline_thread=42,
@@ -189,7 +195,10 @@ async def test_process_recording_exception_marks_row_failed(
 ) -> None:
     raw = _load("plaud_real_01.eml")
     boom = AsyncMock(side_effect=RuntimeError("extraction blew up"))
-    with patch("automation_daemon.orchestrator.send_message", new_callable=AsyncMock):
+    with (
+        patch("automation_daemon.orchestrator.send_message", new_callable=AsyncMock),
+        patch("automation_daemon.orchestrator.gate_or_pass", new=AsyncMock(return_value=False)),
+    ):
         await handle_incoming_email(
             uid=10, raw=raw,
             email_db=email_db, config=config, bot=bot, pipeline_thread=42,

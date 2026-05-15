@@ -306,3 +306,34 @@ async def test_gate_holds_and_prompts_when_unknown(tmp_path) -> None:
     assert row["unknown_speakers"] == ["Speaker 1", "Speaker 2"]
     assert row["prompt_message_ids"] == [101, 102]
     assert (await db.get_event("m1"))["status"] == "awaiting_speaker_labels"
+
+
+# ---------------------------------------------------------------------------
+# Task E3: gate wired into _process_parsed_email
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_parsed_email_gated_does_not_route(tmp_path) -> None:
+    """When the gate holds, process_recording must NOT be called."""
+    db = EmailIngestStateDB(tmp_path / "s.db"); await db.init_db()
+    cfg = DaemonConfig(telegram_bot_token="t", telegram_chat_id="c", pkm_vault_path=tmp_path)
+    bot = BotConfig(bot_token="t", chat_id="c")
+    called = AsyncMock()
+    # Extra patch: verify_dkim runs before recording_job_from_email on a bare
+    # object(); patching it to return a passing result so the test reaches the
+    # gate without AttributeError on object().get_all().
+    from email_ingest.auth import DkimPass
+    with (
+        patch("automation_daemon.orchestrator.verify_dkim",
+              return_value=DkimPass(signing_domain="example.com", authserv_id="mx")),
+        patch("automation_daemon.orchestrator.gate_or_pass",
+              new=AsyncMock(return_value=True)),
+        patch("automation_daemon.orchestrator.recording_job_from_email",
+              return_value=_job_gate(["Speaker 1"])),
+    ):
+        from automation_daemon.orchestrator import _process_parsed_email
+        await _process_parsed_email(
+            object(), "m1", email_db=db, config=cfg, bot=bot,
+            pipeline_thread=None, process_recording_fn=called,
+        )
+    called.assert_not_awaited()

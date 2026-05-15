@@ -269,6 +269,11 @@ async def _process_parsed_email(
         await email_db.update_status(message_id, "dropped", error="not-for-us")
         return
 
+    if await gate_or_pass(
+        job, config, email_db, bot, thread_id=pipeline_thread,
+    ):
+        return
+
     tracker = EmailIngestStatusTracker(email_db, message_id)
     await process_recording_fn(job, config, status=tracker)
 
