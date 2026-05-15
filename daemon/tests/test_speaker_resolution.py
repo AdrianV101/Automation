@@ -57,3 +57,28 @@ def test_encode_decode_roundtrip(idx: int, choice: str) -> None:
 def test_decode_rejects_foreign_token() -> None:
     assert decode_choice("nr:5:foo") is None
     assert decode_choice("garbage") is None
+
+
+from automation_daemon.speaker_resolution import apply_speaker_names
+
+
+def test_apply_substitutes_speakers_and_segments() -> None:
+    td = _td(["Speaker 1", "Speaker 2"])
+    out = apply_speaker_names(td, {"Speaker 1": "Alice", "Speaker 2": "Bob"})
+    assert out.speakers == ["Alice", "Bob"]
+    assert [s.speaker for s in out.segments] == ["Alice", "Bob"]
+    # original is not mutated
+    assert td.speakers == ["Speaker 1", "Speaker 2"]
+
+
+def test_apply_leaves_unmapped_labels_unchanged() -> None:
+    td = _td(["Speaker 1", "Alice"])
+    out = apply_speaker_names(td, {"Speaker 1": "Bob"})
+    assert out.speakers == ["Bob", "Alice"]
+
+
+def test_apply_empty_map_is_identity_copy() -> None:
+    td = _td(["Speaker 1"])
+    out = apply_speaker_names(td, {})
+    assert out.speakers == ["Speaker 1"]
+    assert out is not td

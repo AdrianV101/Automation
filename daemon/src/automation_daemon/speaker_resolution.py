@@ -8,8 +8,9 @@ them). See ADR-010 (speaker-resolution-gate).
 from __future__ import annotations
 
 import re
+from dataclasses import replace
 
-from pkm import TranscriptData
+from pkm import TranscriptData, TranscriptSegment
 
 _GENERIC_SPEAKER = re.compile(r"^speaker[ _]?\d+$", re.IGNORECASE)
 
@@ -49,3 +50,16 @@ def decode_choice(data: str) -> tuple[int, str] | None:
     except ValueError:
         return None
     return idx, parts[2]
+
+
+def apply_speaker_names(
+    transcript: TranscriptData, name_map: dict[str, str],
+) -> TranscriptData:
+    """Return a copy of `transcript` with speaker labels remapped.
+    Labels absent from `name_map` are left as-is. Input is not mutated."""
+    new_segments = [
+        replace(s, speaker=name_map.get(s.speaker, s.speaker))
+        for s in transcript.segments
+    ]
+    new_speakers = [name_map.get(sp, sp) for sp in transcript.speakers]
+    return replace(transcript, speakers=new_speakers, segments=new_segments)
