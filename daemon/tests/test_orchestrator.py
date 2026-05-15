@@ -251,3 +251,58 @@ class TestResolveNewsDailyTz:
         # Don't pin to a specific zone — host-dependent. Just confirm we got
         # something callable.
         assert tz is not None
+
+
+# ---------------------------------------------------------------------------
+# Task E2: gate_or_pass tests
+# ---------------------------------------------------------------------------
+
+import pytest
+from unittest.mock import AsyncMock, patch
+
+from automation_daemon.config import DaemonConfig
+from automation_daemon.models import RecordingJob
+from automation_daemon.orchestrator import gate_or_pass
+from email_ingest.state import EmailIngestStateDB
+from pkm import TranscriptData, TranscriptSegment
+from telegram_interface import BotConfig
+
+
+def _job_gate(speakers: list[str]) -> RecordingJob:
+    return RecordingJob(
+        id="m1", recorded_at="2026-05-15T10:00:00+00:00", filename="Standup",
+        source="plaud-email",
+        transcript_data=TranscriptData(
+            "m1", "2026-05-15T10:00:00+00:00", 1.0, speakers,
+            [TranscriptSegment(0.0, 1.0, sp, f"line {sp}") for sp in speakers],
+            "x"),
+        duration_ms=1000, source_metadata={},
+    )
+
+
+@pytest.mark.asyncio
+async def test_gate_passes_when_all_named(tmp_path) -> None:
+    db = EmailIngestStateDB(tmp_path / "s.db"); await db.init_db()
+    await db.insert_event("m1", uid=1)
+    cfg = DaemonConfig(telegram_bot_token="t", telegram_chat_id="c", pkm_vault_path=tmp_path)
+    bot = BotConfig(bot_token="t", chat_id="c")
+    gated = await gate_or_pass(_job_gate(["Alice", "Bob"]), cfg, db, bot, thread_id=None)
+    assert gated is False
+    assert await db.get_pending("m1") is None
+
+
+@pytest.mark.asyncio
+async def test_gate_holds_and_prompts_when_unknown(tmp_path) -> None:
+    db = EmailIngestStateDB(tmp_path / "s.db"); await db.init_db()
+    await db.insert_event("m1", uid=1)
+    cfg = DaemonConfig(telegram_bot_token="t", telegram_chat_id="c", pkm_vault_path=tmp_path)
+    bot = BotConfig(bot_token="t", chat_id="c")
+    with patch("automation_daemon.orchestrator.send_speaker_prompt",
+               new=AsyncMock(side_effect=[101, 102])) as sp:
+        gated = await gate_or_pass(_job_gate(["Speaker 1", "Speaker 2"]), cfg, db, bot, thread_id=9)
+    assert gated is True
+    assert sp.await_count == 2
+    row = await db.get_pending("m1")
+    assert row["unknown_speakers"] == ["Speaker 1", "Speaker 2"]
+    assert row["prompt_message_ids"] == [101, 102]
+    assert (await db.get_event("m1"))["status"] == "awaiting_speaker_labels"

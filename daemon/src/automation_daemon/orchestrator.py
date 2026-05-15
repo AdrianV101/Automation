@@ -24,7 +24,9 @@ from .hacker_news_adapter import run_scheduler_loop
 from .hn_state import HackerNewsStateDB
 from .supervisor import supervise
 from .models import RecordingJob, StatusTracker
-from .notifications import format_file_list
+from .notifications import format_file_list, send_speaker_prompt
+from .people import load_people
+from .speaker_resolution import unrecognised_speakers, serialize_job
 from .news_email_adapter import handle_news_email
 from .pipeline import process_recording
 from .plaud_email_adapter import MalformedPlaudEmailError, recording_job_from_email
@@ -167,6 +169,47 @@ async def handle_incoming_email(
             )
         except Exception:
             log.exception("Failed to mark %s failed after crash", message_id)
+
+
+def _speaker_snippet(job: RecordingJob, label: str) -> str:
+    for seg in job.transcript_data.segments:
+        if seg.speaker == label and seg.text.strip():
+            return seg.text
+    return "(no sample available)"
+
+
+async def gate_or_pass(
+    job: RecordingJob,
+    config: DaemonConfig,
+    email_db: EmailIngestStateDB,
+    bot: BotConfig,
+    *,
+    thread_id: int | None,
+) -> bool:
+    """If the transcript has unrecognised speakers, persist a pending
+    record, send one Telegram prompt per unknown speaker, mark the event
+    `awaiting_speaker_labels`, and return True (caller must NOT route).
+    Otherwise return False (caller routes normally)."""
+    unknown = unrecognised_speakers(job.transcript_data)
+    if not unknown:
+        return False
+    await email_db.insert_pending(
+        job.id, payload=serialize_job(job), unknown_speakers=unknown,
+    )
+    known = [p.name for p in load_people(config.pkm_vault_path)]
+    prompt_ids: list[int] = []
+    for idx, label in enumerate(unknown):
+        mid = await send_speaker_prompt(
+            speaker_idx=idx, speaker_label=label,
+            recording_name=job.filename,
+            sample_text=_speaker_snippet(job, label),
+            tg=bot, known_names=known, thread_id=thread_id,
+        )
+        if mid is not None:
+            prompt_ids.append(mid)
+    await email_db.set_pending_prompt_ids(job.id, prompt_ids)
+    await email_db.update_status(job.id, "awaiting_speaker_labels")
+    return True
 
 
 async def _process_parsed_email(
