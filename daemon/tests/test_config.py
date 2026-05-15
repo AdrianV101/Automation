@@ -211,3 +211,43 @@ class TestNewsPersonalDigestConfig:
                 pkm_vault_path=Path("/tmp"),
                 news_personal_digest_feedback_window_days=0,
             )
+
+
+class TestNewsResearchConfig:
+    def test_defaults_when_unset(self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+        _set_required_env(monkeypatch, tmp_path)
+        cfg = DaemonConfig.from_env()
+        assert cfg.news_research_enabled is False
+        assert cfg.news_research_model == "claude-sonnet-4-6"
+        assert cfg.news_research_max_items == 3
+        assert cfg.news_research_max_turns == 60
+
+    def test_reads_env_vars(self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+        _set_required_env(monkeypatch, tmp_path)
+        monkeypatch.setenv("NEWS_RESEARCH_ENABLED", "true")
+        monkeypatch.setenv("NEWS_RESEARCH_MODEL", "claude-opus-4-7")
+        monkeypatch.setenv("NEWS_RESEARCH_MAX_ITEMS", "5")
+        monkeypatch.setenv("NEWS_RESEARCH_MAX_TURNS", "120")
+        cfg = DaemonConfig.from_env()
+        assert cfg.news_research_enabled is True
+        assert cfg.news_research_model == "claude-opus-4-7"
+        assert cfg.news_research_max_items == 5
+        assert cfg.news_research_max_turns == 120
+
+    def test_max_items_must_be_positive(self) -> None:
+        with pytest.raises(ValueError, match="news_research_max_items"):
+            DaemonConfig(
+                telegram_bot_token="x",
+                telegram_chat_id="y",
+                pkm_vault_path=Path("/tmp"),
+                news_research_max_items=0,
+            )
+
+    def test_max_turns_must_be_positive(self) -> None:
+        with pytest.raises(ValueError, match="news_research_max_turns"):
+            DaemonConfig(
+                telegram_bot_token="x",
+                telegram_chat_id="y",
+                pkm_vault_path=Path("/tmp"),
+                news_research_max_turns=0,
+            )
