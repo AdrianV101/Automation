@@ -36,3 +36,16 @@ def test_states_bounded_depth(skill_text: str) -> None:
     # follow links unboundedly.
     assert "at most 3 additional links per item" in skill_text
     assert "git clone" in skill_text  # explicitly forbidden
+
+
+_DIGEST_SKILL = (
+    Path(__file__).resolve().parents[2]
+    / ".claude" / "skills" / "news-personal-digest" / "SKILL.md"
+)
+
+
+def test_digest_skill_mentions_deep_dive() -> None:
+    text = _DIGEST_SKILL.read_text()
+    assert "Deep dive" in text, (
+        "digest skill must tell the agent to surface research deep-dives"
+    )
