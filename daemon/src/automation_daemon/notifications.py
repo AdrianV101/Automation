@@ -147,83 +147,61 @@ def build_speaker_keyboard(
     return {"inline_keyboard": rows}
 
 
-# Compatibility shim — send_speaker_labeling_prompt (dead code, replaced in C2)
-# still calls _build_inline_keyboard; keep a minimal alias so its tests don't
-# break between C1 and C2 commits.
-def _build_inline_keyboard(cluster_id: str, known_names: list[str] | None) -> dict:  # noqa: F811
-    return build_speaker_keyboard(speaker_idx=0, known_names=known_names)
-
-
-async def send_speaker_labeling_prompt(
-    cluster_id: str,
+async def send_speaker_prompt(
+    *,
+    speaker_idx: int,
+    speaker_label: str,
     recording_name: str,
     sample_text: str,
     tg: BotConfig,
-    *,
-    voice_clip_path: Path | None = None,
     known_names: list[str] | None = None,
     thread_id: int | None = None,
 ) -> int | None:
-    """Send labeling prompt with inline keyboard. Returns message_id.
-
-    If voice_clip_path is provided, sends a voice message with caption.
-    Otherwise sends a text message with inline keyboard.
-    """
+    """Prompt to identify one unrecognised Plaud speaker. Returns the
+    Telegram message_id of the prompt (tracked so the callback handler can
+    map a tap back to the held transcript)."""
+    snippet = sample_text.strip().replace("\n", " ")
+    if len(snippet) > 280:
+        snippet = snippet[:280] + "…"
     text = (
-        "\U0001f50a Unknown Speaker Detected\n\n"
+        "\U0001f50a Unrecognised speaker in a new Plaud recording\n\n"
         f"Recording: {recording_name}\n"
-        f"Cluster: {cluster_id}\n\n"
-        f"Sample of what they said:\n"
-        f"\"{sample_text}\"\n\n"
-        "Tap a name below, or tap \"Other...\" to type a name."
+        f"Plaud label: {speaker_label}\n\n"
+        f"What they said:\n\u201c{snippet}\u201d\n\n"
+        "Tap who this is (or \u201cOther\u2026\u201d to type a name). "
+        "Also label them in the Plaud app so future recordings "
+        "recognise them automatically."
     )
-    keyboard = _build_inline_keyboard(cluster_id, known_names)
-
-    async with httpx.AsyncClient(timeout=15.0) as client:
-        if voice_clip_path and voice_clip_path.exists():
-            # sendVoice with multipart form data
-            url = f"{TELEGRAM_API}/bot{tg.bot_token}/sendVoice"
-            data: dict = {
-                "chat_id": tg.chat_id,
-                "caption": text,
-                "reply_markup": json_mod.dumps(keyboard),
-            }
-            if thread_id is not None:
-                data["message_thread_id"] = str(thread_id)
-            with open(voice_clip_path, "rb") as f:
-                resp = await client.post(url, data=data,
-                    files={"voice": (voice_clip_path.name, f, "audio/ogg")})
-        else:
-            # sendMessage with inline keyboard
-            url = f"{TELEGRAM_API}/bot{tg.bot_token}/sendMessage"
-            payload: dict = {
-                "chat_id": tg.chat_id,
-                "text": text,
-                "reply_markup": keyboard,
-            }
-            if thread_id is not None:
-                payload["message_thread_id"] = thread_id
-            resp = await client.post(url, json=payload)
-
-        resp.raise_for_status()
-        data = resp.json()
-        return data.get("result", {}).get("message_id")
-
-
-async def send_speaker_labeled_confirmation(
-    name: str, tg: BotConfig,
-) -> int | None:
-    """Confirm that a speaker profile was created/updated. Returns message_id."""
-    text = f"\u2705 Speaker profile created for \"{name}\""
+    keyboard = build_speaker_keyboard(
+        speaker_idx=speaker_idx, known_names=known_names,
+    )
     url = f"{TELEGRAM_API}/bot{tg.bot_token}/sendMessage"
-    async with httpx.AsyncClient(timeout=10.0) as client:
-        resp = await client.post(url, json={
-            "chat_id": tg.chat_id,
-            "text": text,
-        })
+    payload: dict = {"chat_id": tg.chat_id, "text": text, "reply_markup": keyboard}
+    if thread_id is not None:
+        payload["message_thread_id"] = thread_id
+    async with httpx.AsyncClient(timeout=15.0) as client:
+        resp = await client.post(url, json=payload)
         resp.raise_for_status()
-        data = resp.json()
-        return data.get("result", {}).get("message_id")
+        return resp.json().get("result", {}).get("message_id")
+
+
+async def send_speaker_resolution_complete(
+    recording_name: str, name_map: dict[str, str], tg: BotConfig,
+    *, thread_id: int | None = None,
+) -> None:
+    """Confirm all speakers resolved; the transcript will now route."""
+    mapped = ", ".join(f"{k} \u2192 {v}" for k, v in name_map.items()) or "(none)"
+    text = (
+        f"\u2705 Speakers resolved for \u201c{recording_name}\u201d: {mapped}\n"
+        "Routing to PKM now."
+    )
+    url = f"{TELEGRAM_API}/bot{tg.bot_token}/sendMessage"
+    payload: dict = {"chat_id": tg.chat_id, "text": text}
+    if thread_id is not None:
+        payload["message_thread_id"] = thread_id
+    async with httpx.AsyncClient(timeout=10.0) as client:
+        resp = await client.post(url, json=payload)
+        resp.raise_for_status()
 
 
 async def answer_callback_query(
