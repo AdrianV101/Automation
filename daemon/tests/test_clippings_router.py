@@ -34,3 +34,15 @@ def test_parse_missing_sentinel_is_failed():
 def test_parse_malformed_routed_is_failed():
     o = parse_sentinel("ROUTED | only-one-field")
     assert o.kind == "failed"
+
+
+from automation_daemon.tools import TOOLS_CLIPPINGS, as_list
+
+
+def test_tools_clippings_has_move_and_link_and_skill():
+    tools = as_list(TOOLS_CLIPPINGS)
+    joined = " ".join(tools)
+    assert "vault_move" in joined
+    assert "vault_add_links" in joined
+    assert "vault_read" in joined
+    assert "Skill" in tools  # agent must be able to load the clippings-router skill
