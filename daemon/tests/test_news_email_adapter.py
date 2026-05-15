@@ -10,7 +10,8 @@ import yaml
 from email_ingest import MalformedEmailError, NewsIngestStateDB, parse_email
 from news_pipeline import NewsItem
 from automation_daemon.news_email_adapter import (
-    _classify_source_type, email_to_news_item, handle_news_email, render_body,
+    _classify_source_type, _strip_html_noise, email_to_news_item,
+    handle_news_email, render_body,
 )
 
 FIXTURES = Path(__file__).parent / "fixtures" / "news"
@@ -59,6 +60,30 @@ def test_render_body_handles_substack_nested_tracking_pixels():
     md = render_body(_load("substack_nested_img.eml"))
     assert "eotrx.substackcdn.com" not in md
     assert "email.mg-d0.substack.com" not in md
+
+
+@pytest.mark.parametrize("width", ["1px", "auto"])
+def test_strip_html_noise_keeps_img_with_non_integer_dimension(width):
+    """A non-numeric width/height (e.g. "1px", "auto") makes int() raise
+    ValueError; the except branch defaults dimensions to 0x0 so the image
+    is not mistaken for a 1x1 tracking pixel and is preserved."""
+    html = (
+        f'<html><body><img src="https://example.com/banner.png" '
+        f'width="{width}"></body></html>'
+    )
+    out = _strip_html_noise(html)
+    assert "https://example.com/banner.png" in out
+
+
+def test_strip_html_noise_still_strips_genuine_one_by_one_pixel():
+    """Sanity guard: an integer 1x1 image is still decomposed, so the
+    ValueError-branch test above is meaningfully distinct."""
+    html = (
+        '<html><body><img src="https://track.example/p.gif" '
+        'width="1" height="1"></body></html>'
+    )
+    out = _strip_html_noise(html)
+    assert "track.example" not in out
 
 
 def test_render_body_no_body_raises_malformed():
