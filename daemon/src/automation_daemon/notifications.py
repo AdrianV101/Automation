@@ -10,6 +10,8 @@ import httpx
 
 from telegram_interface import BotConfig, TELEGRAM_API, send_message, send_message_return_id
 
+from .speaker_resolution import encode_choice, OTHER, IGNORE
+
 if TYPE_CHECKING:
     from .extraction import AgentRoutingResult
 
@@ -117,30 +119,39 @@ async def send_transcription_error(
     await send_message(text, tg, thread_id=thread_id)
 
 
-def _build_inline_keyboard(
-    cluster_id: str, known_names: list[str] | None,
-) -> dict:
-    """Build an InlineKeyboardMarkup for speaker labeling."""
-    rows: list[list[dict]] = []
+# Telegram callback_data hard limit is 64 bytes; reserve room for the
+# "sr|<idx>|" prefix and only send a name short enough to fit.
+_MAX_CALLBACK_BYTES = 64
 
+
+def build_speaker_keyboard(
+    *, speaker_idx: int, known_names: list[str] | None,
+) -> dict:
+    """InlineKeyboardMarkup for one unknown speaker. callback_data is an
+    `sr|<idx>|<choice>` token (see speaker_resolution.encode_choice)."""
+    rows: list[list[dict]] = []
     if known_names:
-        # Name buttons in rows of 2
         for i in range(0, len(known_names), 2):
             row = []
             for name in known_names[i:i + 2]:
-                row.append({
-                    "text": name,
-                    "callback_data": f"{cluster_id}:{name}",
-                })
+                token = encode_choice(speaker_idx, name)
+                while len(token.encode()) > _MAX_CALLBACK_BYTES and name:
+                    name = name[:-1]
+                    token = encode_choice(speaker_idx, name)
+                row.append({"text": name or "(name)", "callback_data": token})
             rows.append(row)
-
-    # Always add Other + Ignore as last row
     rows.append([
-        {"text": "Other...", "callback_data": f"{cluster_id}:__other__"},
-        {"text": "Ignore", "callback_data": f"{cluster_id}:__ignore__"},
+        {"text": "Other...", "callback_data": encode_choice(speaker_idx, OTHER)},
+        {"text": "Not sure", "callback_data": encode_choice(speaker_idx, IGNORE)},
     ])
-
     return {"inline_keyboard": rows}
+
+
+# Compatibility shim — send_speaker_labeling_prompt (dead code, replaced in C2)
+# still calls _build_inline_keyboard; keep a minimal alias so its tests don't
+# break between C1 and C2 commits.
+def _build_inline_keyboard(cluster_id: str, known_names: list[str] | None) -> dict:  # noqa: F811
+    return build_speaker_keyboard(speaker_idx=0, known_names=known_names)
 
 
 async def send_speaker_labeling_prompt(
