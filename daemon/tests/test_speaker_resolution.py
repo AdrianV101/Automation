@@ -32,3 +32,28 @@ def test_mixed_only_returns_unknowns() -> None:
 
 def test_case_insensitive_and_preserves_order() -> None:
     assert unrecognised_speakers(_td(["speaker 5", "Carol", "Speaker 1"])) == ["speaker 5", "Speaker 1"]
+
+
+import pytest
+
+from automation_daemon.speaker_resolution import (
+    SPEAKER_CALLBACK_PREFIX, encode_choice, decode_choice,
+)
+
+
+def test_prefix_is_distinct_from_digest() -> None:
+    assert SPEAKER_CALLBACK_PREFIX == "sr"
+    assert not SPEAKER_CALLBACK_PREFIX.startswith("nr")
+
+
+@pytest.mark.parametrize("idx,choice", [(0, "Alice"), (2, "__other__"), (1, "__ignore__")])
+def test_encode_decode_roundtrip(idx: int, choice: str) -> None:
+    token = encode_choice(idx, choice)
+    assert token.startswith("sr|")
+    assert len(token.encode()) <= 64
+    assert decode_choice(token) == (idx, choice)
+
+
+def test_decode_rejects_foreign_token() -> None:
+    assert decode_choice("nr:5:foo") is None
+    assert decode_choice("garbage") is None
