@@ -2,11 +2,16 @@
 
 The loop is ``while True`` with no exit, so every test patches
 ``asyncio.sleep`` with a side effect that returns ``None`` for the first N
-calls and then raises a sentinel ``_StopLoop``. Because the sleep call sits
-*outside* the loop's ``try/except``, the sentinel propagates straight out of
+calls and then raises a sentinel ``_StopLoop``. The sleep call sits *outside*
+the loop's ``try/except``, so the sentinel propagates straight out of
 ``run_scheduler_loop`` and ``_drive_loop`` swallows it — giving precise,
-timing-free control over how many full iterations run. No real sleeping ever
-happens (the AsyncMock never awaits ``asyncio.sleep``).
+timing-free control over how many full iterations run. ``_StopLoop`` inherits
+``BaseException`` (not ``Exception``) so that even if production's
+``except Exception`` poll guard ever expanded to cover the sleep, the
+sentinel could never be absorbed by the code under test and mis-reported as
+a poll-cycle crash — it always terminates the loop cleanly via
+``_drive_loop``. No real sleeping ever happens (the AsyncMock never awaits
+``asyncio.sleep``).
 """
 from __future__ import annotations
 
@@ -21,8 +26,19 @@ import pytest
 from audio_ingest.hacker_news_adapter import PollSummary, run_scheduler_loop
 
 
-class _StopLoop(Exception):
-    """Sentinel raised from the patched ``asyncio.sleep`` to end the loop."""
+class _StopLoop(BaseException):
+    """Sentinel raised from the patched ``asyncio.sleep`` to end the loop.
+
+    Inherits ``BaseException``, not ``Exception``, on purpose: production
+    wraps ``run_poll_cycle`` in a bare ``except Exception``. An
+    ``Exception``-based sentinel that ever reached that guard would be
+    caught, logged as a poll crash, and re-raised — quietly contaminating
+    the loop tests' meaning. ``BaseException`` bypasses ``except Exception``
+    entirely, so the sentinel can only ever do one thing: unwind cleanly to
+    ``_drive_loop``'s ``except _StopLoop`` (catch-by-name works for any
+    ``BaseException``). It is structurally incapable of being mistaken for a
+    poll-cycle failure.
+    """
 
 
 def _sleep_stopping_after(n: int) -> AsyncMock:
@@ -91,7 +107,7 @@ async def test_full_iteration_polls_then_notifies(tmp_path):
         "audio_ingest.hacker_news_adapter.asyncio.sleep", new=sleep_mock,
     ), patch(
         "audio_ingest.hacker_news_adapter.httpx.AsyncClient",
-        return_value=_fake_http_cm(),
+        side_effect=lambda *a, **k: _fake_http_cm(),
     ), patch(
         "audio_ingest.hacker_news_adapter.run_poll_cycle", new=fake_poll,
     ):
@@ -120,7 +136,7 @@ async def test_poll_cycle_exception_propagates(tmp_path, caplog):
         new=_sleep_stopping_after(5),
     ), patch(
         "audio_ingest.hacker_news_adapter.httpx.AsyncClient",
-        return_value=_fake_http_cm(),
+        side_effect=lambda *a, **k: _fake_http_cm(),
     ), patch(
         "audio_ingest.hacker_news_adapter.run_poll_cycle", new=fake_poll,
     ):
@@ -129,7 +145,10 @@ async def test_poll_cycle_exception_propagates(tmp_path, caplog):
 
     fake_poll.assert_awaited_once()
     notifier.assert_not_awaited()
-    assert "HN poll cycle crashed; supervisor will restart" in caplog.text
+    # Exactly once: pins that the crash log comes from the real RuntimeError,
+    # not from a _StopLoop accidentally caught by production's except Exception
+    # (which would also log this line and silently invalidate the test).
+    assert caplog.text.count("HN poll cycle crashed; supervisor will restart") == 1
 
 
 @pytest.mark.asyncio
@@ -143,7 +162,7 @@ async def test_telegram_failure_swallowed_loop_continues(tmp_path, caplog):
         new=_sleep_stopping_after(2),  # allow two full iterations
     ), patch(
         "audio_ingest.hacker_news_adapter.httpx.AsyncClient",
-        return_value=_fake_http_cm(),
+        side_effect=lambda *a, **k: _fake_http_cm(),
     ), patch(
         "audio_ingest.hacker_news_adapter.run_poll_cycle", new=fake_poll,
     ):
@@ -179,7 +198,7 @@ async def test_date_folder_uses_configured_tz_not_utc(tmp_path):
         new=_sleep_stopping_after(1),
     ), patch(
         "audio_ingest.hacker_news_adapter.httpx.AsyncClient",
-        return_value=_fake_http_cm(),
+        side_effect=lambda *a, **k: _fake_http_cm(),
     ), patch(
         "audio_ingest.hacker_news_adapter.run_poll_cycle", new=fake_poll,
     ), patch(
