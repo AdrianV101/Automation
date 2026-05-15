@@ -39,9 +39,10 @@ class AgentRunInput:
 class AgentRunOutput:
     """Structured summary from the research agent.
 
-    Pair invariant: success=True implies error is None; success=False
-    requires a non-None error. Mirrors AgentRunOutput in the master/digest
-    runners and blocks the `error or "fallback"` silent-substitution mode.
+    Enforces the success/error pair invariant: success implies error is None;
+    failure requires a non-None error. This mirrors `AgentRoutingResult` in
+    extraction.py and prevents the silent-failure mode where the runner reads
+    `output.error or "fallback"` and silently substitutes when error is None.
     """
     success: bool
     items_researched: int = 0
@@ -80,6 +81,11 @@ _NOTES_HEADING_RE = re.compile(r"^##\s+Notes\s*$", re.MULTILINE)
 
 
 def _extract_notes_section(master_text: str) -> str:
+    """Return the substring from '## Notes' to EOF, or '' if no such heading.
+
+    Whitespace around the heading is preserved verbatim — the SHA must change
+    if a single byte changes inside (or just before) the section.
+    """
     match = _NOTES_HEADING_RE.search(master_text)
     if not match:
         return ""
@@ -152,6 +158,7 @@ async def _run_for_date_inner(
     run_agent: AgentRunFn,
     recent_ratings: RatingsFn,
 ) -> None:
+    """The body of run_for_date, wrapped above for stuck-row defence."""
     master_path = _master_doc_path(config.vault_root, target_date)
     if not master_path.is_file():
         log.info(
