@@ -229,6 +229,16 @@ class TestParseAgentSummary:
         assert out.success is True
         assert out.error is None
 
+    def test_invalid_json_block_is_failure(self) -> None:
+        out = _parse_agent_summary(
+            ['```json\n{bad: json,}\n```'],
+            turns_used=3, cost_usd=0.1,
+        )
+        assert out.success is False
+        assert "invalid JSON summary" in out.error
+        assert out.turns_used == 3
+        assert out.cost_usd == 0.1
+
 
 @pytest.mark.asyncio
 async def test_run_agent_via_agent_infra_captures_cost() -> None:
@@ -267,3 +277,41 @@ async def test_run_agent_via_agent_infra_captures_cost() -> None:
     assert out.items_researched == 2
     assert out.turns_used == 7
     assert out.cost_usd == pytest.approx(0.27)
+
+
+@pytest.mark.asyncio
+async def test_run_agent_via_agent_infra_error_branch_keeps_cost() -> None:
+    from agent_infra import AgentLoopResult
+    from agent_infra.runner import TraceEvent
+
+    async def fake_streaming(prompt, options, on_event=None):
+        if on_event is not None:
+            await on_event(TraceEvent(
+                kind="complete", turns_used=5, cost_usd=0.19,
+                files_written=[],
+            ))
+        return AgentLoopResult(
+            text_parts=["partial output"],
+            turns_used=5,
+            error="Agent hit turn limit (5 turns)",
+        )
+
+    with patch(
+        "audio_ingest.news_research.runner.run_agent_loop_streaming",
+        side_effect=fake_streaming,
+    ), patch(
+        "audio_ingest.news_research.runner.build_agent_options",
+        return_value=object(),
+    ):
+        out = await run_agent_via_agent_infra(AgentRunInput(
+            target_date=date(2026, 5, 15),
+            vault_root=Path("/tmp/vault"),
+            model="claude-sonnet-4-6",
+            max_items=3,
+            prompt="do research",
+        ))
+
+    assert out.success is False
+    assert out.error == "Agent hit turn limit (5 turns)"
+    assert out.cost_usd == pytest.approx(0.19)
+    assert out.turns_used == 5
