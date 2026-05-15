@@ -11,9 +11,9 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from agent_infra import SessionManager, SessionResponse
-from audio_ingest.command_config import build_daemon_commands
-from audio_ingest.prompts import build_ask_system_prompt, build_note_system_prompt
-from audio_ingest.tools import TOOLS_ASK, TOOLS_TASK
+from automation_daemon.command_config import build_daemon_commands
+from automation_daemon.prompts import build_ask_system_prompt, build_note_system_prompt
+from automation_daemon.tools import TOOLS_ASK, TOOLS_TASK
 from telegram_interface import BotConfig, TelegramInterface, ThreadStore
 
 

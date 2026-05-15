@@ -54,8 +54,8 @@ Automation/
 │       ├── src/email_ingest/   # IMAP IDLE + DKIM + MIME primitives
 │       ├── tests/
 │       └── pyproject.toml
-├── daemon/                     → import audio_ingest (depends on the libs)
-│   ├── src/audio_ingest/       # Thin orchestrator — wires libraries together
+├── daemon/                     → import automation_daemon (depends on the libs)
+│   ├── src/automation_daemon/       # Thin orchestrator — wires libraries together
 │   ├── tests/
 │   └── pyproject.toml          # Path deps on libs
 └── docs/
@@ -106,7 +106,7 @@ Automation/
 
 ### Daemon Modules
 
-The daemon (`audio_ingest`) is a thin orchestrator wiring the libraries together:
+The daemon (`automation_daemon`) is a thin orchestrator wiring the libraries together:
 
 | File | Role |
 |---|---|
@@ -179,7 +179,7 @@ System python lacks packages -- always use `.venv/bin/python`.
 - PKM vault path: set via `PKM_VAULT_PATH` env var
 - Email-attachment routing: Plaud emails carry the audio file + cover infographic. `plaud_email_adapter.save_plaud_attachments` writes them to `<vault>/99-Attachments/plaud/<sanitized-message-id>/...` (subdir set by `VAULT_ATTACHMENTS_SUBDIR`)
 - Extraction uses Claude Agent SDK (Opus 4.6) with Obsidian MCP -- agent autonomously routes to appropriate PKM locations
-- Extraction agent: `daemon/src/audio_ingest/extraction.py` -- spawns Claude agent with `bypassPermissions`, max 15 turns, all `mcp__obsidian-pkm__vault_*` tools
+- Extraction agent: `daemon/src/automation_daemon/extraction.py` -- spawns Claude agent with `bypassPermissions`, max 15 turns, all `mcp__obsidian-pkm__vault_*` tools
 - On agent failure, raw transcript is preserved but no extraction/routing occurs
 - PKM output: raw transcript -> `04-Archive/transcripts/`, agent routes summaries/tasks/notes to appropriate locations
 - State: `email_ingest_state.db` and `plaud_state.db` are separate SQLite files in `daemon/`. The daemon's pipeline thread (`pipeline_thread_id`), Telegram `ThreadStore`, and last IMAP UID/UIDVALIDITY persist across restarts
@@ -192,4 +192,4 @@ System python lacks packages -- always use `.venv/bin/python`.
   - Speaker embeddings are 192-dim float32 vectors, stored as BLOB (768 bytes) in `speaker_clusters` SQLite table
   - Speaker tracking in pipeline is non-fatal (try/except) -- transcription proceeds even if clustering fails
   - Audio files (OGG + WAV) are retained locally in `daemon/audio_downloads/` -- no automatic cleanup
-  - Test the worker directly: `echo '<json config>' | .venv/bin/python -m audio_ingest.whisperx_worker` -- much faster iteration than restarting the daemon
+  - Test the worker directly: `echo '<json config>' | .venv/bin/python -m automation_daemon.whisperx_worker` -- much faster iteration than restarting the daemon

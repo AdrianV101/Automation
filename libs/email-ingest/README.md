@@ -12,7 +12,7 @@ Source-agnostic primitives for email-driven ingestion pipelines.
 
 ## What's not here
 
-- No source-specific parsing (e.g. Plaud attachments). Those live in the consumer (e.g. `daemon/audio_ingest/plaud_email_adapter.py`).
+- No source-specific parsing (e.g. Plaud attachments). Those live in the consumer (e.g. `daemon/automation_daemon/plaud_email_adapter.py`).
 - No DKIM re-verification from raw RSA — we trust Proton's `Authentication-Results`.
 
 ## Usage

@@ -6,8 +6,8 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 
-from audio_ingest.config import DaemonConfig
-from audio_ingest.orchestrator import run_daemon, _setup_pipeline_topic_email
+from automation_daemon.config import DaemonConfig
+from automation_daemon.orchestrator import run_daemon, _setup_pipeline_topic_email
 from telegram_interface import BotConfig
 
 
@@ -52,15 +52,15 @@ class TestRunDaemonEmailPath:
         )
 
         with (
-            patch("audio_ingest.orchestrator.supervise", new=_fake_supervise_run_once),
-            patch("audio_ingest.orchestrator.ImapIdleListener") as MockListener,
-            patch("audio_ingest.orchestrator.EmailIngestStateDB") as MockDb,
-            patch("audio_ingest.orchestrator.TelegramInterface") as MockTii,
-            patch("audio_ingest.orchestrator.ThreadStore") as MockThreadStore,
-            patch("audio_ingest.orchestrator.SessionManager") as MockSessionMgr,
-            patch("audio_ingest.orchestrator.check_topics_enabled", new=AsyncMock(return_value=True)),
-            patch("audio_ingest.orchestrator.create_forum_topic", new=AsyncMock(return_value=42)),
-            patch("audio_ingest.orchestrator.reopen_forum_topic", new=AsyncMock(return_value=False)),
+            patch("automation_daemon.orchestrator.supervise", new=_fake_supervise_run_once),
+            patch("automation_daemon.orchestrator.ImapIdleListener") as MockListener,
+            patch("automation_daemon.orchestrator.EmailIngestStateDB") as MockDb,
+            patch("automation_daemon.orchestrator.TelegramInterface") as MockTii,
+            patch("automation_daemon.orchestrator.ThreadStore") as MockThreadStore,
+            patch("automation_daemon.orchestrator.SessionManager") as MockSessionMgr,
+            patch("automation_daemon.orchestrator.check_topics_enabled", new=AsyncMock(return_value=True)),
+            patch("automation_daemon.orchestrator.create_forum_topic", new=AsyncMock(return_value=42)),
+            patch("automation_daemon.orchestrator.reopen_forum_topic", new=AsyncMock(return_value=False)),
         ):
             mock_listener = MockListener.return_value
             mock_listener.run = AsyncMock(return_value=None)
@@ -104,15 +104,15 @@ class TestRunDaemonEmailPath:
                 pass
 
         with (
-            patch("audio_ingest.orchestrator.supervise", new=fake_supervise),
-            patch("audio_ingest.orchestrator.ImapIdleListener") as MockListener,
-            patch("audio_ingest.orchestrator.EmailIngestStateDB") as MockDb,
-            patch("audio_ingest.orchestrator.TelegramInterface") as MockTii,
-            patch("audio_ingest.orchestrator.ThreadStore") as MockThreadStore,
-            patch("audio_ingest.orchestrator.SessionManager") as MockSessionMgr,
-            patch("audio_ingest.orchestrator.check_topics_enabled", new=AsyncMock(return_value=True)),
-            patch("audio_ingest.orchestrator.create_forum_topic", new=AsyncMock(return_value=42)),
-            patch("audio_ingest.orchestrator.reopen_forum_topic", new=AsyncMock(return_value=False)),
+            patch("automation_daemon.orchestrator.supervise", new=fake_supervise),
+            patch("automation_daemon.orchestrator.ImapIdleListener") as MockListener,
+            patch("automation_daemon.orchestrator.EmailIngestStateDB") as MockDb,
+            patch("automation_daemon.orchestrator.TelegramInterface") as MockTii,
+            patch("automation_daemon.orchestrator.ThreadStore") as MockThreadStore,
+            patch("automation_daemon.orchestrator.SessionManager") as MockSessionMgr,
+            patch("automation_daemon.orchestrator.check_topics_enabled", new=AsyncMock(return_value=True)),
+            patch("automation_daemon.orchestrator.create_forum_topic", new=AsyncMock(return_value=42)),
+            patch("automation_daemon.orchestrator.reopen_forum_topic", new=AsyncMock(return_value=False)),
         ):
             MockListener.return_value.run = AsyncMock(return_value=None)
             mock_db = MockDb.return_value
@@ -139,8 +139,8 @@ class TestSetupPipelineTopicEmail:
         bot = BotConfig(bot_token="bot", chat_id="123")
 
         with (
-            patch("audio_ingest.orchestrator.reopen_forum_topic", new_callable=AsyncMock, return_value=True),
-            patch("audio_ingest.orchestrator.create_forum_topic", new_callable=AsyncMock) as mock_create,
+            patch("automation_daemon.orchestrator.reopen_forum_topic", new_callable=AsyncMock, return_value=True),
+            patch("automation_daemon.orchestrator.create_forum_topic", new_callable=AsyncMock) as mock_create,
         ):
             result = await _setup_pipeline_topic_email(email_db, bot)
 
@@ -155,8 +155,8 @@ class TestSetupPipelineTopicEmail:
         bot = BotConfig(bot_token="bot", chat_id="123")
 
         with (
-            patch("audio_ingest.orchestrator.reopen_forum_topic", new_callable=AsyncMock, return_value=False),
-            patch("audio_ingest.orchestrator.create_forum_topic", new_callable=AsyncMock, return_value=888) as mock_create,
+            patch("automation_daemon.orchestrator.reopen_forum_topic", new_callable=AsyncMock, return_value=False),
+            patch("automation_daemon.orchestrator.create_forum_topic", new_callable=AsyncMock, return_value=888) as mock_create,
         ):
             result = await _setup_pipeline_topic_email(email_db, bot)
 
@@ -172,7 +172,7 @@ class TestSetupPipelineTopicEmail:
         bot = BotConfig(bot_token="bot", chat_id="123")
 
         with (
-            patch("audio_ingest.orchestrator.create_forum_topic", new_callable=AsyncMock, return_value=999),
+            patch("automation_daemon.orchestrator.create_forum_topic", new_callable=AsyncMock, return_value=999),
         ):
             result = await _setup_pipeline_topic_email(email_db, bot)
 
@@ -185,7 +185,7 @@ class TestSetupPipelineTopicEmail:
         bot = BotConfig(bot_token="bot", chat_id="123")
 
         with (
-            patch("audio_ingest.orchestrator.create_forum_topic", new_callable=AsyncMock, side_effect=RuntimeError("fail")),
+            patch("automation_daemon.orchestrator.create_forum_topic", new_callable=AsyncMock, side_effect=RuntimeError("fail")),
         ):
             result = await _setup_pipeline_topic_email(email_db, bot)
 
@@ -197,8 +197,8 @@ async def test_run_daemon_starts_news_daily_master_when_enabled(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
 ) -> None:
     """Smoke test: news_daily_master_enabled creates the scheduler task."""
-    from audio_ingest.orchestrator import run_daemon
-    from audio_ingest.config import DaemonConfig
+    from automation_daemon.orchestrator import run_daemon
+    from automation_daemon.config import DaemonConfig
     from datetime import time
 
     cfg = DaemonConfig(
@@ -217,7 +217,7 @@ async def test_run_daemon_starts_news_daily_master_when_enabled(
         # Return immediately so TaskGroup completes.
 
     monkeypatch.setattr(
-        "audio_ingest.orchestrator._run_news_daily_master_path",
+        "automation_daemon.orchestrator._run_news_daily_master_path",
         fake_run_news_daily,
     )
     await run_daemon(cfg)
@@ -228,7 +228,7 @@ class TestResolveNewsDailyTz:
     """Coverage for the tz fallback chain: configured → localtime → UTC."""
 
     def test_explicit_iana_zone_used_when_set(self) -> None:
-        from audio_ingest.orchestrator import _resolve_news_daily_tz
+        from automation_daemon.orchestrator import _resolve_news_daily_tz
         from zoneinfo import ZoneInfo
         tz = _resolve_news_daily_tz("Europe/London")
         assert isinstance(tz, ZoneInfo)
@@ -237,7 +237,7 @@ class TestResolveNewsDailyTz:
     def test_invalid_iana_zone_falls_back_with_warning(
         self, caplog: pytest.LogCaptureFixture,
     ) -> None:
-        from audio_ingest.orchestrator import _resolve_news_daily_tz
+        from automation_daemon.orchestrator import _resolve_news_daily_tz
         import logging
         with caplog.at_level(logging.WARNING):
             tz = _resolve_news_daily_tz("Not/A_Real_Zone")
@@ -246,7 +246,7 @@ class TestResolveNewsDailyTz:
         assert any("Not/A_Real_Zone" in r.message for r in caplog.records)
 
     def test_empty_string_uses_localtime_or_utc_fallback(self) -> None:
-        from audio_ingest.orchestrator import _resolve_news_daily_tz
+        from automation_daemon.orchestrator import _resolve_news_daily_tz
         tz = _resolve_news_daily_tz("")
         # Don't pin to a specific zone — host-dependent. Just confirm we got
         # something callable.

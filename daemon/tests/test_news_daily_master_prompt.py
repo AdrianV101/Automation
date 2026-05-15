@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from datetime import date
 
-from audio_ingest.news_daily_master.prompt import build_runner_prompt
+from automation_daemon.news_daily_master.prompt import build_runner_prompt
 
 
 class TestBuildRunnerPrompt:

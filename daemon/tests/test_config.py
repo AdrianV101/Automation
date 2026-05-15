@@ -4,10 +4,10 @@ from unittest.mock import patch
 
 import pytest
 
-from audio_ingest.config import DaemonConfig
+from automation_daemon.config import DaemonConfig
 
 # Patch load_dotenv to prevent .env file from polluting test environment
-_no_dotenv = patch("audio_ingest.config.load_dotenv")
+_no_dotenv = patch("automation_daemon.config.load_dotenv")
 
 
 def _base_env() -> dict:

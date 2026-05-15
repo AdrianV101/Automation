@@ -12,8 +12,8 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 
-from audio_ingest.config import DaemonConfig
-from audio_ingest.orchestrator import handle_incoming_email
+from automation_daemon.config import DaemonConfig
+from automation_daemon.orchestrator import handle_incoming_email
 from email_ingest import EmailIngestStateDB
 from telegram_interface import BotConfig
 
@@ -60,7 +60,7 @@ async def test_valid_email_reaches_process_recording(
     process_recording_spy: AsyncMock,
 ) -> None:
     raw = _load("plaud_real_01.eml")
-    with patch("audio_ingest.orchestrator.send_message", new_callable=AsyncMock):
+    with patch("automation_daemon.orchestrator.send_message", new_callable=AsyncMock):
         await handle_incoming_email(
             uid=1, raw=raw,
             email_db=email_db, config=config, bot=bot, pipeline_thread=42,
@@ -79,7 +79,7 @@ async def test_dkim_failure_persists_row_and_alerts(
     process_recording_spy: AsyncMock,
 ) -> None:
     raw = _load("synth_dkim_fail.eml")
-    with patch("audio_ingest.orchestrator.send_message", new_callable=AsyncMock) as send:
+    with patch("automation_daemon.orchestrator.send_message", new_callable=AsyncMock) as send:
         await handle_incoming_email(
             uid=2, raw=raw,
             email_db=email_db, config=config, bot=bot, pipeline_thread=42,
@@ -110,7 +110,7 @@ async def test_forged_authentication_results_rejected(
         b"\r\n"
         b"body\r\n"
     )
-    with patch("audio_ingest.orchestrator.send_message", new_callable=AsyncMock):
+    with patch("automation_daemon.orchestrator.send_message", new_callable=AsyncMock):
         await handle_incoming_email(
             uid=3, raw=forged_raw,
             email_db=email_db, config=config, bot=bot, pipeline_thread=42,
@@ -129,7 +129,7 @@ async def test_malformed_email_rejected_and_alert_sent(
     process_recording_spy: AsyncMock,
 ) -> None:
     raw = _load("synth_no_transcript.eml")
-    with patch("audio_ingest.orchestrator.send_message", new_callable=AsyncMock) as send:
+    with patch("automation_daemon.orchestrator.send_message", new_callable=AsyncMock) as send:
         await handle_incoming_email(
             uid=4, raw=raw,
             email_db=email_db, config=config, bot=bot, pipeline_thread=42,
@@ -150,7 +150,7 @@ async def test_not_for_us_email_marked_dropped(
     process_recording_spy: AsyncMock,
 ) -> None:
     raw = _load("synth_wrong_from.eml")
-    with patch("audio_ingest.orchestrator.send_message", new_callable=AsyncMock):
+    with patch("automation_daemon.orchestrator.send_message", new_callable=AsyncMock):
         await handle_incoming_email(
             uid=5, raw=raw,
             email_db=email_db, config=config, bot=bot, pipeline_thread=42,
@@ -168,7 +168,7 @@ async def test_duplicate_message_id_skipped(
     process_recording_spy: AsyncMock,
 ) -> None:
     raw = _load("plaud_real_01.eml")
-    with patch("audio_ingest.orchestrator.send_message", new_callable=AsyncMock):
+    with patch("automation_daemon.orchestrator.send_message", new_callable=AsyncMock):
         await handle_incoming_email(
             uid=6, raw=raw,
             email_db=email_db, config=config, bot=bot, pipeline_thread=42,
@@ -189,7 +189,7 @@ async def test_process_recording_exception_marks_row_failed(
 ) -> None:
     raw = _load("plaud_real_01.eml")
     boom = AsyncMock(side_effect=RuntimeError("extraction blew up"))
-    with patch("audio_ingest.orchestrator.send_message", new_callable=AsyncMock):
+    with patch("automation_daemon.orchestrator.send_message", new_callable=AsyncMock):
         await handle_incoming_email(
             uid=10, raw=raw,
             email_db=email_db, config=config, bot=bot, pipeline_thread=42,

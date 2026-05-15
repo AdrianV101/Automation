@@ -8,7 +8,7 @@ Type=simple
 # Replace <your-user> with the local account that should own the daemon process.
 User=<your-user>
 WorkingDirectory=/path/to/automation/daemon
-ExecStart=/path/to/automation/daemon/.venv/bin/python -m audio_ingest
+ExecStart=/path/to/automation/daemon/.venv/bin/python -m automation_daemon
 EnvironmentFile=/path/to/automation/daemon/.env
 Restart=on-failure
 RestartSec=10

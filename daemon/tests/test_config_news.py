@@ -1,4 +1,4 @@
-from audio_ingest.config import DaemonConfig
+from automation_daemon.config import DaemonConfig
 
 
 def test_news_config_loads_from_env(monkeypatch):

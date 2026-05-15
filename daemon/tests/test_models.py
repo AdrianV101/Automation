@@ -1,6 +1,6 @@
 from pkm import TranscriptData
 
-from audio_ingest.models import RecordingJob
+from automation_daemon.models import RecordingJob
 
 
 def _transcript(job_id: str = "test123") -> TranscriptData:

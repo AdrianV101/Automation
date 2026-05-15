@@ -105,7 +105,7 @@ cp daemon/.env.example daemon/.env
 # Edit daemon/.env with your tokens, paths, IMAP credentials, and settings
 
 # Configure user context (personal info for agent prompts)
-cp daemon/src/audio_ingest/user_context.example.py daemon/src/audio_ingest/user_context.py
+cp daemon/src/automation_daemon/user_context.example.py daemon/src/automation_daemon/user_context.py
 # Edit user_context.py with your name, known people, and project paths
 
 # Configure CLAUDE.md (project instructions for Claude Code)
@@ -113,11 +113,11 @@ cp CLAUDE.example.md CLAUDE.md
 # Edit CLAUDE.md with your deployment-specific details
 
 # Run directly
-daemon/.venv/bin/python -m audio_ingest
+daemon/.venv/bin/python -m automation_daemon
 
 # Or run as a managed service:
 #   macOS: install a launchd LaunchAgent (Label `com.adrian.audio-ingest`,
-#          ProgramArguments → daemon/.venv/bin/python -m audio_ingest,
+#          ProgramArguments → daemon/.venv/bin/python -m automation_daemon,
 #          KeepAlive=true, logs to ~/Library/Logs/audio-ingest.{out,err}.log)
 #   Linux: sudo cp daemon/audio-ingest.service /etc/systemd/system/
 #          sudo systemctl enable --now audio-ingest

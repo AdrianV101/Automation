@@ -37,4 +37,4 @@ case "$_tz_link" in
         ;;
 esac
 
-exec "$DAEMON_DIR/.venv/bin/python" -m audio_ingest
+exec "$DAEMON_DIR/.venv/bin/python" -m automation_daemon

@@ -5,7 +5,7 @@ from unittest.mock import MagicMock
 
 import pytest
 
-# Set before any audio_ingest imports so MCP_SERVER_PATH is populated at import time.
+# Set before any automation_daemon imports so MCP_SERVER_PATH is populated at import time.
 os.environ.setdefault("OBSIDIAN_MCP_SERVER_PATH", "/tmp/test-obsidian-mcp/index.js")
 
 FIXTURES_DIR = Path(__file__).parent / "fixtures"

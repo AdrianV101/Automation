@@ -3,11 +3,11 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 
-from audio_ingest.extraction import AgentRoutingResult
-from audio_ingest.config import DaemonConfig
-from audio_ingest.models import RecordingJob
+from automation_daemon.extraction import AgentRoutingResult
+from automation_daemon.config import DaemonConfig
+from automation_daemon.models import RecordingJob
 from pkm import TranscriptData, TranscriptSegment
-from audio_ingest.pipeline import process_recording
+from automation_daemon.pipeline import process_recording
 
 
 def _make_config(tmp_path) -> DaemonConfig:
@@ -73,10 +73,10 @@ class TestProcessRecording:
         routing_result = _make_routing_result(success=True)
 
         with (
-            patch("audio_ingest.pipeline.create_forum_topic", new_callable=AsyncMock, return_value=None),
-            patch("audio_ingest.pipeline.write_raw_transcript", return_value=Path("/tmp/transcript.md")) as mock_write_raw,
-            patch("audio_ingest.pipeline.agent_extract_and_route", new_callable=AsyncMock, return_value=routing_result) as mock_route,
-            patch("audio_ingest.pipeline.send_routing_summary", new_callable=AsyncMock) as mock_notify,
+            patch("automation_daemon.pipeline.create_forum_topic", new_callable=AsyncMock, return_value=None),
+            patch("automation_daemon.pipeline.write_raw_transcript", return_value=Path("/tmp/transcript.md")) as mock_write_raw,
+            patch("automation_daemon.pipeline.agent_extract_and_route", new_callable=AsyncMock, return_value=routing_result) as mock_route,
+            patch("automation_daemon.pipeline.send_routing_summary", new_callable=AsyncMock) as mock_notify,
         ):
             await process_recording(job, config, status=status)
 
@@ -102,9 +102,9 @@ class TestProcessRecording:
         status = _make_status()
 
         with (
-            patch("audio_ingest.pipeline.create_forum_topic", new_callable=AsyncMock, return_value=None),
-            patch("audio_ingest.pipeline.write_raw_transcript", side_effect=OSError("disk full")),
-            patch("audio_ingest.pipeline.send_transcription_error", new_callable=AsyncMock) as mock_error,
+            patch("automation_daemon.pipeline.create_forum_topic", new_callable=AsyncMock, return_value=None),
+            patch("automation_daemon.pipeline.write_raw_transcript", side_effect=OSError("disk full")),
+            patch("automation_daemon.pipeline.send_transcription_error", new_callable=AsyncMock) as mock_error,
         ):
             await process_recording(job, config, status=status)
 
@@ -122,10 +122,10 @@ class TestProcessRecording:
         routing_result = _make_routing_result(success=False)
 
         with (
-            patch("audio_ingest.pipeline.create_forum_topic", new_callable=AsyncMock, return_value=None),
-            patch("audio_ingest.pipeline.write_raw_transcript", return_value=Path("/tmp/transcript.md")),
-            patch("audio_ingest.pipeline.agent_extract_and_route", new_callable=AsyncMock, return_value=routing_result),
-            patch("audio_ingest.pipeline.send_routing_summary", new_callable=AsyncMock),
+            patch("automation_daemon.pipeline.create_forum_topic", new_callable=AsyncMock, return_value=None),
+            patch("automation_daemon.pipeline.write_raw_transcript", return_value=Path("/tmp/transcript.md")),
+            patch("automation_daemon.pipeline.agent_extract_and_route", new_callable=AsyncMock, return_value=routing_result),
+            patch("automation_daemon.pipeline.send_routing_summary", new_callable=AsyncMock),
         ):
             await process_recording(job, config, status=status)
 
@@ -143,10 +143,10 @@ class TestProcessRecording:
         status = _make_status()
 
         with (
-            patch("audio_ingest.pipeline.create_forum_topic", new_callable=AsyncMock, return_value=None),
-            patch("audio_ingest.pipeline.write_raw_transcript", return_value=Path("/tmp/transcript.md")),
-            patch("audio_ingest.pipeline.agent_extract_and_route", new_callable=AsyncMock, side_effect=RuntimeError("SDK crash")),
-            patch("audio_ingest.pipeline.send_routing_summary", new_callable=AsyncMock),
+            patch("automation_daemon.pipeline.create_forum_topic", new_callable=AsyncMock, return_value=None),
+            patch("automation_daemon.pipeline.write_raw_transcript", return_value=Path("/tmp/transcript.md")),
+            patch("automation_daemon.pipeline.agent_extract_and_route", new_callable=AsyncMock, side_effect=RuntimeError("SDK crash")),
+            patch("automation_daemon.pipeline.send_routing_summary", new_callable=AsyncMock),
         ):
             await process_recording(job, config, status=status)
 
@@ -163,10 +163,10 @@ class TestProcessRecording:
         routing_result = _make_routing_result(success=True)
 
         with (
-            patch("audio_ingest.pipeline.create_forum_topic", new_callable=AsyncMock, return_value=None),
-            patch("audio_ingest.pipeline.write_raw_transcript", return_value=Path("/tmp/transcript.md")),
-            patch("audio_ingest.pipeline.agent_extract_and_route", new_callable=AsyncMock, return_value=routing_result),
-            patch("audio_ingest.pipeline.send_routing_summary", new_callable=AsyncMock, side_effect=RuntimeError("Network error")),
+            patch("automation_daemon.pipeline.create_forum_topic", new_callable=AsyncMock, return_value=None),
+            patch("automation_daemon.pipeline.write_raw_transcript", return_value=Path("/tmp/transcript.md")),
+            patch("automation_daemon.pipeline.agent_extract_and_route", new_callable=AsyncMock, return_value=routing_result),
+            patch("automation_daemon.pipeline.send_routing_summary", new_callable=AsyncMock, side_effect=RuntimeError("Network error")),
         ):
             # Should not raise
             await process_recording(job, config, status=status)
@@ -185,10 +185,10 @@ class TestPipelineRecordingTopic:
         routing_result = _make_routing_result(success=True)
 
         with (
-            patch("audio_ingest.pipeline.create_forum_topic", new_callable=AsyncMock, return_value=99) as mock_topic,
-            patch("audio_ingest.pipeline.write_raw_transcript", return_value=Path("/tmp/transcript.md")),
-            patch("audio_ingest.pipeline.agent_extract_and_route", new_callable=AsyncMock, return_value=routing_result),
-            patch("audio_ingest.pipeline.send_routing_summary", new_callable=AsyncMock) as mock_notify,
+            patch("automation_daemon.pipeline.create_forum_topic", new_callable=AsyncMock, return_value=99) as mock_topic,
+            patch("automation_daemon.pipeline.write_raw_transcript", return_value=Path("/tmp/transcript.md")),
+            patch("automation_daemon.pipeline.agent_extract_and_route", new_callable=AsyncMock, return_value=routing_result),
+            patch("automation_daemon.pipeline.send_routing_summary", new_callable=AsyncMock) as mock_notify,
         ):
             await process_recording(job, config, status=status)
 
@@ -211,10 +211,10 @@ class TestPipelineRecordingTopic:
         routing_result = _make_routing_result(success=True)
 
         with (
-            patch("audio_ingest.pipeline.create_forum_topic", new_callable=AsyncMock, return_value=None),
-            patch("audio_ingest.pipeline.write_raw_transcript", return_value=Path("/tmp/transcript.md")),
-            patch("audio_ingest.pipeline.agent_extract_and_route", new_callable=AsyncMock, return_value=routing_result),
-            patch("audio_ingest.pipeline.send_routing_summary", new_callable=AsyncMock) as mock_notify,
+            patch("automation_daemon.pipeline.create_forum_topic", new_callable=AsyncMock, return_value=None),
+            patch("automation_daemon.pipeline.write_raw_transcript", return_value=Path("/tmp/transcript.md")),
+            patch("automation_daemon.pipeline.agent_extract_and_route", new_callable=AsyncMock, return_value=routing_result),
+            patch("automation_daemon.pipeline.send_routing_summary", new_callable=AsyncMock) as mock_notify,
         ):
             await process_recording(job, config, status=status)
 
@@ -232,9 +232,9 @@ class TestPipelineRecordingTopic:
         status = _make_status()
 
         with (
-            patch("audio_ingest.pipeline.create_forum_topic", new_callable=AsyncMock, return_value=88),
-            patch("audio_ingest.pipeline.write_raw_transcript", side_effect=OSError("disk full")),
-            patch("audio_ingest.pipeline.send_transcription_error", new_callable=AsyncMock) as mock_error,
+            patch("automation_daemon.pipeline.create_forum_topic", new_callable=AsyncMock, return_value=88),
+            patch("automation_daemon.pipeline.write_raw_transcript", side_effect=OSError("disk full")),
+            patch("automation_daemon.pipeline.send_transcription_error", new_callable=AsyncMock) as mock_error,
         ):
             await process_recording(job, config, status=status)
 

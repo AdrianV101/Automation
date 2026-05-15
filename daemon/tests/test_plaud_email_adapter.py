@@ -6,7 +6,7 @@ import pytest
 
 from email_ingest import parse_email
 
-from audio_ingest.plaud_email_adapter import (
+from automation_daemon.plaud_email_adapter import (
     Infographic,
     PlaudEmailPayload,
     MalformedPlaudEmailError,
@@ -70,7 +70,7 @@ def test_missing_image_is_not_fatal() -> None:
 
 from pkm import TranscriptData
 
-from audio_ingest.plaud_email_adapter import plaud_email_to_transcript_data, PlaudEmailPayload
+from automation_daemon.plaud_email_adapter import plaud_email_to_transcript_data, PlaudEmailPayload
 
 
 def _payload(transcript_text: str) -> PlaudEmailPayload:
@@ -140,7 +140,7 @@ def test_parse_malformed_no_timestamps_falls_back() -> None:
     assert td.segments[0].text == "just some text with no structure"
 
 
-from audio_ingest.plaud_email_adapter import (
+from automation_daemon.plaud_email_adapter import (
     SavedArtifacts,
     save_plaud_attachments,
     rewrite_plaud_summary_links,
@@ -213,8 +213,8 @@ def test_rewrite_summary_links_noop_when_no_infographic() -> None:
     assert "permanent/a/summary_poster/card.png" in rewritten["x"]
 
 
-from audio_ingest.plaud_email_adapter import recording_job_from_email
-from audio_ingest.models import RecordingJob
+from automation_daemon.plaud_email_adapter import recording_job_from_email
+from automation_daemon.models import RecordingJob
 
 
 def test_recording_job_from_email_wires_everything(tmp_path: Path) -> None:
