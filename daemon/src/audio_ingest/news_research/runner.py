@@ -135,8 +135,14 @@ async def run_for_date(
 
     Pure orchestration: master-doc gate, state transitions, Notes-clobber
     guard, retry. No Telegram — per the design (D5) research findings
-    surface via the digest; failures are state-DB + log only. Never raises:
-    research is best-effort enrichment and must not break the daily chain.
+    surface via the digest; failures are state-DB + log only.
+
+    Every failure mode *after* the initial ``insert_run`` is caught by the
+    outer try/except and recorded to the state DB (status ``failed``) and
+    daemon log; the wrapper guarantees the row never sticks in ``running``.
+    The initial ``insert_run`` call is intentionally *outside* that guard: a
+    host/DB fault at that point is a hard failure that should propagate to the
+    caller rather than be silently swallowed.
     """
     await db.insert_run(target_date)
     try:

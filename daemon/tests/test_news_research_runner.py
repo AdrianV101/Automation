@@ -337,6 +337,177 @@ def test_agent_run_input_carries_max_turns() -> None:
     assert inp.max_turns == 99
 
 
+# ---------------------------------------------------------------------------
+# Retry-loop behavioural tests (Change 2)
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_retry_then_success_marks_completed(
+    db_path: Path, runner_cfg: RunnerConfig, vault_root: Path,
+) -> None:
+    """Agent that raises on attempt 1, returns success on attempt 2."""
+    db = NewsResearchStateDB(db_path)
+    await db.init_db()
+    _seed_master(vault_root, date(2026, 5, 15))
+
+    call_count = 0
+
+    async def flaky_agent(inp: AgentRunInput) -> AgentRunOutput:
+        nonlocal call_count
+        call_count += 1
+        if call_count == 1:
+            raise RuntimeError("transient error")
+        return AgentRunOutput(success=True, items_researched=1)
+
+    cfg = RunnerConfig(
+        vault_root=vault_root,
+        retry_backoff_seconds=(0, 0),  # no real waits
+    )
+    await run_for_date(
+        date(2026, 5, 15), db=db, config=cfg,
+        run_agent=flaky_agent, recent_ratings=_no_ratings,
+    )
+
+    assert call_count == 2
+    row = await db.get_run(date(2026, 5, 15))
+    assert row["status"] == "completed"
+    assert row["items_researched"] == 1
+
+
+@pytest.mark.asyncio
+async def test_retry_exhaustion_marks_failed_with_last_error(
+    db_path: Path, vault_root: Path,
+) -> None:
+    """Agent that always raises exhausts all attempts and marks failed."""
+    db = NewsResearchStateDB(db_path)
+    await db.init_db()
+    _seed_master(vault_root, date(2026, 5, 15))
+
+    call_count = 0
+
+    async def always_boom(inp: AgentRunInput) -> AgentRunOutput:
+        nonlocal call_count
+        call_count += 1
+        raise RuntimeError(f"boom-{call_count}")
+
+    cfg = RunnerConfig(
+        vault_root=vault_root,
+        retry_backoff_seconds=(0, 0),
+    )
+    # Must NOT raise — research is best-effort.
+    await run_for_date(
+        date(2026, 5, 15), db=db, config=cfg,
+        run_agent=always_boom, recent_ratings=_no_ratings,
+    )
+
+    assert call_count == 2
+    row = await db.get_run(date(2026, 5, 15))
+    assert row["status"] == "failed"
+    assert "agent_exception:" in row["error"]
+    assert "boom-2" in row["error"]  # last attempt's message
+
+
+@pytest.mark.asyncio
+async def test_single_attempt_when_backoff_single(
+    db_path: Path, vault_root: Path,
+) -> None:
+    """With a single-entry backoff tuple, only one attempt is made."""
+    db = NewsResearchStateDB(db_path)
+    await db.init_db()
+    _seed_master(vault_root, date(2026, 5, 15))
+
+    call_count = 0
+
+    async def always_boom(inp: AgentRunInput) -> AgentRunOutput:
+        nonlocal call_count
+        call_count += 1
+        raise RuntimeError("boom")
+
+    cfg = RunnerConfig(
+        vault_root=vault_root,
+        retry_backoff_seconds=(0,),
+    )
+    await run_for_date(
+        date(2026, 5, 15), db=db, config=cfg,
+        run_agent=always_boom, recent_ratings=_no_ratings,
+    )
+
+    assert call_count == 1
+    row = await db.get_run(date(2026, 5, 15))
+    assert row["status"] == "failed"
+
+
+# ---------------------------------------------------------------------------
+# Outer stuck-row handler test (Change 3 / I1)
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_inner_unexpected_error_marked_failed_by_outer_handler(
+    db_path: Path, vault_root: Path,
+) -> None:
+    """Patch _hash_notes_section to raise — it's called in _run_for_date_inner
+    before the retry loop and is not wrapped by any inner except, so the
+    exception propagates to the outer handler in run_for_date.
+    """
+    db = NewsResearchStateDB(db_path)
+    await db.init_db()
+    _seed_master(vault_root, date(2026, 5, 15))
+
+    async def fake_agent(inp: AgentRunInput) -> AgentRunOutput:  # pragma: no cover
+        return AgentRunOutput(success=True, items_researched=0)
+
+    cfg = RunnerConfig(vault_root=vault_root, retry_backoff_seconds=(0,))
+
+    with patch(
+        "audio_ingest.news_research.runner._hash_notes_section",
+        side_effect=RuntimeError("boom"),
+    ):
+        # Must NOT raise — outer handler catches and records.
+        await run_for_date(
+            date(2026, 5, 15), db=db, config=cfg,
+            run_agent=fake_agent, recent_ratings=_no_ratings,
+        )
+
+    row = await db.get_run(date(2026, 5, 15))
+    assert row["status"] == "failed"
+    assert row["error"].startswith("unexpected:")
+    assert "boom" in row["error"]
+
+
+# ---------------------------------------------------------------------------
+# Ratings-provider-failure fallback test (Change 4 / I2)
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_ratings_provider_failure_degrades_gracefully(
+    db_path: Path, vault_root: Path,
+) -> None:
+    """Ratings provider raising must not fail the research run."""
+    db = NewsResearchStateDB(db_path)
+    await db.init_db()
+    _seed_master(vault_root, date(2026, 5, 15))
+
+    call_count = 0
+
+    async def fake_agent(inp: AgentRunInput) -> AgentRunOutput:
+        nonlocal call_count
+        call_count += 1
+        return AgentRunOutput(success=True, items_researched=0)
+
+    async def boom_ratings(start: date, end: date) -> list[dict]:
+        raise RuntimeError("ratings DB unavailable")
+
+    cfg = RunnerConfig(vault_root=vault_root, retry_backoff_seconds=(0,))
+    await run_for_date(
+        date(2026, 5, 15), db=db, config=cfg,
+        run_agent=fake_agent, recent_ratings=boom_ratings,
+    )
+
+    row = await db.get_run(date(2026, 5, 15))
+    assert row["status"] == "completed"  # ratings are optional
+    assert call_count == 1  # research proceeded despite ratings failure
+
+
 @pytest.mark.asyncio
 async def test_run_agent_via_agent_infra_error_branch_keeps_cost() -> None:
     from agent_infra import AgentLoopResult
