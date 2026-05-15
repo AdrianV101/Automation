@@ -4,7 +4,7 @@ Shared contract for news-ingestion sources. Defines the `NewsItem` dataclass,
 the `write_news_item` writer, the on-disk frontmatter schema, and the
 `NewsSourceState` protocol every source's state DB must satisfy.
 
-The sibling `audio_ingest.news_email_adapter` is the first consumer (newsletter
+The sibling `automation_daemon.news_email_adapter` is the first consumer (newsletter
 emails). Phase 2 sources (Hacker News, Financial Times, X/Twitter) plug in
 against the same contract.
 
@@ -59,7 +59,7 @@ non-alphanumerics collapsed to hyphens, truncated to 60 chars, with a 6-char
 1. **Add a `source-type` literal.** Edit `news_pipeline/item.py` —
    `SourceType` is a closed `Literal`. Adding a value is one line.
 2. **Build the source-specific adapter.** Sit it next to
-   `news_email_adapter.py` in `daemon/src/audio_ingest/`. It owns:
+   `news_email_adapter.py` in `daemon/src/automation_daemon/`. It owns:
    transport (HTTP poll, RSS, IMAP, websocket); body rendering to markdown;
    and constructing `NewsItem` from whatever the source returns.
 3. **Build a state DB that satisfies `NewsSourceState`.** Per-source dedupe
@@ -69,7 +69,7 @@ non-alphanumerics collapsed to hyphens, truncated to 60 chars, with a 6-char
    (`email_ingest_state_db_path`); add a new table per source.
 4. **Wire it into the orchestrator.** Behind a feature flag
    (`<SOURCE>_INGEST_ENABLED`). The existing news listener pattern in
-   `audio_ingest.orchestrator` is the template.
+   `automation_daemon.orchestrator` is the template.
 5. **Exercise the schema.** Run the daemon's
    `tests/test_news_frontmatter_golden.py`. If your new source needs its own
    golden file, add a fixture and a parameter; do not loosen the existing
@@ -113,7 +113,7 @@ import tempfile
 from pathlib import Path
 from email_ingest import parse_email
 from news_pipeline import write_news_item
-from audio_ingest.news_email_adapter import email_to_news_item, render_body
+from automation_daemon.news_email_adapter import email_to_news_item, render_body
 
 F = Path("tests/fixtures/news")
 for name in ("html_newsletter.eml", "plaintext_newsletter.eml"):
@@ -130,5 +130,5 @@ for name in ("html_newsletter.eml", "plaintext_newsletter.eml"):
 EOF
 ```
 
-Then audit the master-doc generator (`audio_ingest.news_daily_master`) and any
+Then audit the master-doc generator (`automation_daemon.news_daily_master`) and any
 in-vault notes that reference the changed keys.

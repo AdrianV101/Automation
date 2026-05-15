@@ -7,11 +7,11 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-from audio_ingest.news_personal_digest.callback import (
+from automation_daemon.news_personal_digest.callback import (
     DigestCallbackDeps,
     handle_rating_callback,
 )
-from audio_ingest.news_personal_digest.state import (
+from automation_daemon.news_personal_digest.state import (
     DigestItemInput, NewsDigestStateDB,
 )
 

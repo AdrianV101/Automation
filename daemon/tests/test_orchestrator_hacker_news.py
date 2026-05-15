@@ -5,7 +5,7 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 
-from audio_ingest.config import DaemonConfig
+from automation_daemon.config import DaemonConfig
 
 
 def _cfg(tmp_path, *, hn_enabled: bool):
@@ -36,10 +36,10 @@ async def test_run_daemon_starts_hn_task_when_enabled(tmp_path):
         await factory()
 
     with patch(
-        "audio_ingest.orchestrator.run_scheduler_loop",
+        "automation_daemon.orchestrator.run_scheduler_loop",
         side_effect=fake_loop,
-    ), patch("audio_ingest.orchestrator.supervise", side_effect=fake_supervise):
-        from audio_ingest.orchestrator import run_daemon
+    ), patch("automation_daemon.orchestrator.supervise", side_effect=fake_supervise):
+        from automation_daemon.orchestrator import run_daemon
         task = asyncio.create_task(run_daemon(cfg))
         try:
             await asyncio.wait_for(started.wait(), timeout=2.0)
@@ -67,13 +67,13 @@ async def test_run_daemon_skips_hn_task_when_disabled(tmp_path):
         await asyncio.sleep(3600)
 
     with patch(
-        "audio_ingest.orchestrator.run_scheduler_loop",
+        "automation_daemon.orchestrator.run_scheduler_loop",
         side_effect=fake_loop,
     ), patch(
-        "audio_ingest.orchestrator._run_email_ingest_path",
+        "automation_daemon.orchestrator._run_email_ingest_path",
         side_effect=fake_email_path,
     ):
-        from audio_ingest.orchestrator import run_daemon
+        from automation_daemon.orchestrator import run_daemon
         task = asyncio.create_task(run_daemon(cfg))
         try:
             # Give the loop a moment; HN task must NOT have started.
@@ -91,6 +91,6 @@ async def test_run_daemon_skips_hn_task_when_disabled(tmp_path):
 async def test_run_daemon_no_paths_enabled_exits(tmp_path, caplog):
     """Sanity: HN-only enabled is a valid single-path deployment."""
     cfg = _cfg(tmp_path, hn_enabled=False)  # nothing enabled
-    from audio_ingest.orchestrator import run_daemon
+    from automation_daemon.orchestrator import run_daemon
     await run_daemon(cfg)
     assert "No ingestion path enabled" in caplog.text

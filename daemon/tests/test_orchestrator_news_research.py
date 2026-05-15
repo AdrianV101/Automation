@@ -4,7 +4,7 @@ from datetime import date
 
 import pytest
 
-from audio_ingest.orchestrator import _build_news_chain_fn
+from automation_daemon.orchestrator import _build_news_chain_fn
 
 
 @pytest.mark.asyncio

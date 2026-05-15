@@ -3,7 +3,7 @@ from pathlib import Path
 
 import pytest
 
-from audio_ingest.people import (
+from automation_daemon.people import (
     Person,
     load_people,
     render_full_block,
@@ -86,7 +86,7 @@ class TestLoadPeople:
         bad_path.write_text(
             "---\ntype: person\nrelationship: [unclosed\n---\n# Broken\n", encoding="utf-8",
         )
-        with caplog.at_level(logging.WARNING, logger="audio_ingest.people"):
+        with caplog.at_level(logging.WARNING, logger="automation_daemon.people"):
             assert load_people(tmp_path) == []
         assert any("Broken.md" in record.getMessage() for record in caplog.records), \
             f"Expected a warning mentioning 'Broken.md', got: {[r.getMessage() for r in caplog.records]}"

@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import pytest
 
-from audio_ingest.news_personal_digest.render import (
+from automation_daemon.news_personal_digest.render import (
     encode_callback_data,
     decode_callback_data,
     CallbackData,
@@ -51,7 +51,7 @@ def test_callback_data_within_telegram_limit() -> None:
 # Message + keyboard builders
 # ---------------------------------------------------------------------------
 
-from audio_ingest.news_personal_digest.render import (  # noqa: E402
+from automation_daemon.news_personal_digest.render import (  # noqa: E402
     DigestCategory,
     DigestItem,
     build_messages,

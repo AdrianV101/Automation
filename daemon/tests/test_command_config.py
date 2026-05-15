@@ -1,7 +1,7 @@
 """Test that the daemon-commands factory builds CommandConfigs from the vault."""
 from pathlib import Path
 
-from audio_ingest.command_config import build_daemon_commands
+from automation_daemon.command_config import build_daemon_commands
 
 
 def test_factory_returns_four_commands(tmp_path: Path):

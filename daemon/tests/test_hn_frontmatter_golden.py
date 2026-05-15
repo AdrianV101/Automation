@@ -13,7 +13,7 @@ import tempfile
 from pathlib import Path
 
 from news_pipeline import write_news_item
-from audio_ingest.hacker_news_adapter import _to_news_item
+from automation_daemon.hacker_news_adapter import _to_news_item
 
 FIXTURES = Path(__file__).parent / "fixtures" / "hn"
 GOLDEN = FIXTURES / "golden"

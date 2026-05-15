@@ -7,8 +7,8 @@ from typing import Any
 import httpx
 import pytest
 
-from audio_ingest.hacker_news_adapter import PollSummary, run_poll_cycle
-from audio_ingest.hn_state import HackerNewsStateDB
+from automation_daemon.hacker_news_adapter import PollSummary, run_poll_cycle
+from automation_daemon.hn_state import HackerNewsStateDB
 
 FIXTURES = Path(__file__).parent / "fixtures" / "hn"
 
@@ -132,7 +132,7 @@ async def test_per_item_write_failure_does_not_record_processed(state_db, vault,
         items_by_id={s["id"]: s, a["id"]: a},
     )
     real_write = __import__(
-        "audio_ingest.hacker_news_adapter", fromlist=["write_news_item"],
+        "automation_daemon.hacker_news_adapter", fromlist=["write_news_item"],
     ).write_news_item
 
     def flaky(item, vault_root):
@@ -141,7 +141,7 @@ async def test_per_item_write_failure_does_not_record_processed(state_db, vault,
         return real_write(item, vault_root)
 
     monkeypatch.setattr(
-        "audio_ingest.hacker_news_adapter.write_news_item", flaky,
+        "automation_daemon.hacker_news_adapter.write_news_item", flaky,
     )
     summary = await run_poll_cycle(
         client, state_db, vault,
@@ -199,7 +199,7 @@ async def test_db_failure_after_vault_write_counted_as_db_failure_not_ingested(
         raise RuntimeError("DB unavailable")
 
     monkeypatch.setattr(
-        "audio_ingest.hn_state.HackerNewsStateDB.record_processed_full",
+        "automation_daemon.hn_state.HackerNewsStateDB.record_processed_full",
         boom_record,
     )
     summary = await run_poll_cycle(

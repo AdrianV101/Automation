@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from datetime import date
 
-from audio_ingest.news_research.prompt import (
+from automation_daemon.news_research.prompt import (
     build_runner_prompt,
     render_ratings_block,
 )

@@ -23,7 +23,7 @@ from zoneinfo import ZoneInfo
 
 import pytest
 
-from audio_ingest.hacker_news_adapter import PollSummary, run_scheduler_loop
+from automation_daemon.hacker_news_adapter import PollSummary, run_scheduler_loop
 
 
 class _StopLoop(BaseException):
@@ -104,12 +104,12 @@ async def test_full_iteration_polls_then_notifies(tmp_path):
     sleep_mock = _sleep_stopping_after(1)
 
     with patch(
-        "audio_ingest.hacker_news_adapter.asyncio.sleep", new=sleep_mock,
+        "automation_daemon.hacker_news_adapter.asyncio.sleep", new=sleep_mock,
     ), patch(
-        "audio_ingest.hacker_news_adapter.httpx.AsyncClient",
+        "automation_daemon.hacker_news_adapter.httpx.AsyncClient",
         side_effect=lambda *a, **k: _fake_http_cm(),
     ), patch(
-        "audio_ingest.hacker_news_adapter.run_poll_cycle", new=fake_poll,
+        "automation_daemon.hacker_news_adapter.run_poll_cycle", new=fake_poll,
     ):
         await _drive_loop(
             vault_root=tmp_path, telegram_notifier=notifier, news_topic_id=99,
@@ -132,13 +132,13 @@ async def test_poll_cycle_exception_propagates(tmp_path, caplog):
     fake_poll = AsyncMock(side_effect=RuntimeError("HN firebase exploded"))
 
     with patch(
-        "audio_ingest.hacker_news_adapter.asyncio.sleep",
+        "automation_daemon.hacker_news_adapter.asyncio.sleep",
         new=_sleep_stopping_after(5),
     ), patch(
-        "audio_ingest.hacker_news_adapter.httpx.AsyncClient",
+        "automation_daemon.hacker_news_adapter.httpx.AsyncClient",
         side_effect=lambda *a, **k: _fake_http_cm(),
     ), patch(
-        "audio_ingest.hacker_news_adapter.run_poll_cycle", new=fake_poll,
+        "automation_daemon.hacker_news_adapter.run_poll_cycle", new=fake_poll,
     ):
         with pytest.raises(RuntimeError, match="HN firebase exploded"):
             await _drive_loop(vault_root=tmp_path, telegram_notifier=notifier)
@@ -158,13 +158,13 @@ async def test_telegram_failure_swallowed_loop_continues(tmp_path, caplog):
     fake_poll = AsyncMock(return_value=_summary())
 
     with patch(
-        "audio_ingest.hacker_news_adapter.asyncio.sleep",
+        "automation_daemon.hacker_news_adapter.asyncio.sleep",
         new=_sleep_stopping_after(2),  # allow two full iterations
     ), patch(
-        "audio_ingest.hacker_news_adapter.httpx.AsyncClient",
+        "automation_daemon.hacker_news_adapter.httpx.AsyncClient",
         side_effect=lambda *a, **k: _fake_http_cm(),
     ), patch(
-        "audio_ingest.hacker_news_adapter.run_poll_cycle", new=fake_poll,
+        "automation_daemon.hacker_news_adapter.run_poll_cycle", new=fake_poll,
     ):
         # Must NOT raise despite the notifier failing every iteration.
         await _drive_loop(vault_root=tmp_path, telegram_notifier=notifier)
@@ -194,15 +194,15 @@ async def test_date_folder_uses_configured_tz_not_utc(tmp_path):
             return base.astimezone(tz) if tz is not None else base
 
     with patch(
-        "audio_ingest.hacker_news_adapter.asyncio.sleep",
+        "automation_daemon.hacker_news_adapter.asyncio.sleep",
         new=_sleep_stopping_after(1),
     ), patch(
-        "audio_ingest.hacker_news_adapter.httpx.AsyncClient",
+        "automation_daemon.hacker_news_adapter.httpx.AsyncClient",
         side_effect=lambda *a, **k: _fake_http_cm(),
     ), patch(
-        "audio_ingest.hacker_news_adapter.run_poll_cycle", new=fake_poll,
+        "automation_daemon.hacker_news_adapter.run_poll_cycle", new=fake_poll,
     ), patch(
-        "audio_ingest.hacker_news_adapter.datetime", _FrozenDateTime,
+        "automation_daemon.hacker_news_adapter.datetime", _FrozenDateTime,
     ):
         await _drive_loop(
             vault_root=tmp_path, telegram_notifier=notifier, tz=kiritimati,

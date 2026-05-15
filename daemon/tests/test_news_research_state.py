@@ -5,7 +5,7 @@ from pathlib import Path
 
 import pytest
 
-from audio_ingest.news_research.state import (
+from automation_daemon.news_research.state import (
     NEWS_RESEARCH_VALID_STATUSES,
     NewsResearchStateDB,
 )

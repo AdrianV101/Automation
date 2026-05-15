@@ -6,7 +6,7 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 
-from audio_ingest.news_research.runner import (
+from automation_daemon.news_research.runner import (
     AgentRunInput,
     AgentRunOutput,
     RunnerConfig,
@@ -14,7 +14,7 @@ from audio_ingest.news_research.runner import (
     run_agent_via_agent_infra,
     run_for_date,
 )
-from audio_ingest.news_research.state import NewsResearchStateDB
+from automation_daemon.news_research.state import NewsResearchStateDB
 
 
 @pytest.fixture
@@ -259,10 +259,10 @@ async def test_run_agent_via_agent_infra_captures_cost() -> None:
         )
 
     with patch(
-        "audio_ingest.news_research.runner.run_agent_loop_streaming",
+        "automation_daemon.news_research.runner.run_agent_loop_streaming",
         side_effect=fake_streaming,
     ), patch(
-        "audio_ingest.news_research.runner.build_agent_options",
+        "automation_daemon.news_research.runner.build_agent_options",
         return_value=object(),
     ):
         out = await run_agent_via_agent_infra(AgentRunInput(
@@ -300,10 +300,10 @@ async def test_run_agent_via_agent_infra_passes_max_turns() -> None:
 
     mock_build = MagicMock(return_value=object())
     with patch(
-        "audio_ingest.news_research.runner.run_agent_loop_streaming",
+        "automation_daemon.news_research.runner.run_agent_loop_streaming",
         side_effect=fake_streaming,
     ), patch(
-        "audio_ingest.news_research.runner.build_agent_options",
+        "automation_daemon.news_research.runner.build_agent_options",
         mock_build,
     ):
         await run_agent_via_agent_infra(AgentRunInput(
@@ -459,7 +459,7 @@ async def test_inner_unexpected_error_marked_failed_by_outer_handler(
     cfg = RunnerConfig(vault_root=vault_root, retry_backoff_seconds=(0,))
 
     with patch(
-        "audio_ingest.news_research.runner._hash_notes_section",
+        "automation_daemon.news_research.runner._hash_notes_section",
         side_effect=RuntimeError("boom"),
     ):
         # Must NOT raise — outer handler catches and records.
@@ -526,10 +526,10 @@ async def test_run_agent_via_agent_infra_error_branch_keeps_cost() -> None:
         )
 
     with patch(
-        "audio_ingest.news_research.runner.run_agent_loop_streaming",
+        "automation_daemon.news_research.runner.run_agent_loop_streaming",
         side_effect=fake_streaming,
     ), patch(
-        "audio_ingest.news_research.runner.build_agent_options",
+        "automation_daemon.news_research.runner.build_agent_options",
         return_value=object(),
     ):
         out = await run_agent_via_agent_infra(AgentRunInput(

@@ -15,16 +15,16 @@ Seam / patch strategy
 `_run_news_daily_master_path` ends in `await sched.run_forever()` which loops
 forever. The scheduler is imported *locally* inside the function as
 `from .news_daily_master.scheduler import NewsDailyScheduler`, so patching
-`audio_ingest.news_daily_master.scheduler.NewsDailyScheduler` with a fake that
+`automation_daemon.news_daily_master.scheduler.NewsDailyScheduler` with a fake that
 (a) records the `run_for_date_fn` kwarg and (b) has an async no-op
 `run_forever` lets the function return immediately while letting us drive the
 captured chain ourselves.
 
 The three stage entrypoints are imported locally too, so they are patched at
 their *source* modules:
-  - `audio_ingest.news_daily_master.runner.run_for_date`
-  - `audio_ingest.news_research.runner.run_for_date`
-  - `audio_ingest.news_personal_digest.runner.run_for_date`
+  - `automation_daemon.news_daily_master.runner.run_for_date`
+  - `automation_daemon.news_research.runner.run_for_date`
+  - `automation_daemon.news_personal_digest.runner.run_for_date`
 
 `_master_completed` reads the real `NewsDailyMasterStateDB.get_run(d)` and
 requires `status == "completed"`. To let the chain proceed, the patched master
@@ -42,8 +42,8 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 
-from audio_ingest.config import DaemonConfig
-from audio_ingest.news_daily_master.state import NewsDailyMasterStateDB
+from automation_daemon.config import DaemonConfig
+from automation_daemon.news_daily_master.state import NewsDailyMasterStateDB
 
 
 def _make_config(tmp_path, **overrides) -> DaemonConfig:
@@ -120,21 +120,21 @@ async def test_wiring_research_enabled_digest_enabled_composes_master_research_d
         calls.append("digest")
 
     with patch(
-        "audio_ingest.news_daily_master.scheduler.NewsDailyScheduler",
+        "automation_daemon.news_daily_master.scheduler.NewsDailyScheduler",
         _FakeScheduler,
     ), patch(
-        "audio_ingest.news_daily_master.runner.run_for_date",
+        "automation_daemon.news_daily_master.runner.run_for_date",
         AsyncMock(side_effect=fake_master),
     ), patch(
-        "audio_ingest.news_research.runner.run_for_date",
+        "automation_daemon.news_research.runner.run_for_date",
         AsyncMock(side_effect=fake_research),
     ), patch(
-        "audio_ingest.news_personal_digest.runner.run_for_date",
+        "automation_daemon.news_personal_digest.runner.run_for_date",
         AsyncMock(side_effect=fake_digest),
     ), patch(
-        "audio_ingest.orchestrator.send_message", AsyncMock(),
+        "automation_daemon.orchestrator.send_message", AsyncMock(),
     ):
-        from audio_ingest.orchestrator import _run_news_daily_master_path
+        from automation_daemon.orchestrator import _run_news_daily_master_path
 
         # Must return (not hang) because run_forever is a no-op.
         await _run_news_daily_master_path(config)
@@ -179,21 +179,21 @@ async def test_wiring_research_enabled_digest_disabled_uses_empty_ratings_fallba
         calls.append("digest")
 
     with patch(
-        "audio_ingest.news_daily_master.scheduler.NewsDailyScheduler",
+        "automation_daemon.news_daily_master.scheduler.NewsDailyScheduler",
         _FakeScheduler,
     ), patch(
-        "audio_ingest.news_daily_master.runner.run_for_date",
+        "automation_daemon.news_daily_master.runner.run_for_date",
         AsyncMock(side_effect=fake_master),
     ), patch(
-        "audio_ingest.news_research.runner.run_for_date",
+        "automation_daemon.news_research.runner.run_for_date",
         AsyncMock(side_effect=fake_research),
     ), patch(
-        "audio_ingest.news_personal_digest.runner.run_for_date",
+        "automation_daemon.news_personal_digest.runner.run_for_date",
         AsyncMock(side_effect=fake_digest),
     ), patch(
-        "audio_ingest.orchestrator.send_message", AsyncMock(),
+        "automation_daemon.orchestrator.send_message", AsyncMock(),
     ):
-        from audio_ingest.orchestrator import _run_news_daily_master_path
+        from automation_daemon.orchestrator import _run_news_daily_master_path
 
         await _run_news_daily_master_path(config)
 
@@ -239,21 +239,21 @@ async def test_wiring_research_disabled_is_inert(tmp_path):
     research_mock = AsyncMock(side_effect=fake_research)
 
     with patch(
-        "audio_ingest.news_daily_master.scheduler.NewsDailyScheduler",
+        "automation_daemon.news_daily_master.scheduler.NewsDailyScheduler",
         _FakeScheduler,
     ), patch(
-        "audio_ingest.news_daily_master.runner.run_for_date",
+        "automation_daemon.news_daily_master.runner.run_for_date",
         AsyncMock(side_effect=fake_master),
     ), patch(
-        "audio_ingest.news_research.runner.run_for_date",
+        "automation_daemon.news_research.runner.run_for_date",
         research_mock,
     ), patch(
-        "audio_ingest.news_personal_digest.runner.run_for_date",
+        "automation_daemon.news_personal_digest.runner.run_for_date",
         AsyncMock(side_effect=fake_digest),
     ), patch(
-        "audio_ingest.orchestrator.send_message", AsyncMock(),
+        "automation_daemon.orchestrator.send_message", AsyncMock(),
     ):
-        from audio_ingest.orchestrator import _run_news_daily_master_path
+        from automation_daemon.orchestrator import _run_news_daily_master_path
 
         await _run_news_daily_master_path(config)
 

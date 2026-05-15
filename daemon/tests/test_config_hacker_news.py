@@ -1,6 +1,6 @@
 import pytest
 
-from audio_ingest.config import DaemonConfig
+from automation_daemon.config import DaemonConfig
 
 
 def _base_env(monkeypatch: pytest.MonkeyPatch) -> None:

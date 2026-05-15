@@ -7,13 +7,13 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-from audio_ingest.news_daily_master.runner import (
+from automation_daemon.news_daily_master.runner import (
     AgentRunInput,
     AgentRunOutput,
     RunnerConfig,
     run_for_date,
 )
-from audio_ingest.news_daily_master.state import NewsDailyMasterStateDB
+from automation_daemon.news_daily_master.state import NewsDailyMasterStateDB
 
 
 @pytest.fixture
@@ -311,7 +311,7 @@ async def test_run_agent_via_agent_infra_parses_structured_summary(
     tmp_path: Path,
 ) -> None:
     """Agent emits a JSON summary in its final text block; we parse it."""
-    from audio_ingest.news_daily_master.runner import run_agent_via_agent_infra
+    from automation_daemon.news_daily_master.runner import run_agent_via_agent_infra
 
     summary = {
         "success": True,
@@ -351,7 +351,7 @@ async def test_run_agent_via_agent_infra_parses_structured_summary(
 async def test_run_agent_via_agent_infra_handles_missing_summary(
     tmp_path: Path,
 ) -> None:
-    from audio_ingest.news_daily_master.runner import run_agent_via_agent_infra
+    from automation_daemon.news_daily_master.runner import run_agent_via_agent_infra
     msg = make_assistant_message(text_blocks=["I did stuff but no JSON."])
 
     async def fake_query(prompt, options):
@@ -406,7 +406,7 @@ class TestAgentRunOutputInvariants:
 
 def test_parse_agent_summary_picks_last_json_block() -> None:
     """When the agent emits multiple JSON blocks, only the LAST one wins."""
-    from audio_ingest.news_daily_master.runner import _parse_agent_summary
+    from automation_daemon.news_daily_master.runner import _parse_agent_summary
 
     intermediate = '{"success": false, "item_count": 0, "error": "still working"}'
     final = '{"success": true, "item_count": 5, "categories": ["AI"]}'
@@ -421,7 +421,7 @@ def test_parse_agent_summary_picks_last_json_block() -> None:
 
 
 def test_parse_agent_summary_invalid_json_returns_failure() -> None:
-    from audio_ingest.news_daily_master.runner import _parse_agent_summary
+    from automation_daemon.news_daily_master.runner import _parse_agent_summary
 
     # Closing brace is required for the fenced-block regex to match the block
     # at all; the JSON inside is then what fails to parse.
@@ -437,7 +437,7 @@ def test_parse_agent_summary_failure_without_error_field_synthesises_one() -> No
     Without this fallback, the AgentRunOutput pair-invariant would refuse to
     construct, and the runner would crash with an unhelpful error.
     """
-    from audio_ingest.news_daily_master.runner import _parse_agent_summary
+    from automation_daemon.news_daily_master.runner import _parse_agent_summary
 
     out = _parse_agent_summary(['```json\n{"success": false, "item_count": 0}\n```'])
     assert out.success is False
@@ -451,7 +451,7 @@ def test_parse_agent_summary_failure_without_error_field_synthesises_one() -> No
 
 def test_hash_notes_section_returns_none_on_unicode_error(tmp_path: Path) -> None:
     """A non-UTF8 byte sequence in the master doc must not crash the runner."""
-    from audio_ingest.news_daily_master.runner import _hash_notes_section
+    from automation_daemon.news_daily_master.runner import _hash_notes_section
 
     p = tmp_path / "master.md"
     p.write_bytes(b"# Header\n\n## Notes\n\xff\xfe non-utf8 bytes\n")
@@ -480,7 +480,7 @@ async def test_run_for_date_unexpected_exception_marks_failed(
         raise RuntimeError("hashing crashed unexpectedly")
 
     monkeypatch.setattr(
-        "audio_ingest.news_daily_master.runner._hash_notes_section", boom,
+        "automation_daemon.news_daily_master.runner._hash_notes_section", boom,
     )
 
     async def fake_agent(inp: AgentRunInput) -> AgentRunOutput:

@@ -9,10 +9,10 @@ import logging
 
 
 def test_httpx_logger_is_warning_or_higher():
-    import audio_ingest.__main__  # noqa: F401 — import for side effect
+    import automation_daemon.__main__  # noqa: F401 — import for side effect
     assert logging.getLogger("httpx").getEffectiveLevel() >= logging.WARNING
 
 
 def test_httpcore_logger_is_warning_or_higher():
-    import audio_ingest.__main__  # noqa: F401
+    import automation_daemon.__main__  # noqa: F401
     assert logging.getLogger("httpcore").getEffectiveLevel() >= logging.WARNING

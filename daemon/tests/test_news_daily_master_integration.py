@@ -11,10 +11,10 @@ from pathlib import Path
 
 import pytest
 
-from audio_ingest.news_daily_master.runner import (
+from automation_daemon.news_daily_master.runner import (
     AgentRunInput, AgentRunOutput, RunnerConfig, run_for_date,
 )
-from audio_ingest.news_daily_master.state import NewsDailyMasterStateDB
+from automation_daemon.news_daily_master.state import NewsDailyMasterStateDB
 
 
 def _seed_news_items(vault: Path, target: date, slugs: list[str]) -> None:

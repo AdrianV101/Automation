@@ -5,7 +5,7 @@ from zoneinfo import ZoneInfo
 
 import pytest
 
-from audio_ingest.hacker_news_adapter import _seconds_until_next_local_time
+from automation_daemon.hacker_news_adapter import _seconds_until_next_local_time
 
 
 UTC = timezone.utc

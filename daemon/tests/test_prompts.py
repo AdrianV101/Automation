@@ -15,14 +15,14 @@ from pathlib import Path
 
 import pytest
 
-from audio_ingest.prompts import (
+from automation_daemon.prompts import (
     build_ask_system_prompt,
     build_chat_system_prompt,
     build_extraction_system_prompt,
     build_note_system_prompt,
     build_task_system_prompt,
 )
-from audio_ingest.tools import TOOLS_ASK, TOOLS_TASK
+from automation_daemon.tools import TOOLS_ASK, TOOLS_TASK
 
 
 VAULT_TOOL_RE = re.compile(r"\bvault_[a-z]+(?:_[a-z]+)*\b")
@@ -267,7 +267,7 @@ class TestLinkDiscoveryRecipeConsistency:
     """The link-discovery recipe must be the same across all write-capable prompts.
 
     The recipe lives as a module-level LINK_DISCOVERY_RECIPE constant in
-    audio_ingest.prompts and is interpolated into NOTE, TASK, and EXTRACTION.
+    automation_daemon.prompts and is interpolated into NOTE, TASK, and EXTRACTION.
     This test asserts the canonical 8-verb list (with the 'related to'
     prohibition) appears verbatim in all three so a future prompt edit can't
     silently drift one of them.
@@ -312,7 +312,7 @@ class TestLinkDiscoveryRecipeConsistency:
         the appropriate path_label -- so a copy-paste that drifted from the
         constant would fail here.
         """
-        from audio_ingest.prompts import LINK_DISCOVERY_RECIPE
+        from automation_daemon.prompts import LINK_DISCOVERY_RECIPE
 
         note_recipe = LINK_DISCOVERY_RECIPE.format(path_label="note path")
         task_recipe = LINK_DISCOVERY_RECIPE.format(path_label="task path")

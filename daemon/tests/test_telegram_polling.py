@@ -3,7 +3,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from telegram_interface import BotConfig
-from audio_ingest.notifications import (
+from automation_daemon.notifications import (
     _build_inline_keyboard,
     answer_callback_query,
     edit_message_reply_markup,
@@ -64,7 +64,7 @@ class TestSendSpeakerLabelingPrompt:
         tg = _make_tg()
         response_data = {"ok": True, "result": {"message_id": 789}}
 
-        with patch("audio_ingest.notifications.httpx.AsyncClient") as MockClient:
+        with patch("automation_daemon.notifications.httpx.AsyncClient") as MockClient:
             mock_client = AsyncMock()
             MockClient.return_value.__aenter__ = AsyncMock(return_value=mock_client)
             MockClient.return_value.__aexit__ = AsyncMock(return_value=False)
@@ -90,7 +90,7 @@ class TestSendSpeakerLabelingPrompt:
         tg = _make_tg()
         response_data = {"ok": True, "result": {"message_id": 789}}
 
-        with patch("audio_ingest.notifications.httpx.AsyncClient") as MockClient:
+        with patch("automation_daemon.notifications.httpx.AsyncClient") as MockClient:
             mock_client = AsyncMock()
             MockClient.return_value.__aenter__ = AsyncMock(return_value=mock_client)
             MockClient.return_value.__aexit__ = AsyncMock(return_value=False)
@@ -121,7 +121,7 @@ class TestSendSpeakerLabelingPrompt:
         clip_path = tmp_path / "clip.ogg"
         clip_path.write_bytes(b"fake ogg data")
 
-        with patch("audio_ingest.notifications.httpx.AsyncClient") as MockClient:
+        with patch("automation_daemon.notifications.httpx.AsyncClient") as MockClient:
             mock_client = AsyncMock()
             MockClient.return_value.__aenter__ = AsyncMock(return_value=mock_client)
             MockClient.return_value.__aexit__ = AsyncMock(return_value=False)
@@ -148,7 +148,7 @@ class TestSendSpeakerLabeledConfirmation:
         tg = _make_tg()
         response_data = {"ok": True, "result": {"message_id": 555}}
 
-        with patch("audio_ingest.notifications.httpx.AsyncClient") as MockClient:
+        with patch("automation_daemon.notifications.httpx.AsyncClient") as MockClient:
             mock_client = AsyncMock()
             MockClient.return_value.__aenter__ = AsyncMock(return_value=mock_client)
             MockClient.return_value.__aexit__ = AsyncMock(return_value=False)
@@ -169,7 +169,7 @@ class TestAnswerCallbackQuery:
     async def test_calls_telegram_api(self):
         tg = _make_tg()
 
-        with patch("audio_ingest.notifications.httpx.AsyncClient") as MockClient:
+        with patch("automation_daemon.notifications.httpx.AsyncClient") as MockClient:
             mock_client = AsyncMock()
             MockClient.return_value.__aenter__ = AsyncMock(return_value=mock_client)
             MockClient.return_value.__aexit__ = AsyncMock(return_value=False)
@@ -189,7 +189,7 @@ class TestAnswerCallbackQuery:
     async def test_no_text(self):
         tg = _make_tg()
 
-        with patch("audio_ingest.notifications.httpx.AsyncClient") as MockClient:
+        with patch("automation_daemon.notifications.httpx.AsyncClient") as MockClient:
             mock_client = AsyncMock()
             MockClient.return_value.__aenter__ = AsyncMock(return_value=mock_client)
             MockClient.return_value.__aexit__ = AsyncMock(return_value=False)
@@ -208,7 +208,7 @@ class TestEditMessageReplyMarkup:
     async def test_removes_keyboard(self):
         tg = _make_tg()
 
-        with patch("audio_ingest.notifications.httpx.AsyncClient") as MockClient:
+        with patch("automation_daemon.notifications.httpx.AsyncClient") as MockClient:
             mock_client = AsyncMock()
             MockClient.return_value.__aenter__ = AsyncMock(return_value=mock_client)
             MockClient.return_value.__aexit__ = AsyncMock(return_value=False)
@@ -229,7 +229,7 @@ class TestEditMessageReplyMarkup:
         tg = _make_tg()
         new_markup = {"inline_keyboard": [[{"text": "Ok", "callback_data": "ok"}]]}
 
-        with patch("audio_ingest.notifications.httpx.AsyncClient") as MockClient:
+        with patch("automation_daemon.notifications.httpx.AsyncClient") as MockClient:
             mock_client = AsyncMock()
             MockClient.return_value.__aenter__ = AsyncMock(return_value=mock_client)
             MockClient.return_value.__aexit__ = AsyncMock(return_value=False)
