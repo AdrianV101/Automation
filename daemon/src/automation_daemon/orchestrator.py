@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import logging
 from collections.abc import Awaitable, Callable
+from dataclasses import replace
 from typing import Protocol
 from zoneinfo import ZoneInfo
 
@@ -31,7 +32,7 @@ from .notifications import (
 from .people import load_people
 from .speaker_resolution import (
     apply_speaker_names, decode_choice, deserialize_job,
-    IGNORE, OTHER, serialize_job, unrecognised_speakers,
+    IGNORE, is_unrecognised, OTHER, serialize_job, unrecognised_speakers,
 )
 from .news_email_adapter import handle_news_email
 from .pipeline import process_recording
@@ -68,11 +69,11 @@ async def dispatch_callback_query(
 ) -> None:
     """Route a Telegram callback_query by data prefix.
 
-    `nr:` → digest rating handler. Anything else → fallback (e.g. speaker
-    labeling). With no digest_handler, even nr: routes to fallback. With
-    no fallback, unrecognised data is dropped silently — no toast, no DB
-    write — because the bot is shared across features and we don't want
-    one feature to claim ownership of unfamiliar callbacks.
+    `nr:` → digest rating handler. Anything else → fallback_handler (speaker
+    labelling). With no digest_handler, even nr: routes to fallback. In the
+    daemon, a fallback_handler (speaker labelling) is always wired and receives
+    all non-digest callbacks; if no fallback_handler is provided the callback
+    is dropped silently.
     """
     if digest_handler is not None and data.startswith(f"{_DIGEST_CALLBACK_PREFIX}:"):
         await digest_handler(
@@ -96,6 +97,7 @@ class ProcessRecording(Protocol):
         config: DaemonConfig,
         *,
         status: StatusTracker | None = None,
+        speakers_unresolved: bool = False,
     ) -> None: ...
 
 
@@ -206,29 +208,47 @@ async def gate_or_pass(
     known = [p.name for p in load_people(config.pkm_vault_path)]
     prompt_ids: list[int | None] = []
     for idx, label in enumerate(unknown):
-        mid = await send_speaker_prompt(
-            speaker_idx=idx, speaker_label=label,
-            recording_name=job.filename,
-            sample_text=_speaker_snippet(job, label),
-            tg=bot, known_names=known, thread_id=thread_id,
-        )
+        try:
+            mid = await send_speaker_prompt(
+                speaker_idx=idx, speaker_label=label,
+                recording_name=job.filename,
+                sample_text=_speaker_snippet(job, label),
+                tg=bot, known_names=known, thread_id=thread_id,
+            )
+        except Exception:
+            log.exception(
+                "Failed to send speaker prompt for %s (speaker %d/%d %r); "
+                "slot preserved as None for positional alignment",
+                job.id, idx + 1, len(unknown), label,
+            )
+            mid = None
         # Keep prompt_ids positionally aligned with `unknown`: index i is
         # always speaker i, so a free-text reply can be mapped back by the
         # replied-to message id's position even with multiple unknowns.
         prompt_ids.append(mid)
     await email_db.set_pending_prompt_ids(job.id, prompt_ids)
     await email_db.update_status(job.id, "awaiting_speaker_labels")
+    if all(mid is None for mid in prompt_ids):
+        # Every prompt failed — operator would have no way to label the
+        # recording. Send an explicit notice so the failure is not silent.
+        try:
+            await send_message(
+                "⚠️ Held a recording with unrecognised speakers but couldn't "
+                "deliver the labelling prompt(s) — will retry/await; check "
+                "Telegram connectivity.",
+                bot, thread_id=thread_id,
+            )
+        except Exception:
+            log.exception("Failed to send prompt-delivery-failure notice for %s", job.id)
     return True
 
 
 async def _find_pending_by_prompt_id(
     email_db: EmailIngestStateDB, message_id: int,
 ) -> dict | None:
-    # message_id is the Telegram id of a prompt; map it to its pending row.
-    for row in await email_db.list_pending_older_than("2999-01-01T00:00:00+00:00"):
-        if message_id in row["prompt_message_ids"]:
-            return row
-    return None
+    # Delegate to the DB method which is poison-resilient and uses a direct
+    # query instead of the old sentinel-date full-table scan.
+    return await email_db.get_pending_by_prompt_id(message_id)
 
 
 async def _maybe_resume(
@@ -240,21 +260,57 @@ async def _maybe_resume(
         return
     if set(row["name_map"]) != set(row["unknown_speakers"]):
         return  # still waiting on at least one speaker
-    job = deserialize_job(row["payload"])
-    job = job.__class__(
-        id=job.id, recorded_at=job.recorded_at, filename=job.filename,
-        source=job.source,
+
+    # Guard against a corrupt stored payload — treat as poison: log, mark
+    # failed, drop the pending row, notify operator, and return without routing.
+    try:
+        job = deserialize_job(row["payload"])
+    except Exception:
+        log.exception(
+            "speaker resume: stored payload for %s is unreadable; dropping", msg_id,
+        )
+        try:
+            await email_db.update_status(msg_id, "failed")
+        except Exception:
+            log.exception("speaker resume: failed to mark %s failed after bad payload", msg_id)
+        await email_db.delete_pending(msg_id)
+        try:
+            await send_message(
+                "⚠️ A held recording's stored data was unreadable; dropped — "
+                "re-send if needed.",
+                bot,
+            )
+        except Exception:
+            log.exception("speaker resume: failed to send notice for poisoned payload %s", msg_id)
+        return
+
+    job = replace(
+        job,
         transcript_data=apply_speaker_names(job.transcript_data, row["name_map"]),
-        duration_ms=job.duration_ms, source_metadata=job.source_metadata,
     )
+    # Any speaker the operator chose IGNORE for keeps its generic label as the
+    # mapped name — flag these for the pipeline so it knows resolution is partial.
+    speakers_unresolved = any(
+        is_unrecognised(k) and v == k
+        for k, v in row["name_map"].items()
+    )
+
+    # Route FIRST; only clean up (delete row + send completion notice) on success.
+    # This preserves the pending row for retry/reaper if routing fails.
+    tracker = EmailIngestStatusTracker(email_db, msg_id)
+    try:
+        await process_recording_fn(
+            job, config, status=tracker, speakers_unresolved=speakers_unresolved,
+        )
+    except Exception:
+        log.exception(
+            "speaker resume: routing failed for %s; pending row left for retry/reaper",
+            msg_id,
+        )
+        raise  # surface to the handler wrapper so the operator is notified
+
     await send_speaker_resolution_complete(job.filename, row["name_map"], bot)
     await email_db.delete_pending(msg_id)
-    # Advance the status away from awaiting_speaker_labels before routing so
-    # the event row reflects pipeline activity even if process_recording never
-    # writes its own status update (e.g. in tests with a mock).
-    await email_db.update_status(msg_id, "extracting")
-    tracker = EmailIngestStatusTracker(email_db, msg_id)
-    await process_recording_fn(job, config, status=tracker)
 
 
 def make_speaker_callback_handler(
@@ -265,30 +321,43 @@ def make_speaker_callback_handler(
     process_recording_fn=process_recording,
 ):
     async def handler(*, callback_query_id: str, message_id: int, data: str) -> None:
-        decoded = decode_choice(data)
-        if decoded is None:
-            return  # not ours; dispatch_callback_query already filtered, be safe
-        speaker_idx, choice = decoded
-        row = await _find_pending_by_prompt_id(email_db, message_id)
-        if row is None:
-            await answer_callback_query(callback_query_id, "No longer pending", bot)
-            return
-        msg_id = row["message_id"]
-        unknown = row["unknown_speakers"]
-        if speaker_idx >= len(unknown):
-            await answer_callback_query(callback_query_id, "Unknown speaker", bot)
-            return
-        label = unknown[speaker_idx]
-        if choice == OTHER:
-            # Ask for free text; the reply handler completes the mapping.
-            await answer_callback_query(
-                callback_query_id, f"Reply with the name for {label}", bot,
-            )
-            return
-        name = label if choice == IGNORE else choice
-        await email_db.set_pending_name(msg_id, label, name)
-        await answer_callback_query(callback_query_id, f"{label} → {name}", bot)
-        await _maybe_resume(msg_id, email_db, config, bot, process_recording_fn)
+        try:
+            decoded = decode_choice(data)
+            if decoded is None:
+                return  # not ours; dispatch_callback_query already filtered, be safe
+            speaker_idx, choice = decoded
+            row = await _find_pending_by_prompt_id(email_db, message_id)
+            if row is None:
+                await answer_callback_query(callback_query_id, "No longer pending", bot)
+                return
+            msg_id = row["message_id"]
+            unknown = row["unknown_speakers"]
+            if speaker_idx >= len(unknown):
+                await answer_callback_query(callback_query_id, "Unknown speaker", bot)
+                return
+            label = unknown[speaker_idx]
+            if choice == OTHER:
+                # Ask for free text; the reply handler completes the mapping.
+                await answer_callback_query(
+                    callback_query_id, f"Reply with the name for {label}", bot,
+                )
+                return
+            name = label if choice == IGNORE else choice
+            await email_db.set_pending_name(msg_id, label, name)
+            await answer_callback_query(callback_query_id, f"{label} → {name}", bot)
+            await _maybe_resume(msg_id, email_db, config, bot, process_recording_fn)
+        except Exception:
+            log.exception("speaker callback handler failed for query %s", callback_query_id)
+            try:
+                await answer_callback_query(
+                    callback_query_id,
+                    "Couldn't record that — try again or check logs",
+                    bot,
+                )
+            except Exception:
+                log.exception(
+                    "Failed to send error toast for callback query %s", callback_query_id,
+                )
     return handler
 
 
@@ -302,15 +371,34 @@ def make_text_reply_handler(
     async def on_text_reply(reply_to_message_id: int, text: str) -> None:
         row = await _find_pending_by_prompt_id(email_db, reply_to_message_id)
         if row is None:
-            return  # not a speaker-prompt reply
+            return  # not a speaker-prompt reply (silent — could be unrelated)
         prompt_ids = row["prompt_message_ids"]
         try:
             idx = prompt_ids.index(reply_to_message_id)
         except ValueError:
-            return  # reply id not among this row's prompts
+            # Matched a pending row but the reply id isn't in its prompt list —
+            # stale or misrouted reply; tell the operator.
+            try:
+                await send_message(
+                    "⚠️ Couldn't map that reply to a speaker — the prompt may "
+                    "be stale; re-trigger labelling.",
+                    bot,
+                )
+            except Exception:
+                log.exception("Failed to send unmappable-reply notice")
+            return
         unknown = row["unknown_speakers"]
         if idx >= len(unknown):
-            return  # defensive: misaligned/legacy row
+            # Positional alignment broken (defensive/legacy row); tell the operator.
+            try:
+                await send_message(
+                    "⚠️ Couldn't map that reply to a speaker — the prompt may "
+                    "be stale; re-trigger labelling.",
+                    bot,
+                )
+            except Exception:
+                log.exception("Failed to send unmappable-reply notice")
+            return
         label = unknown[idx]
         await email_db.set_pending_name(row["message_id"], label, text.strip())
         await _maybe_resume(

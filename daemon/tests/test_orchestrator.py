@@ -374,7 +374,8 @@ async def test_callback_records_name_and_resumes_when_complete(tmp_path) -> None
     routed_job = routed.await_args.args[0]
     assert routed_job.transcript_data.speakers == ["Alice"]
     assert await db.get_pending("m1") is None
-    assert (await db.get_event("m1"))["status"] in ("writing_pkm", "extracting", "completed")
+    # Status is now advanced by process_recording itself (C2: removed pre-advance
+    # to "extracting"); mock doesn't update status, so we only verify routing.
 
 
 @pytest.mark.asyncio
@@ -399,7 +400,8 @@ async def test_text_reply_records_name_and_resumes_when_complete(tmp_path) -> No
     routed_job = routed.await_args.args[0]
     assert routed_job.transcript_data.speakers == ["Carol"]
     assert await db.get_pending("m1") is None
-    assert (await db.get_event("m1"))["status"] in ("writing_pkm", "extracting", "completed")
+    # Status is now advanced by process_recording itself (C2: removed pre-advance
+    # to "extracting"); mock doesn't update status, so we only verify routing.
 
 
 # ---------------------------------------------------------------------------
@@ -529,3 +531,107 @@ async def test_late_reply_after_timeout_reroutes(tmp_path) -> None:
                       data=encode_choice(0, "Alice"))
     routed.assert_awaited_once()
     assert routed.await_args.args[0].transcript_data.speakers == ["Alice"]
+
+
+# ---------------------------------------------------------------------------
+# Review findings: C1, C2, C2-feedback/I2, I3, M1, sentinel removal
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_gate_persists_and_awaits_even_if_all_prompts_fail(tmp_path) -> None:
+    db = EmailIngestStateDB(tmp_path / "s.db"); await db.init_db()
+    await db.insert_event("m1", uid=1)
+    cfg = DaemonConfig(telegram_bot_token="t", telegram_chat_id="c", pkm_vault_path=tmp_path)
+    bot = BotConfig(bot_token="t", chat_id="c")
+    with (
+        patch("automation_daemon.orchestrator.send_speaker_prompt",
+              new=AsyncMock(side_effect=RuntimeError("telegram 429"))),
+        patch("automation_daemon.orchestrator.send_message", new=AsyncMock()) as notify,
+    ):
+        gated = await gate_or_pass(_job_gate(["Speaker 1", "Speaker 2"]), cfg, db, bot, thread_id=None)
+    assert gated is True
+    row = await db.get_pending("m1")
+    assert row is not None
+    assert row["prompt_message_ids"] == [None, None]   # alignment preserved
+    assert (await db.get_event("m1"))["status"] == "awaiting_speaker_labels"
+    notify.assert_awaited()  # operator told prompts couldn't be delivered
+
+
+@pytest.mark.asyncio
+async def test_maybe_resume_routes_before_deleting_and_survives_routing_error(tmp_path) -> None:
+    db = EmailIngestStateDB(tmp_path / "s.db"); await db.init_db()
+    await db.insert_event("m1", uid=1)
+    job = _job_gate(["Speaker 1"])
+    await db.insert_pending("m1", payload=serialize_job(job), unknown_speakers=["Speaker 1"])
+    await db.set_pending_prompt_ids("m1", [101])
+    await db.set_pending_name("m1", "Speaker 1", "Alice")
+    cfg = DaemonConfig(telegram_bot_token="t", telegram_chat_id="c", pkm_vault_path=tmp_path)
+    bot = BotConfig(bot_token="t", chat_id="c")
+    boom = AsyncMock(side_effect=RuntimeError("extraction died"))
+    from automation_daemon.orchestrator import _maybe_resume
+    with patch("automation_daemon.orchestrator.send_speaker_resolution_complete", new=AsyncMock()):
+        with pytest.raises(RuntimeError):
+            await _maybe_resume("m1", db, cfg, bot, boom)
+    # routing failed → row MUST still exist for retry/reaper (not deleted)
+    assert await db.get_pending("m1") is not None
+
+
+@pytest.mark.asyncio
+async def test_maybe_resume_drops_poisoned_payload_with_notice(tmp_path) -> None:
+    db = EmailIngestStateDB(tmp_path / "s.db"); await db.init_db()
+    await db.insert_event("m1", uid=1)
+    await db.insert_pending("m1", payload="{not json", unknown_speakers=["Speaker 1"])
+    await db.set_pending_name("m1", "Speaker 1", "Alice")
+    cfg = DaemonConfig(telegram_bot_token="t", telegram_chat_id="c", pkm_vault_path=tmp_path)
+    bot = BotConfig(bot_token="t", chat_id="c")
+    routed = AsyncMock()
+    from automation_daemon.orchestrator import _maybe_resume
+    with patch("automation_daemon.orchestrator.send_message", new=AsyncMock()) as notify:
+        await _maybe_resume("m1", db, cfg, bot, routed)
+    routed.assert_not_awaited()
+    assert await db.get_pending("m1") is None
+    assert (await db.get_event("m1"))["status"] == "failed"
+    notify.assert_awaited()
+
+
+@pytest.mark.asyncio
+async def test_ignore_choice_routes_with_speakers_unresolved_flag(tmp_path) -> None:
+    db = EmailIngestStateDB(tmp_path / "s.db"); await db.init_db()
+    await db.insert_event("m1", uid=1)
+    job = _job_gate(["Speaker 1"])
+    await db.insert_pending("m1", payload=serialize_job(job), unknown_speakers=["Speaker 1"])
+    await db.set_pending_prompt_ids("m1", [101])
+    cfg = DaemonConfig(telegram_bot_token="t", telegram_chat_id="c", pkm_vault_path=tmp_path)
+    bot = BotConfig(bot_token="t", chat_id="c")
+    routed = AsyncMock()
+    from automation_daemon.orchestrator import make_speaker_callback_handler
+    handler = make_speaker_callback_handler(email_db=db, config=cfg, bot=bot, process_recording_fn=routed)
+    with (
+        patch("automation_daemon.orchestrator.answer_callback_query", new=AsyncMock()),
+        patch("automation_daemon.orchestrator.send_speaker_resolution_complete", new=AsyncMock()),
+    ):
+        await handler(callback_query_id="q", message_id=101, data=encode_choice(0, "__ignore__"))
+    routed.assert_awaited_once()
+    assert routed.await_args.kwargs["speakers_unresolved"] is True
+    # the generic label is preserved, NOT the literal "__ignore__"
+    assert routed.await_args.args[0].transcript_data.speakers == ["Speaker 1"]
+
+
+@pytest.mark.asyncio
+async def test_text_reply_unmappable_notifies_operator(tmp_path) -> None:
+    db = EmailIngestStateDB(tmp_path / "s.db"); await db.init_db()
+    await db.insert_event("m1", uid=1)
+    job = _job_gate(["Speaker 1"])
+    await db.insert_pending("m1", payload=serialize_job(job), unknown_speakers=["Speaker 1"])
+    await db.set_pending_prompt_ids("m1", [101])
+    cfg = DaemonConfig(telegram_bot_token="t", telegram_chat_id="c", pkm_vault_path=tmp_path)
+    bot = BotConfig(bot_token="t", chat_id="c")
+    from automation_daemon.orchestrator import make_text_reply_handler
+    on_text_reply = make_text_reply_handler(email_db=db, config=cfg, bot=bot, process_recording_fn=AsyncMock())
+    with patch("automation_daemon.orchestrator.send_message", new=AsyncMock()) as notify:
+        # reply id 101 IS in prompt_ids (row matched) but force the unusable branch:
+        # use a prompt id that maps the row but an out-of-range index scenario —
+        # simulate by replying to a matched row whose unknown list is shorter.
+        await db.set_pending_prompt_ids("m1", [101, 102])  # 2 prompts, 1 unknown
+        await on_text_reply(reply_to_message_id=102, text="Bob")  # idx 1 >= len(unknown)=1
+    notify.assert_awaited()  # operator told it couldn't be mapped
