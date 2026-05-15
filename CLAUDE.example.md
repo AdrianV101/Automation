@@ -138,7 +138,7 @@ The daemon (`automation_daemon`) is a thin orchestrator wiring the libraries tog
 ## Deployed Services
 
 ### Audio Ingestion Pipeline
-- **Python daemon**: launchd LaunchAgent `com.adrian.automation-daemon` on the Mac mini -- plist installed by `daemon/scripts/install-launchagent.sh` at `~/Library/LaunchAgents/com.adrian.automation-daemon.plist`, manage with `launchctl {bootstrap|bootout|kickstart -k} gui/$(id -u)/com.adrian.automation-daemon` (or `launchctl print gui/$(id -u)/com.adrian.automation-daemon`), logs at `~/Library/Logs/automation-daemon/{stdout,stderr}.log`
+- **Python daemon**: launchd LaunchAgent `com.adrian.automation-daemon` on the Mac mini -- plist installed by `daemon/scripts/install-launchagent.sh` at `~/Library/LaunchAgents/com.adrian.automation-daemon.plist`, manage with `launchctl {bootout|kickstart -k} gui/$(id -u)/com.adrian.automation-daemon` (or `launchctl print gui/$(id -u)/com.adrian.automation-daemon`; reinstall/re-bootstrap by re-running `daemon/scripts/install-launchagent.sh`), logs at `~/Library/Logs/automation-daemon/{stdout,stderr}.log`
 - **Email bridge**: Proton Mail Bridge installed as a per-user LaunchAgent on the same host; exposes the Proton mailbox at `127.0.0.1:1143` (STARTTLS, self-signed cert -- `IMAP_SSL_VERIFY=false`)
 - **Config**: `daemon/.env` (secrets, not committed) -- created from `daemon/.env.example`
 - **Telegram notifications**: bot token + chat ID configured via env vars
