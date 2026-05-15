@@ -42,3 +42,23 @@ def test_write_raw_transcript_custom_tags(tmp_path):
     content = path.read_text()
     assert "source: voice-memo" in content
     assert "tags: [transcript, voice-memo, personal]" in content
+
+
+def _td() -> TranscriptData:
+    return TranscriptData(
+        job_id="m1", recorded_at="2026-05-15T10:00:00+00:00",
+        duration_seconds=60.0, speakers=["Speaker 1"],
+        segments=[TranscriptSegment(0.0, 1.0, "Speaker 1", "hi")],
+        full_text="hi",
+    )
+
+
+def test_flag_absent_by_default(tmp_path) -> None:
+    p = write_raw_transcript(_td(), tmp_path, source="plaud-email")
+    assert "speakers_unresolved" not in p.read_text()
+
+
+def test_flag_present_when_set(tmp_path) -> None:
+    p = write_raw_transcript(_td(), tmp_path, source="plaud-email",
+                             speakers_unresolved=True)
+    assert "speakers_unresolved: true" in p.read_text()

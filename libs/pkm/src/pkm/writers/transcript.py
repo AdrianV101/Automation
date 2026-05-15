@@ -20,6 +20,7 @@ def write_raw_transcript(
     pkm_vault_path: Path,
     source: str = "plaud",
     tags: list[str] | None = None,
+    speakers_unresolved: bool = False,
 ) -> Path:
     dt = parse_date(transcript.recorded_at)
     rel = (
@@ -37,6 +38,7 @@ def write_raw_transcript(
         duration_min = f"{transcript.duration_seconds / 60:.0f} minutes"
 
     speakers_str = ", ".join(transcript.speakers)
+    unresolved_line = "speakers_unresolved: true\n" if speakers_unresolved else ""
     if transcript.segments:
         segments_md = "\n".join(
             f"[{_fmt_time(s.start)}] **{s.speaker}:** {s.text}"
@@ -53,7 +55,7 @@ recorded_at: {transcript.recorded_at}
 duration: {duration_min}
 speakers: [{speakers_str}]
 job_id: {transcript.job_id}
-tags: [{tags_str}]
+{unresolved_line}tags: [{tags_str}]
 ---
 
 # Transcript - {dt.strftime('%Y-%m-%d')}
