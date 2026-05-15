@@ -32,6 +32,7 @@ async def process_recording(
     job: RecordingJob,
     config: DaemonConfig,
     status: "StatusTracker | None" = None,
+    speakers_unresolved: bool = False,
 ) -> None:
     """Run the pipeline for a single recording. Logs errors rather than raising."""
     log.info("Processing recording %s (%s)", job.filename, job.id)
@@ -50,7 +51,10 @@ async def process_recording(
         transcript = job.transcript_data
 
         await _notify_status(status, "writing_pkm")
-        transcript_path = write_raw_transcript(transcript, config.pkm_vault_path, source=job.source)
+        transcript_path = write_raw_transcript(
+            transcript, config.pkm_vault_path, source=job.source,
+            speakers_unresolved=speakers_unresolved,
+        )
 
         await _notify_status(status, "extracting")
         try:
