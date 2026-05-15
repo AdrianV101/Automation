@@ -1,11 +1,14 @@
 from __future__ import annotations
 
 import json
+import logging
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
 import aiosqlite
+
+log = logging.getLogger(__name__)
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS email_ingest_events (
@@ -47,6 +50,27 @@ _UPDATABLE_COLUMNS = frozenset({"transcript_path", "error", "summary_path"})
 
 def _now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
+
+
+def _decode_pending_row(d: dict[str, Any]) -> dict[str, Any] | None:
+    """Decode the three JSON columns of a speaker_resolution_pending row dict.
+
+    Returns the decoded dict on success, or None (and logs a warning) if any
+    JSON column is malformed.  The caller should skip None rows rather than
+    propagating the error.
+    """
+    try:
+        d["unknown_speakers"] = json.loads(d["unknown_speakers"])
+        d["name_map"] = json.loads(d["name_map"])
+        d["prompt_message_ids"] = json.loads(d["prompt_message_ids"])
+    except (json.JSONDecodeError, TypeError) as exc:
+        log.warning(
+            "skipping speaker_resolution_pending row %r — corrupt JSON: %s",
+            d.get("message_id"),
+            exc,
+        )
+        return None
+    return d
 
 
 class EmailIngestStateDB:
@@ -144,24 +168,25 @@ class EmailIngestStateDB:
                 row = await cur.fetchone()
         if row is None:
             return None
-        d = dict(row)
-        d["unknown_speakers"] = json.loads(d["unknown_speakers"])
-        d["name_map"] = json.loads(d["name_map"])
-        d["prompt_message_ids"] = json.loads(d["prompt_message_ids"])
-        return d
+        return _decode_pending_row(dict(row))
 
     async def set_pending_name(
         self, message_id: str, speaker_label: str, name: str,
     ) -> None:
-        cur_row = await self.get_pending(message_id)
-        if cur_row is None:
-            raise KeyError(f"no pending row for {message_id!r}")
-        name_map = cur_row["name_map"]
-        name_map[speaker_label] = name
         async with aiosqlite.connect(self._path) as db:
+            await db.execute("BEGIN IMMEDIATE")
+            async with db.execute(
+                "SELECT name_map FROM speaker_resolution_pending WHERE message_id = ?",
+                (message_id,),
+            ) as cur:
+                row = await cur.fetchone()
+            if row is None:
+                await db.rollback()
+                raise KeyError(f"no pending row for {message_id!r}")
+            name_map = json.loads(row[0])
+            name_map[speaker_label] = name
             await db.execute(
-                "UPDATE speaker_resolution_pending SET name_map = ? "
-                "WHERE message_id = ?",
+                "UPDATE speaker_resolution_pending SET name_map = ? WHERE message_id = ?",
                 (json.dumps(name_map), message_id),
             )
             await db.commit()
@@ -190,12 +215,30 @@ class EmailIngestStateDB:
                 rows = await cur.fetchall()
         out: list[dict[str, Any]] = []
         for row in rows:
-            d = dict(row)
-            d["unknown_speakers"] = json.loads(d["unknown_speakers"])
-            d["name_map"] = json.loads(d["name_map"])
-            d["prompt_message_ids"] = json.loads(d["prompt_message_ids"])
-            out.append(d)
+            decoded = _decode_pending_row(dict(row))
+            if decoded is not None:
+                out.append(decoded)
         return out
+
+    async def get_pending_by_prompt_id(
+        self, prompt_message_id: int,
+    ) -> dict[str, Any] | None:
+        """Return the pending row whose prompt_message_ids contains
+        `prompt_message_id`, or None.  Poison-resilient: a row with a
+        corrupt JSON column is skipped, not fatal."""
+        async with aiosqlite.connect(self._path) as db:
+            db.row_factory = aiosqlite.Row
+            async with db.execute(
+                "SELECT * FROM speaker_resolution_pending",
+            ) as cur:
+                rows = await cur.fetchall()
+        for row in rows:
+            decoded = _decode_pending_row(dict(row))
+            if decoded is None:
+                continue
+            if prompt_message_id in decoded["prompt_message_ids"]:
+                return decoded
+        return None
 
     async def delete_pending(self, message_id: str) -> None:
         async with aiosqlite.connect(self._path) as db:
