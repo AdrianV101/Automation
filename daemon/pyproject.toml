@@ -18,6 +18,7 @@ dependencies = [
     "pyyaml>=6.0",
     "markdownify>=0.13",
     "beautifulsoup4>=4.12",
+    "watchdog>=4.0",
 ]
 
 [project.optional-dependencies]

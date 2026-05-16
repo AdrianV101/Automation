@@ -72,6 +72,14 @@ class DaemonConfig:
     hacker_news_min_points: int = 100
     hacker_news_max_items: int = 25
     hacker_news_topstories_pool: int = 50
+    # Clippings auto-ingest (watchdog on the vault Clippings/ folder).
+    # See 01-Projects/Automation/development/designs/2026-05-15-auto-ingest-clippings-design.md
+    clippings_enabled: bool = False
+    clippings_dir: str = "Clippings"
+    clippings_settle_seconds: int = 5
+    clippings_reconcile_interval_seconds: int = 3600
+    clippings_max_failed_retries: int = 3
+    clippings_model: str = "claude-opus-4-7"
     # Proton Mail Bridge on localhost requires STARTTLS upgrade and uses a
     # self-signed cert; defaults match that canonical deployment.
     imap_use_starttls: bool = True
@@ -225,6 +233,19 @@ class DaemonConfig:
             "HACKER_NEWS_TOPSTORIES_POOL", "50", int,
         )
 
+        clippings_enabled = (
+            os.environ.get("CLIPPINGS_ENABLED", "false").lower() == "true"
+        )
+        clippings_dir = os.environ.get("CLIPPINGS_DIR", "Clippings")
+        clippings_settle_seconds = typed_env("CLIPPINGS_SETTLE_SECONDS", "5", int)
+        clippings_reconcile_interval_seconds = typed_env(
+            "CLIPPINGS_RECONCILE_INTERVAL_SECONDS", "3600", int,
+        )
+        clippings_max_failed_retries = typed_env(
+            "CLIPPINGS_MAX_FAILED_RETRIES", "3", int,
+        )
+        clippings_model = os.environ.get("CLIPPINGS_MODEL", "claude-opus-4-7")
+
         return cls(
             telegram_bot_token=require("TELEGRAM_BOT_TOKEN"),
             telegram_chat_id=require("TELEGRAM_CHAT_ID"),
@@ -273,6 +294,12 @@ class DaemonConfig:
             hacker_news_min_points=hacker_news_min_points,
             hacker_news_max_items=hacker_news_max_items,
             hacker_news_topstories_pool=hacker_news_topstories_pool,
+            clippings_enabled=clippings_enabled,
+            clippings_dir=clippings_dir,
+            clippings_settle_seconds=clippings_settle_seconds,
+            clippings_reconcile_interval_seconds=clippings_reconcile_interval_seconds,
+            clippings_max_failed_retries=clippings_max_failed_retries,
+            clippings_model=clippings_model,
         )
 
     def __post_init__(self) -> None:
@@ -302,6 +329,21 @@ class DaemonConfig:
             raise ValueError(
                 f"news_personal_digest_feedback_window_days must be >= 1, "
                 f"got {self.news_personal_digest_feedback_window_days}"
+            )
+        if self.clippings_settle_seconds < 0:
+            raise ValueError(
+                f"CLIPPINGS_SETTLE_SECONDS must be >= 0, "
+                f"got {self.clippings_settle_seconds}"
+            )
+        if self.clippings_reconcile_interval_seconds < 1:
+            raise ValueError(
+                f"CLIPPINGS_RECONCILE_INTERVAL_SECONDS must be >= 1, "
+                f"got {self.clippings_reconcile_interval_seconds}"
+            )
+        if self.clippings_max_failed_retries < 0:
+            raise ValueError(
+                f"CLIPPINGS_MAX_FAILED_RETRIES must be >= 0, "
+                f"got {self.clippings_max_failed_retries}"
             )
         if self.news_research_max_items < 1:
             raise ValueError(

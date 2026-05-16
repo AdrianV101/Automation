@@ -5,6 +5,7 @@ import logging
 from collections.abc import Awaitable, Callable
 from dataclasses import replace
 from datetime import date
+from pathlib import Path
 from typing import Protocol
 from zoneinfo import ZoneInfo
 
@@ -22,6 +23,8 @@ from email_ingest import (
 
 from .config import DaemonConfig
 from .command_config import build_daemon_commands
+from .clippings_adapter import run_clippings_watch_loop
+from .clippings_state import ClippingsStateDB
 from .hacker_news_adapter import run_scheduler_loop
 from .hn_state import HackerNewsStateDB
 from .supervisor import supervise
@@ -43,6 +46,7 @@ from agent_infra import SessionManager
 from telegram_interface import (
     BotConfig, TelegramInterface, ThreadStore,
     check_topics_enabled, create_forum_topic, reopen_forum_topic, send_message,
+    send_message_return_id,
 )
 
 log = logging.getLogger(__name__)
@@ -70,11 +74,14 @@ async def dispatch_callback_query(
 ) -> None:
     """Route a Telegram callback_query by data prefix.
 
-    `nr:` → digest rating handler. Anything else → fallback_handler (speaker
-    labelling). With no digest_handler, even nr: routes to fallback. In the
-    daemon, a fallback_handler (speaker labelling) is always wired and receives
-    all non-digest callbacks; if no fallback_handler is provided the callback
-    is dropped silently.
+    `nr:` → digest rating handler. Anything else → fallback_handler. In the
+    daemon the fallback is a composed handler: speaker-labelling is always
+    wired, and when clippings is enabled `clip:`-prefixed callbacks are
+    routed to the clippings clarification handler (the composed fallback
+    tries clippings first, then speaker labelling). With no digest_handler,
+    even nr: routes to fallback. With no fallback, unrecognised data is
+    dropped silently — the bot is shared across features and no feature
+    should claim ownership of unfamiliar callbacks.
     """
     if digest_handler is not None and data.startswith(f"{_DIGEST_CALLBACK_PREFIX}:"):
         await digest_handler(
@@ -110,6 +117,7 @@ async def run_daemon(config: DaemonConfig) -> None:
         or config.news_ingest_enabled
         or config.news_daily_master_enabled
         or config.hacker_news_enabled
+        or config.clippings_enabled
     ):
         log.error(
             "No ingestion path enabled. Set EMAIL_INGEST_ENABLED=true and/or "
@@ -130,6 +138,8 @@ async def run_daemon(config: DaemonConfig) -> None:
             )
         if config.hacker_news_enabled:
             tg.create_task(_run_hacker_news_path(config), name="hacker-news")
+        if config.clippings_enabled:
+            tg.create_task(_run_clippings_path(config), name="clippings")
 
 
 async def handle_incoming_email(
@@ -557,20 +567,107 @@ async def _run_email_ingest_path(config: DaemonConfig) -> None:
     # Wire digest rating callbacks only when the digest feature is enabled.
     digest_handler = await _build_digest_callback_handler(config, bot)
 
+    # Wire clippings clarification callbacks when the clippings feature is enabled.
+    # When disabled, clip_callback and clip_text_reply remain None, so the
+    # composed fallback/text-reply handlers below behave exactly like the
+    # speaker-labelling-only path (no clippings handlers registered).
+    clip_callback = None
+    clip_text_reply = None
+    if config.clippings_enabled:
+        from .clippings_telegram import (
+            handle_clip_callback, handle_clip_text_reply, make_finalize_route,
+        )
+        from .notifications import answer_callback_query as _raw_answer
+
+        clip_state = ClippingsStateDB(config.email_ingest_state_db_path)
+        await clip_state.init_db()
+
+        async def _clip_notifier(text: str, *, thread_id: int | None = None) -> None:
+            await send_message(text, bot, thread_id=thread_id)
+
+        _clip_finalize = make_finalize_route(
+            clippings_dir=config.pkm_vault_path / config.clippings_dir,
+            vault_root=config.pkm_vault_path,
+            state=clip_state,
+            telegram_notifier=_clip_notifier,
+            list_routing_targets=lambda: _clippings_routing_targets(config.pkm_vault_path),
+            news_topic_id=config.news_telegram_topic_id,
+            model=config.clippings_model,
+        )
+
+        async def _clip_answer(*, callback_query_id: str, text: str) -> None:
+            await _raw_answer(callback_query_id, text, bot)
+
+        async def clip_callback(  # type: ignore[assignment]
+            *, callback_query_id: str, message_id: int, data: str,
+        ) -> None:
+            await handle_clip_callback(
+                callback_query_id=callback_query_id, message_id=message_id,
+                data=data, state=clip_state, finalize_route=_clip_finalize,
+                answer_callback_query=_clip_answer,
+            )
+
+        async def clip_text_reply(  # type: ignore[assignment]
+            reply_to_message_id: int, text: str,
+        ) -> bool:
+            """Return True if a pending clarification consumed this reply.
+
+            Returning the consumed signal lets the composed text-reply
+            handler fall through to speaker labelling when this reply was
+            not for a clipping clarification.
+            """
+            async def _rerun(*, url_key: str, user_guidance: str) -> None:
+                await _clip_finalize(url_key=url_key, user_guidance=user_guidance)
+            return await handle_clip_text_reply(
+                text=text, reply_to_message_id=reply_to_message_id,
+                state=clip_state, rerun_with_guidance=_rerun,
+            )
+
     speaker_cb = make_speaker_callback_handler(
         email_db=email_db, config=config, bot=bot,
     )
+
+    async def _composed_fallback(
+        *, callback_query_id: str, message_id: int, data: str,
+    ) -> None:
+        # Clippings owns `clip:`-prefixed callbacks when enabled; every other
+        # non-digest callback (speaker labelling, etc.) goes to speaker_cb.
+        if clip_callback is not None and data.startswith("clip:"):
+            await clip_callback(
+                callback_query_id=callback_query_id,
+                message_id=message_id, data=data,
+            )
+            return
+        await speaker_cb(
+            callback_query_id=callback_query_id,
+            message_id=message_id, data=data,
+        )
 
     async def on_callback_query(cbq_id: str, msg_id: int, data: str) -> None:
         await dispatch_callback_query(
             callback_query_id=cbq_id, message_id=msg_id, data=data,
             digest_handler=digest_handler,
-            fallback_handler=speaker_cb,
+            fallback_handler=_composed_fallback,
         )
 
     on_text_reply = make_text_reply_handler(
         email_db=email_db, config=config, bot=bot,
     )
+
+    async def _composed_text_reply(reply_to_message_id: int, text: str) -> None:
+        # Clippings clarification replies are tried first — clip_text_reply
+        # only consumes a reply that matches a pending clarification (exact
+        # message-id, or the single unambiguous pending one). Anything it
+        # does not consume falls through to speaker-labelling text replies.
+        if clip_text_reply is not None:
+            if await clip_text_reply(reply_to_message_id, text):
+                return
+            log.info(
+                "Clip text reply (reply_to=%s) matched no unambiguous pending "
+                "clarification — falling through to speaker labelling",
+                reply_to_message_id,
+            )
+        await on_text_reply(reply_to_message_id, text)
 
     try:
         async with asyncio.TaskGroup() as tg:
@@ -583,7 +680,7 @@ async def _run_email_ingest_path(config: DaemonConfig) -> None:
                 lambda: tii.run_poller(
                     max_concurrent_dispatch=config.max_concurrent_dispatch,
                     on_callback_query=on_callback_query,
-                    on_labeling_reply=on_text_reply,
+                    on_labeling_reply=_composed_text_reply,
                 ),
                 on_persistent_failure=on_supervised_task_crashloop,
             ))
@@ -809,7 +906,6 @@ async def _run_news_daily_master_path(config: DaemonConfig) -> None:
             run_agent_via_agent_infra as _digest_run_agent,
         )
         from .news_personal_digest.state import NewsDigestStateDB
-        from telegram_interface import send_message_return_id
 
         digest_db = NewsDigestStateDB(config.email_ingest_state_db_path)
         await digest_db.init_db()
@@ -1004,6 +1100,82 @@ async def _run_hacker_news_path(config: DaemonConfig) -> None:
 
     await supervise(
         "hacker-news-scheduler", factory,
+        on_persistent_failure=on_persistent_failure,
+    )
+
+
+def _clippings_routing_targets(vault_root: Path) -> list[str]:
+    """Enumerate active project indexes + plans as clipping routing targets."""
+    targets: list[str] = []
+    projects_root = vault_root / "01-Projects"
+    if not projects_root.is_dir():
+        return targets
+    for proj in sorted(p for p in projects_root.iterdir() if p.is_dir()):
+        idx = proj / "_index.md"
+        if idx.exists():
+            targets.append(str(idx.relative_to(vault_root)))
+        plans = proj / "plans"
+        if plans.is_dir():
+            targets += [
+                str(p.relative_to(vault_root))
+                for p in sorted(plans.glob("*.md"))
+            ]
+    return targets
+
+
+async def _run_clippings_path(config: DaemonConfig) -> None:
+    from .clippings_telegram import build_clarification_keyboard
+
+    state_db = ClippingsStateDB(config.email_ingest_state_db_path)
+    await state_db.init_db()
+    bot = BotConfig(
+        bot_token=config.telegram_bot_token, chat_id=config.telegram_chat_id,
+    )
+    clippings_dir = config.pkm_vault_path / config.clippings_dir
+
+    async def telegram_notifier(text: str, *, thread_id: int | None = None) -> None:
+        await send_message(text, bot, thread_id=thread_id)
+
+    async def send_clarification(
+        *, question: str, candidates: list[str], clipping_name: str,
+    ) -> int | None:
+        # Keyboard's embedded msg_id is vestigial — handle_clip_callback
+        # correlates via the real Telegram message_id (stored by
+        # set_pending_clarification) using find_pending_clarification_by_message.
+        kb = build_clarification_keyboard(msg_id=0, candidates=candidates)
+        return await send_message_return_id(
+            f"❓ Clipping needs a home: {clipping_name}\n{question}",
+            bot, thread_id=config.news_telegram_topic_id, reply_markup=kb,
+        )
+
+    async def on_persistent_failure(task_name: str, failures: int) -> None:
+        try:
+            await send_message(
+                f"⚠️ Clippings watcher crash-looping\n\n"
+                f"Task: {task_name}\nConsecutive failures: {failures}\n"
+                f"Will keep restarting with backoff. Check daemon logs.",
+                bot, thread_id=config.news_telegram_topic_id,
+            )
+        except Exception:
+            log.exception("Failed to send clippings crash-loop alert")
+
+    async def factory() -> None:
+        await run_clippings_watch_loop(
+            clippings_dir=clippings_dir,
+            vault_root=config.pkm_vault_path,
+            state=state_db,
+            telegram_notifier=telegram_notifier,
+            list_routing_targets=lambda: _clippings_routing_targets(config.pkm_vault_path),
+            send_clarification=send_clarification,
+            settle_s=float(config.clippings_settle_seconds),
+            reconcile_interval_s=float(config.clippings_reconcile_interval_seconds),
+            max_failed_retries=config.clippings_max_failed_retries,
+            news_topic_id=config.news_telegram_topic_id,
+            model=config.clippings_model,
+        )
+
+    await supervise(
+        "clippings-watcher", factory,
         on_persistent_failure=on_persistent_failure,
     )
 

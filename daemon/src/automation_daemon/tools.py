@@ -92,6 +92,10 @@ TOOLS_ASK: frozenset[str] = _VAULT_READ | _CODEBASE_READ | _WEB
 TOOLS_COMMAND: frozenset[str] = _VAULT_READ | _VAULT_WRITE | _CODEBASE_READ | _WEB
 TOOLS_TASK: frozenset[str] = _VAULT_READ | _VAULT_WRITE | _CODEBASE_READ | _WEB
 
+# Clippings routing: full vault access (read + write + move) plus the Skill tool so the
+# agent can load the clippings-router skill itself.
+TOOLS_CLIPPINGS: frozenset[str] = TOOLS_EXTRACTION | frozenset({"Skill"})
+
 # Capture is strictly append-only: read-side + vault_append + vault_add_links.
 # Composed by set algebra so the negative invariant (no vault_write, no
 # vault_edit, no vault_update_frontmatter, no admin, no codebase, no web) is
