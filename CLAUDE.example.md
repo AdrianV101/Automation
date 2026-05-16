@@ -185,11 +185,4 @@ System python lacks packages -- always use `.venv/bin/python`.
 - State: `email_ingest_state.db` and `plaud_state.db` are separate SQLite files in `daemon/`. The daemon's pipeline thread (`pipeline_thread_id`), Telegram `ThreadStore`, and last IMAP UID/UIDVALIDITY persist across restarts
 - Config is a flat `DaemonConfig` dataclass -- libraries receive only the fields they need via constructor args
 - `user_context.py` is gitignored -- copy `user_context.example.py` and fill in your details
-- *Optional WhisperX path (off by default, `WHISPERX_ENABLED=false`)*: requires CUDA GPU; gotchas if enabled --
-  - WhisperX 3.7+ moved `DiarizationPipeline` to `whisperx.diarize.DiarizationPipeline` (not top-level)
-  - PyTorch 2.8+ defaults `torch.load(weights_only=True)` -- worker patches it at module level before any whisperx import
-  - WhisperX/pyannote leak logs and warnings to stdout -- worker redirects `sys.stdout` to `sys.stderr` during `run()`, writes JSON to `real_stdout` after
-  - Speaker embeddings are 192-dim float32 vectors, stored as BLOB (768 bytes) in `speaker_clusters` SQLite table
-  - Speaker tracking in pipeline is non-fatal (try/except) -- transcription proceeds even if clustering fails
-  - Audio files (OGG + WAV) are retained locally in `daemon/audio_downloads/` -- no automatic cleanup
-  - Test the worker directly: `echo '<json config>' | .venv/bin/python -m automation_daemon.whisperx_worker` -- much faster iteration than restarting the daemon
+- Local WhisperX re-transcription with speaker diarization (CUDA GPU, off by default) was implemented in an earlier pre-public version of this project but is **not included in this repository** -- the current pipeline relies on Plaud's hosted transcription via email ingest. `daemon/scripts/install-whisperx.sh` remains for that historical path; there is no local-transcription worker module in this tree.

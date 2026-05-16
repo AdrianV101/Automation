@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import logging
-from datetime import date, datetime, time, timedelta
+from datetime import date, datetime, time, timedelta, timezone
 from zoneinfo import ZoneInfo
 
 log = logging.getLogger(__name__)
@@ -21,9 +21,10 @@ def seconds_until_next_fire(
 ) -> float:
     """Seconds from `now` until the next occurrence of `fire_time` in `tz`.
 
-    DST-aware: we compose the next fire as a local-naive datetime then
-    `replace(tzinfo=tz)` so the wall-clock matches the user's expectation
-    even across spring-forward / fall-back boundaries.
+    The next fire is the next local wall-clock occurrence of `fire_time`.
+    Both endpoints carry the same ZoneInfo, so they are converted to UTC
+    before subtraction: a direct same-tzinfo subtraction is a naive
+    wall-clock diff and would be off by an hour across a DST transition.
     """
     now_local = now.astimezone(tz)
     today_fire = now_local.replace(
@@ -34,7 +35,10 @@ def seconds_until_next_fire(
         next_fire = today_fire + timedelta(days=1)
     else:
         next_fire = today_fire
-    delta = next_fire - now_local
+    delta = (
+        next_fire.astimezone(timezone.utc)
+        - now_local.astimezone(timezone.utc)
+    )
     return delta.total_seconds()
 
 

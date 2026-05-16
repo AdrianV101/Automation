@@ -57,6 +57,14 @@ class DaemonConfig:
     news_personal_digest_feedback_window_days: int = 7
     news_personal_digest_min_items: int = 4
     news_personal_digest_max_items: int = 12
+    # News auto-research — chained between the daily master and the digest
+    # when news_research_enabled. Deep-dives the agent-selected most
+    # interesting items and enriches the master in place. See
+    # 01-Projects/Automation/development/designs/2026-05-15-news-auto-research-flagged-design.md
+    news_research_enabled: bool = False
+    news_research_model: str = "claude-sonnet-4-6"
+    news_research_max_items: int = 3
+    news_research_max_turns: int = 60
     # Hacker News source (daily HTTP poll of Firebase HN API).
     # See 01-Projects/Automation/development/designs/2026-05-01-news-source-hacker-news-design.md.
     hacker_news_enabled: bool = False
@@ -186,6 +194,19 @@ class DaemonConfig:
             "NEWS_PERSONAL_DIGEST_MAX_ITEMS", "12", int,
         )
 
+        news_research_enabled = (
+            os.environ.get("NEWS_RESEARCH_ENABLED", "false").lower() == "true"
+        )
+        news_research_model = os.environ.get(
+            "NEWS_RESEARCH_MODEL", "claude-sonnet-4-6",
+        )
+        news_research_max_items = typed_env(
+            "NEWS_RESEARCH_MAX_ITEMS", "3", int,
+        )
+        news_research_max_turns = typed_env(
+            "NEWS_RESEARCH_MAX_TURNS", "60", int,
+        )
+
         hacker_news_enabled = (
             os.environ.get("HACKER_NEWS_ENABLED", "false").lower() == "true"
         )
@@ -264,6 +285,10 @@ class DaemonConfig:
             news_personal_digest_feedback_window_days=news_personal_digest_feedback_window_days,
             news_personal_digest_min_items=news_personal_digest_min_items,
             news_personal_digest_max_items=news_personal_digest_max_items,
+            news_research_enabled=news_research_enabled,
+            news_research_model=news_research_model,
+            news_research_max_items=news_research_max_items,
+            news_research_max_turns=news_research_max_turns,
             hacker_news_enabled=hacker_news_enabled,
             hacker_news_local_time=hacker_news_local_time,
             hacker_news_min_points=hacker_news_min_points,
@@ -319,4 +344,14 @@ class DaemonConfig:
             raise ValueError(
                 f"CLIPPINGS_MAX_FAILED_RETRIES must be >= 0, "
                 f"got {self.clippings_max_failed_retries}"
+            )
+        if self.news_research_max_items < 1:
+            raise ValueError(
+                f"news_research_max_items must be >= 1, "
+                f"got {self.news_research_max_items}"
+            )
+        if self.news_research_max_turns < 1:
+            raise ValueError(
+                f"news_research_max_turns must be >= 1, "
+                f"got {self.news_research_max_turns}"
             )
