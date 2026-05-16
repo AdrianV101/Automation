@@ -70,7 +70,10 @@ async def test_run_once_runs_target_week() -> None:
 
 @pytest.mark.asyncio
 async def test_backfill_swallows_per_week_exceptions() -> None:
+    ran: list[str] = []
+
     async def run_for_week(wk: str) -> None:
+        ran.append(wk)
         raise RuntimeError("boom")
 
     async def notify(_: str) -> None:
@@ -85,6 +88,10 @@ async def test_backfill_swallows_per_week_exceptions() -> None:
         tz=ZoneInfo("Europe/London"),
         backfill_window_weeks=1,
     )
+    # Must not raise — a failing backfill week is logged, not fatal.
     await sched.run_backfill(now=datetime(
         2026, 5, 17, 9, 0, tzinfo=ZoneInfo("Europe/London"),
     ))
+    # Proves the week WAS attempted and the exception was swallowed
+    # (not skipped before the call). target=2026-20, window=1 -> 2026-19.
+    assert ran == ["2026-19"]

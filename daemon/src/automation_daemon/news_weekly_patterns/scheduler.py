@@ -104,6 +104,10 @@ class NewsWeeklyScheduler:
     """
     db: _WeeklyDB
     run_for_week_fn: RunForWeekFn
+    # Injected by the orchestrator and used by the runner for the weekly
+    # success ping; reserved at the scheduler level (the weekly design
+    # intentionally has no scheduler-side older-than-window alert, unlike
+    # NewsDailyScheduler — see design D4, anti-Telegram-noise).
     notify: NotifyFn
     weekday: int
     fire_time: time
@@ -127,12 +131,23 @@ class NewsWeeklyScheduler:
                 log.exception("Weekly backfill run for %s failed", wk)
 
     async def run_once(self, *, now: datetime) -> None:
+        """One-shot fire — runs the ISO week that contains `now`.
+
+        Unlike NewsDailyScheduler.run_once (which targets *yesterday*),
+        the weekly target is the just-closed ISO week containing `now`
+        (Sunday is the last day of its own ISO week).
+        """
         target = compute_target_iso_week(now.astimezone(self.tz))
         await self.run_for_week_fn(target)
 
     async def run_forever(
         self, *, now_fn: _Callable[[], datetime] | None = None,
     ) -> None:
+        """Main loop: backfill once, then sleep-fire-sleep forever.
+
+        `now_fn` lets tests inject a clock — defaults to
+        `datetime.now(self.tz)`.
+        """
         clock = now_fn or (lambda: datetime.now(self.tz))
         await self.run_backfill(now=clock())
         while True:
