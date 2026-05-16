@@ -116,6 +116,7 @@ async def run_daemon(config: DaemonConfig) -> None:
         config.email_ingest_enabled
         or config.news_ingest_enabled
         or config.news_daily_master_enabled
+        or config.news_weekly_enabled
         or config.hacker_news_enabled
         or config.clippings_enabled
     ):
@@ -140,6 +141,11 @@ async def run_daemon(config: DaemonConfig) -> None:
             tg.create_task(_run_hacker_news_path(config), name="hacker-news")
         if config.clippings_enabled:
             tg.create_task(_run_clippings_path(config), name="clippings")
+        if config.news_weekly_enabled:
+            tg.create_task(
+                _run_news_weekly_patterns_path(config),
+                name="news-weekly-patterns",
+            )
 
 
 async def handle_incoming_email(
@@ -1055,6 +1061,86 @@ async def _run_news_daily_master_path(config: DaemonConfig) -> None:
         db=db, run_for_date_fn=run_for_date_fn, notify=notify,
         fire_time=fire, tz=tz,
         backfill_window_days=config.news_daily_master_backfill_days,
+    )
+    await sched.run_forever()
+
+
+async def _run_news_weekly_patterns_path(config: DaemonConfig) -> None:
+    """Independent weekly pattern-recognition scheduler.
+
+    NOT chained with the daily master/research/digest path — it has its
+    own weekly cadence and reads whatever daily masters exist. Mirrors the
+    ADR-005 in-daemon pattern at a weekly cadence (see ADR-010).
+    """
+    from datetime import time as _time
+    from .news_weekly_patterns.runner import (
+        RunnerConfig as WeeklyRunnerConfig,
+        run_for_iso_week,
+        run_agent_via_agent_infra as _weekly_run_agent,
+    )
+    from .news_weekly_patterns.scheduler import NewsWeeklyScheduler
+    from .news_weekly_patterns.state import NewsWeeklyStateDB
+
+    db = NewsWeeklyStateDB(config.email_ingest_state_db_path)
+    await db.init_db()
+
+    bot = BotConfig(
+        bot_token=config.telegram_bot_token,
+        chat_id=config.telegram_chat_id,
+    )
+
+    async def notify(text: str) -> None:
+        try:
+            await send_message(
+                text, bot,
+                thread_id=config.news_daily_telegram_topic_id,
+            )
+        except Exception:
+            log.exception("Failed to send news weekly notification")
+
+    runner_cfg = WeeklyRunnerConfig(
+        vault_root=config.pkm_vault_path,
+        model=config.news_weekly_model,
+        min_days=config.news_weekly_min_days,
+        recurrence_threshold=config.news_weekly_recurrence_threshold,
+        max_threads=config.news_weekly_max_threads,
+        max_turns=config.news_weekly_max_turns,
+    )
+
+    # Ratings come from the digest DB when the digest is enabled;
+    # otherwise an empty provider keeps weekly decoupled and functional.
+    if config.news_personal_digest_enabled:
+        from .news_personal_digest.state import NewsDigestStateDB
+
+        digest_db = NewsDigestStateDB(config.email_ingest_state_db_path)
+        await digest_db.init_db()
+
+        async def _recent_ratings(start, end):
+            return await digest_db.recent_ratings(start, end)
+    else:
+        async def _recent_ratings(start, end):
+            return []
+
+    async def run_for_week_fn(iso_week: str) -> None:
+        await run_for_iso_week(
+            iso_week, db=db, config=runner_cfg,
+            run_agent=_weekly_run_agent,
+            recent_ratings=_recent_ratings,
+            notify=notify,
+        )
+
+    h, m = config.news_weekly_fire_time.split(":", 1)
+    fire = _time(int(h), int(m))
+    tz = _resolve_news_daily_tz(config.news_daily_master_tz)
+
+    sched = NewsWeeklyScheduler(
+        db=db,
+        run_for_week_fn=run_for_week_fn,
+        notify=notify,
+        weekday=config.news_weekly_fire_weekday,
+        fire_time=fire,
+        tz=tz,
+        backfill_window_weeks=config.news_weekly_backfill_weeks,
     )
     await sched.run_forever()
 
