@@ -240,3 +240,31 @@ class TestPipelineRecordingTopic:
 
         mock_error.assert_called_once()
         assert mock_error.call_args[1]["thread_id"] == 88
+
+
+def _job_e1() -> RecordingJob:
+    return RecordingJob(
+        id="m1", recorded_at="2026-05-15T10:00:00+00:00", filename="f",
+        source="plaud-email",
+        transcript_data=TranscriptData(
+            "m1", "2026-05-15T10:00:00+00:00", 1.0, ["Speaker 1"],
+            [TranscriptSegment(0.0, 1.0, "Speaker 1", "hi")], "hi"),
+        duration_ms=1000, source_metadata={},
+    )
+
+
+@pytest.mark.asyncio
+async def test_process_recording_passes_unresolved_flag(tmp_path) -> None:
+    cfg = DaemonConfig(
+        telegram_bot_token="t", telegram_chat_id="c", pkm_vault_path=tmp_path,
+    )
+    with (
+        patch("automation_daemon.pipeline.create_forum_topic", new=AsyncMock(return_value=None)),
+        patch("automation_daemon.pipeline.write_raw_transcript") as wrt,
+        patch("automation_daemon.pipeline.agent_extract_and_route",
+              new=AsyncMock(return_value=None)),
+        patch("automation_daemon.pipeline.send_routing_summary", new=AsyncMock()),
+    ):
+        wrt.return_value = tmp_path / "t.md"
+        await process_recording(_job_e1(), cfg, speakers_unresolved=True)
+    assert wrt.call_args.kwargs["speakers_unresolved"] is True

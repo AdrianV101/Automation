@@ -1,10 +1,14 @@
 from __future__ import annotations
 
+import json
+import logging
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
 import aiosqlite
+
+log = logging.getLogger(__name__)
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS email_ingest_events (
@@ -23,10 +27,20 @@ CREATE TABLE IF NOT EXISTS email_ingest_settings (
     key TEXT PRIMARY KEY,
     value TEXT NOT NULL
 );
+
+CREATE TABLE IF NOT EXISTS speaker_resolution_pending (
+    message_id TEXT PRIMARY KEY,
+    payload TEXT NOT NULL,
+    unknown_speakers TEXT NOT NULL,
+    name_map TEXT NOT NULL DEFAULT '{}',
+    prompt_message_ids TEXT NOT NULL DEFAULT '[]',
+    created_at TEXT NOT NULL
+);
 """
 
 VALID_STATUSES = frozenset({
     "received", "writing_pkm", "extracting", "completed", "failed", "dropped",
+    "awaiting_speaker_labels", "timed_out_unresolved",
 })
 
 # Only these columns may be passed as kwargs to `update_status`. Guards against
@@ -36,6 +50,27 @@ _UPDATABLE_COLUMNS = frozenset({"transcript_path", "error", "summary_path"})
 
 def _now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
+
+
+def _decode_pending_row(d: dict[str, Any]) -> dict[str, Any] | None:
+    """Decode the three JSON columns of a speaker_resolution_pending row dict.
+
+    Returns the decoded dict on success, or None (and logs a warning) if any
+    JSON column is malformed.  The caller should skip None rows rather than
+    propagating the error.
+    """
+    try:
+        d["unknown_speakers"] = json.loads(d["unknown_speakers"])
+        d["name_map"] = json.loads(d["name_map"])
+        d["prompt_message_ids"] = json.loads(d["prompt_message_ids"])
+    except (json.JSONDecodeError, TypeError) as exc:
+        log.warning(
+            "skipping speaker_resolution_pending row %r — corrupt JSON: %s",
+            d.get("message_id"),
+            exc,
+        )
+        return None
+    return d
 
 
 class EmailIngestStateDB:
@@ -108,6 +143,110 @@ class EmailIngestStateDB:
             await db.commit()
             if cur.rowcount == 0:
                 raise KeyError(f"no event row for message_id={message_id!r}")
+
+    async def insert_pending(
+        self, message_id: str, *, payload: str,
+        unknown_speakers: list[str], created_at: str | None = None,
+    ) -> None:
+        async with aiosqlite.connect(self._path) as db:
+            await db.execute(
+                "INSERT OR REPLACE INTO speaker_resolution_pending "
+                "(message_id, payload, unknown_speakers, name_map, "
+                "prompt_message_ids, created_at) VALUES (?, ?, ?, '{}', '[]', ?)",
+                (message_id, payload, json.dumps(unknown_speakers),
+                 created_at or _now_iso()),
+            )
+            await db.commit()
+
+    async def get_pending(self, message_id: str) -> dict[str, Any] | None:
+        async with aiosqlite.connect(self._path) as db:
+            db.row_factory = aiosqlite.Row
+            async with db.execute(
+                "SELECT * FROM speaker_resolution_pending WHERE message_id = ?",
+                (message_id,),
+            ) as cur:
+                row = await cur.fetchone()
+        if row is None:
+            return None
+        return _decode_pending_row(dict(row))
+
+    async def set_pending_name(
+        self, message_id: str, speaker_label: str, name: str,
+    ) -> None:
+        async with aiosqlite.connect(self._path) as db:
+            await db.execute("BEGIN IMMEDIATE")
+            async with db.execute(
+                "SELECT name_map FROM speaker_resolution_pending WHERE message_id = ?",
+                (message_id,),
+            ) as cur:
+                row = await cur.fetchone()
+            if row is None:
+                await db.rollback()
+                raise KeyError(f"no pending row for {message_id!r}")
+            name_map = json.loads(row[0])
+            name_map[speaker_label] = name
+            await db.execute(
+                "UPDATE speaker_resolution_pending SET name_map = ? WHERE message_id = ?",
+                (json.dumps(name_map), message_id),
+            )
+            await db.commit()
+
+    async def set_pending_prompt_ids(
+        self, message_id: str, message_ids: list[int],
+    ) -> None:
+        async with aiosqlite.connect(self._path) as db:
+            await db.execute(
+                "UPDATE speaker_resolution_pending SET prompt_message_ids = ? "
+                "WHERE message_id = ?",
+                (json.dumps(message_ids), message_id),
+            )
+            await db.commit()
+
+    async def list_pending_older_than(
+        self, cutoff_iso: str,
+    ) -> list[dict[str, Any]]:
+        async with aiosqlite.connect(self._path) as db:
+            db.row_factory = aiosqlite.Row
+            async with db.execute(
+                "SELECT * FROM speaker_resolution_pending "
+                "WHERE created_at < ? ORDER BY created_at",
+                (cutoff_iso,),
+            ) as cur:
+                rows = await cur.fetchall()
+        out: list[dict[str, Any]] = []
+        for row in rows:
+            decoded = _decode_pending_row(dict(row))
+            if decoded is not None:
+                out.append(decoded)
+        return out
+
+    async def get_pending_by_prompt_id(
+        self, prompt_message_id: int,
+    ) -> dict[str, Any] | None:
+        """Return the pending row whose prompt_message_ids contains
+        `prompt_message_id`, or None.  Poison-resilient: a row with a
+        corrupt JSON column is skipped, not fatal."""
+        async with aiosqlite.connect(self._path) as db:
+            db.row_factory = aiosqlite.Row
+            async with db.execute(
+                "SELECT * FROM speaker_resolution_pending",
+            ) as cur:
+                rows = await cur.fetchall()
+        for row in rows:
+            decoded = _decode_pending_row(dict(row))
+            if decoded is None:
+                continue
+            if prompt_message_id in decoded["prompt_message_ids"]:
+                return decoded
+        return None
+
+    async def delete_pending(self, message_id: str) -> None:
+        async with aiosqlite.connect(self._path) as db:
+            await db.execute(
+                "DELETE FROM speaker_resolution_pending WHERE message_id = ?",
+                (message_id,),
+            )
+            await db.commit()
 
     async def get_uidnext_checkpoint(self) -> int:
         raw = await self.get_setting("uidnext")
