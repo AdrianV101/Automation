@@ -147,9 +147,10 @@ async def run_for_date(
         )
     except Exception as exc:
         # Catch-all so the row never gets stuck in 'running'. Inner branches
-        # are responsible for the typed-failure transitions (failed,
-        # failed_verification, failed_notes_clobbered); anything that reaches
-        # here is unexpected (DB error, IO error in a helper, programmer bug).
+        # are responsible for the typed transitions (failed,
+        # failed_notes_clobbered, completed, completed_with_skips); anything
+        # that reaches here is unexpected (DB error, IO error in a helper,
+        # programmer bug).
         log.exception("Unexpected error in run_for_date for %s", target_date)
         try:
             await db.update_run(
