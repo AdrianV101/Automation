@@ -80,3 +80,69 @@ def compute_backfill_weeks(
         wk = iso_week_key(anchor_monday - timedelta(weeks=i))
         out.append(wk)
     return out
+
+
+import asyncio as _asyncio
+from collections.abc import Awaitable as _Awaitable, Callable as _Callable
+from dataclasses import dataclass
+from typing import Protocol
+
+RunForWeekFn = _Callable[[str], _Awaitable[None]]
+NotifyFn = _Callable[[str], _Awaitable[None]]
+
+
+class _WeeklyDB(Protocol):
+    async def attempted_weeks(self, candidates: set[str]) -> set[str]: ...
+
+
+@dataclass
+class NewsWeeklyScheduler:
+    """Independent weekly loop. NOT chained with the daily master.
+
+    Mirrors NewsDailyScheduler: backfill once on boot, then
+    sleep-fire-sleep forever. Each fire targets the just-closed ISO week.
+    """
+    db: _WeeklyDB
+    run_for_week_fn: RunForWeekFn
+    notify: NotifyFn
+    weekday: int
+    fire_time: time
+    tz: ZoneInfo
+    backfill_window_weeks: int = 2
+
+    async def run_backfill(self, *, now: datetime) -> None:
+        target = compute_target_iso_week(now.astimezone(self.tz))
+        candidates = compute_backfill_weeks(
+            target_week=target, window_weeks=self.backfill_window_weeks,
+        )
+        if not candidates:
+            return
+        attempted = await self.db.attempted_weeks(set(candidates))
+        for wk in candidates:  # ascending; bounded by window
+            if wk in attempted:
+                continue
+            try:
+                await self.run_for_week_fn(wk)
+            except Exception:
+                log.exception("Weekly backfill run for %s failed", wk)
+
+    async def run_once(self, *, now: datetime) -> None:
+        target = compute_target_iso_week(now.astimezone(self.tz))
+        await self.run_for_week_fn(target)
+
+    async def run_forever(
+        self, *, now_fn: _Callable[[], datetime] | None = None,
+    ) -> None:
+        clock = now_fn or (lambda: datetime.now(self.tz))
+        await self.run_backfill(now=clock())
+        while True:
+            secs = seconds_until_next_weekly_fire(
+                clock(), weekday=self.weekday,
+                fire_time=self.fire_time, tz=self.tz,
+            )
+            log.info("News weekly scheduler sleeping %.0f s", secs)
+            await _asyncio.sleep(secs)
+            try:
+                await self.run_once(now=clock())
+            except Exception:
+                log.exception("Scheduled news weekly run failed")
