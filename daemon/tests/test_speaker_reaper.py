@@ -1,0 +1,167 @@
+from __future__ import annotations
+
+from datetime import datetime, timedelta, timezone
+
+import pytest
+from unittest.mock import AsyncMock, patch
+
+from automation_daemon.config import DaemonConfig
+from automation_daemon.models import RecordingJob
+from automation_daemon.speaker_reaper import reap_once
+from automation_daemon.speaker_resolution import serialize_job
+from email_ingest.state import EmailIngestStateDB
+from pkm import TranscriptData, TranscriptSegment
+from telegram_interface import BotConfig
+
+
+def _job() -> RecordingJob:
+    return RecordingJob(
+        id="old", recorded_at="2026-05-15T10:00:00+00:00", filename="f",
+        source="plaud-email",
+        transcript_data=TranscriptData(
+            "old", "2026-05-15T10:00:00+00:00", 1.0, ["Speaker 1"],
+            [TranscriptSegment(0.0, 1.0, "Speaker 1", "hi")], "hi"),
+        duration_ms=1000, source_metadata={},
+    )
+
+
+@pytest.mark.asyncio
+async def test_reap_routes_stale_with_flag_and_marks_timed_out(tmp_path) -> None:
+    db = EmailIngestStateDB(tmp_path / "s.db"); await db.init_db()
+    await db.insert_event("old", uid=1)
+    old_ts = (datetime.now(timezone.utc) - timedelta(hours=25)).isoformat()
+    await db.insert_pending("old", payload=serialize_job(_job()),
+                            unknown_speakers=["Speaker 1"], created_at=old_ts)
+    await db.update_status("old", "awaiting_speaker_labels")
+    cfg = DaemonConfig(telegram_bot_token="t", telegram_chat_id="c", pkm_vault_path=tmp_path)
+    bot = BotConfig(bot_token="t", chat_id="c")
+    routed = AsyncMock()
+    n = await reap_once(db, cfg, bot, ttl_hours=24, process_recording_fn=routed)
+    assert n == 1
+    routed.assert_awaited_once()
+    assert routed.await_args.kwargs["speakers_unresolved"] is True
+    # G1: row retained after timeout so a late reply can still correct it
+    assert await db.get_pending("old") is not None
+    assert (await db.get_event("old"))["status"] == "timed_out_unresolved"
+
+
+@pytest.mark.asyncio
+async def test_reap_skips_fresh_pending(tmp_path) -> None:
+    db = EmailIngestStateDB(tmp_path / "s.db"); await db.init_db()
+    await db.insert_event("new", uid=1)
+    await db.insert_pending("new", payload=serialize_job(_job()),
+                            unknown_speakers=["Speaker 1"])  # created now
+    cfg = DaemonConfig(telegram_bot_token="t", telegram_chat_id="c", pkm_vault_path=tmp_path)
+    bot = BotConfig(bot_token="t", chat_id="c")
+    n = await reap_once(db, cfg, bot, ttl_hours=24, process_recording_fn=AsyncMock())
+    assert n == 0
+    assert await db.get_pending("new") is not None
+
+
+@pytest.mark.asyncio
+async def test_reap_is_idempotent_only_routes_once(tmp_path) -> None:
+    db = EmailIngestStateDB(tmp_path / "s.db"); await db.init_db()
+    await db.insert_event("old", uid=1)
+    old_ts = (datetime.now(timezone.utc) - timedelta(hours=25)).isoformat()
+    await db.insert_pending("old", payload=serialize_job(_job()),
+                            unknown_speakers=["Speaker 1"], created_at=old_ts)
+    await db.update_status("old", "awaiting_speaker_labels")
+    cfg = DaemonConfig(telegram_bot_token="t", telegram_chat_id="c", pkm_vault_path=tmp_path)
+    bot = BotConfig(bot_token="t", chat_id="c")
+    routed = AsyncMock()
+    n1 = await reap_once(db, cfg, bot, ttl_hours=24, process_recording_fn=routed)
+    n2 = await reap_once(db, cfg, bot, ttl_hours=24, process_recording_fn=routed)
+    assert n1 == 1
+    assert n2 == 0
+    routed.assert_awaited_once()  # NOT called again on the second sweep
+    assert await db.get_pending("old") is not None  # still retained for late correction
+    assert (await db.get_event("old"))["status"] == "timed_out_unresolved"
+
+
+@pytest.mark.asyncio
+async def test_reap_drops_poisoned_pending_row(tmp_path) -> None:
+    db = EmailIngestStateDB(tmp_path / "s.db"); await db.init_db()
+    await db.insert_event("bad", uid=1)
+    old_ts = (datetime.now(timezone.utc) - timedelta(hours=25)).isoformat()
+    await db.insert_pending("bad", payload="{not valid json",
+                            unknown_speakers=["Speaker 1"], created_at=old_ts)
+    await db.update_status("bad", "awaiting_speaker_labels")
+    cfg = DaemonConfig(telegram_bot_token="t", telegram_chat_id="c", pkm_vault_path=tmp_path)
+    bot = BotConfig(bot_token="t", chat_id="c")
+    routed = AsyncMock()
+    n = await reap_once(db, cfg, bot, ttl_hours=24, process_recording_fn=routed)
+    routed.assert_not_awaited()
+    assert await db.get_pending("bad") is None  # poisoned row dropped
+    assert (await db.get_event("bad"))["status"] == "failed"
+    assert n == 0
+
+
+@pytest.mark.asyncio
+async def test_reap_skips_timeout_stamp_if_late_reply_won_race(tmp_path) -> None:
+    db = EmailIngestStateDB(tmp_path / "s.db"); await db.init_db()
+    await db.insert_event("race", uid=1)
+    old_ts = (datetime.now(timezone.utc) - timedelta(hours=25)).isoformat()
+    await db.insert_pending("race", payload=serialize_job(_job()),
+                            unknown_speakers=["Speaker 1"], created_at=old_ts)
+    await db.update_status("race", "awaiting_speaker_labels")
+    cfg = DaemonConfig(telegram_bot_token="t", telegram_chat_id="c", pkm_vault_path=tmp_path)
+    bot = BotConfig(bot_token="t", chat_id="c")
+
+    async def _route_then_late_reply(job, config, *, status=None, speakers_unresolved=False):
+        # Simulate a concurrent late reply resolving + deleting the row
+        # while the reaper is inside process_recording.
+        await db.delete_pending("race")
+
+    n = await reap_once(db, cfg, bot, ttl_hours=24,
+                        process_recording_fn=_route_then_late_reply)
+    assert (await db.get_event("race"))["status"] != "timed_out_unresolved"
+    assert n == 0
+
+
+@pytest.mark.asyncio
+async def test_reaper_escalates_and_gives_up_after_max_attempts(tmp_path) -> None:
+    db = EmailIngestStateDB(tmp_path / "s.db"); await db.init_db()
+    await db.insert_event("flap", uid=1)
+    old_ts = (datetime.now(timezone.utc) - timedelta(hours=25)).isoformat()
+    await db.insert_pending("flap", payload=serialize_job(_job()),
+                            unknown_speakers=["Speaker 1"], created_at=old_ts)
+    await db.update_status("flap", "awaiting_speaker_labels")
+    cfg = DaemonConfig(telegram_bot_token="t", telegram_chat_id="c", pkm_vault_path=tmp_path)
+    bot = BotConfig(bot_token="t", chat_id="c")
+    failing = AsyncMock(side_effect=RuntimeError("routing always fails"))
+    counts: dict[str, int] = {}
+    with patch("automation_daemon.speaker_reaper.send_message", new=AsyncMock()) as alert:
+        # attempts 1 and 2: retried, row kept, no alert
+        await reap_once(db, cfg, bot, ttl_hours=24, process_recording_fn=failing,
+                        _failure_counts=counts, max_attempts=3)
+        assert await db.get_pending("flap") is not None
+        await reap_once(db, cfg, bot, ttl_hours=24, process_recording_fn=failing,
+                        _failure_counts=counts, max_attempts=3)
+        assert await db.get_pending("flap") is not None
+        alert.assert_not_awaited()
+        # attempt 3: escalate + give up
+        await reap_once(db, cfg, bot, ttl_hours=24, process_recording_fn=failing,
+                        _failure_counts=counts, max_attempts=3)
+    alert.assert_awaited()                                  # operator notified
+    assert await db.get_pending("flap") is None             # stopped looping
+    assert (await db.get_event("flap"))["status"] == "failed"
+
+
+@pytest.mark.asyncio
+async def test_reaper_transient_failure_then_success_clears_counter(tmp_path) -> None:
+    db = EmailIngestStateDB(tmp_path / "s.db"); await db.init_db()
+    await db.insert_event("ok", uid=1)
+    old_ts = (datetime.now(timezone.utc) - timedelta(hours=25)).isoformat()
+    await db.insert_pending("ok", payload=serialize_job(_job()),
+                            unknown_speakers=["Speaker 1"], created_at=old_ts)
+    await db.update_status("ok", "awaiting_speaker_labels")
+    cfg = DaemonConfig(telegram_bot_token="t", telegram_chat_id="c", pkm_vault_path=tmp_path)
+    bot = BotConfig(bot_token="t", chat_id="c")
+    counts: dict[str, int] = {}
+    flud = AsyncMock(side_effect=RuntimeError("transient"))
+    await reap_once(db, cfg, bot, process_recording_fn=flud, _failure_counts=counts, max_attempts=3)
+    assert counts.get("ok") == 1
+    ok = AsyncMock()
+    await reap_once(db, cfg, bot, process_recording_fn=ok, _failure_counts=counts, max_attempts=3)
+    assert "ok" not in counts                                # cleared on success
+    assert (await db.get_event("ok"))["status"] == "timed_out_unresolved"
