@@ -69,7 +69,8 @@ def compute_backfill_weeks(
     (ascending). `target_week` itself is excluded — the regular Sunday
     fire handles the just-closed week; backfill only covers older weeks
     missed while the daemon was down. ISO-year-boundary safe (steps by
-    7-day date arithmetic, not naive week-number math).
+    7-day date arithmetic, not naive week-number math). Returns [] for
+    window_weeks <= 0.
     """
     if window_weeks <= 0:
         return []

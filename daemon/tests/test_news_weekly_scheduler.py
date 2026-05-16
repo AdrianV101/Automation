@@ -17,6 +17,8 @@ from automation_daemon.news_weekly_patterns.scheduler import (
 class TestIsoWeekKey:
     def test_key_format_zero_padded(self) -> None:
         assert iso_week_key(date(2026, 5, 13)) == "2026-20"
+        # single-digit ISO week must be zero-padded (sort-order contract)
+        assert iso_week_key(date(2026, 1, 1)) == "2026-01"
 
     def test_year_boundary_week_belongs_to_iso_year(self) -> None:
         assert iso_week_key(date(2027, 1, 1)) == "2026-53"
@@ -68,6 +70,19 @@ class TestSecondsUntilNextWeeklyFire:
             now, weekday=6, fire_time=time(18, 0), tz=tz,
         )
         assert secs == pytest.approx(49 * 3600, abs=2)
+
+    def test_dst_spring_forward_week(self) -> None:
+        """London springs forward 2026-03-29 01:00 GMT -> 02:00 BST.
+
+        Fri 2026-03-27 18:00 GMT -> next Sunday(6) 2026-03-29 18:00 BST.
+        That weekend loses an hour, so the physical gap is 47h, not 48h.
+        """
+        tz = ZoneInfo("Europe/London")
+        now = datetime(2026, 3, 27, 18, 0, tzinfo=tz)
+        secs = seconds_until_next_weekly_fire(
+            now, weekday=6, fire_time=time(18, 0), tz=tz,
+        )
+        assert secs == pytest.approx(47 * 3600, abs=2)
 
 
 class TestComputeBackfillWeeks:
