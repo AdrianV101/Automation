@@ -5,7 +5,7 @@ An AI-augmented personal knowledge management (PKM) system that captures voice r
 ## What it does
 
 1. **Audio ingestion**: A [Plaud Note Pro](https://www.plaud.ai/) recorder uploads to Plaud cloud, which AutoFlow-emails the transcript + audio + summary to a configured mailbox. The daemon watches that mailbox over IMAP IDLE (locally via [Proton Mail Bridge](https://proton.me/mail/bridge) or any IMAP server) and processes new mail in real time.
-2. **Transcript ingest**: Plaud's hosted transcription is used by default. Optional local re-transcription via [WhisperX](https://github.com/m-bain/whisperX) with speaker diarization is supported (off by default, requires a CUDA GPU).
+2. **Transcript ingest**: Plaud's hosted transcription is used. (An earlier pre-public version of the project also supported optional local re-transcription via [WhisperX](https://github.com/m-bain/whisperX) with speaker diarization; that path is not included in this repository.)
 3. **AI extraction**: A Claude agent (via [Agent SDK](https://docs.anthropic.com/en/docs/agents-and-tools/claude-code/agent-sdk)) reads the transcript, searches the Obsidian vault for context, and routes extracted information to the right locations.
 4. **Notifications**: Progress updates and results stream to Telegram, with interactive commands for queries and capture.
 
@@ -86,7 +86,7 @@ Automation/
 - [Obsidian](https://obsidian.md/) vault + [Obsidian MCP server](https://github.com/AdrianV101/Obsidian-MCP)
 - [Claude Code CLI](https://docs.anthropic.com/en/docs/agents-and-tools/claude-code) (Agent SDK uses your Claude subscription)
 - Telegram bot (via [@BotFather](https://t.me/botfather)) for notifications
-- *Optional:* CUDA GPU for local re-transcription via WhisperX (off by default; Plaud's hosted transcript is used otherwise)
+- *(Historical)* The earlier WhisperX local-transcription path required a CUDA GPU; it is not part of this repository's pipeline, which uses Plaud's hosted transcript
 
 ## Setup
 

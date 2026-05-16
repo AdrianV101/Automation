@@ -76,6 +76,14 @@ vault_read("<source_path from master-doc wikilink>")
 
 The source note's body is what grounds your briefing. Pull the concrete details — dollar amounts, version numbers, named people, dates, mechanism — that make the briefing more than a paraphrase of the headline.
 
+#### Deep-dive enrichment
+
+Some master-doc items have a `### 🔬 Deep dive` block beneath them (added by the news-research agent earlier in the chain). When an item you include in the digest has one:
+
+- Fold its synthesis into your "Why you care" line — the deep dive is the sharpest available take; use it.
+- If the deep dive has notable "Key facts" or "Sources", surface the single most relevant one inline. Don't dump the whole block; the digest stays skimmable.
+- Items without a deep-dive block are briefed exactly as before. Absence is normal — research only covers a few items per day.
+
 ### 7. Group by category, order categories
 
 Group your picked items by their master-doc category (the `## <Category>` heading the candidate lived under). Order categories by total signal strength: most-resonant first, so Adrian sees the most-relevant block at the top of the digest. Use the master doc's existing emoji conventions where present — if a category doesn't have an obvious emoji yet, the daemon falls back to "•".
