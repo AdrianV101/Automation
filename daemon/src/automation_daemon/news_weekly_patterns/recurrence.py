@@ -42,9 +42,9 @@ def _entities_by_section(text: str) -> dict[str, set[str]]:
 
     def category_at(pos: int) -> str:
         current = ""
-        for start, name in cats:
-            if start <= pos:
-                current = name
+        for h_start, h_cat in cats:
+            if h_start <= pos:
+                current = h_cat
             else:
                 break
         return current

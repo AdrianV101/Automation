@@ -100,3 +100,24 @@ def test_malformed_wikilink_ignored() -> None:
         recurrence_threshold=2,
     )
     assert threads == []
+
+
+def test_categories_union_across_days() -> None:
+    day_a = "## AI\n- [[01-Projects/News/entities/Anthropic|Anthropic]]\n"
+    day_b = "## Policy\n- [[01-Projects/News/entities/Anthropic|Anthropic]]\n"
+    threads = rank_recurring_threads(
+        {date(2026, 5, 11): day_a, date(2026, 5, 12): day_b},
+        recurrence_threshold=2,
+    )
+    anthropic = next(t for t in threads if t.name == "Anthropic")
+    assert sorted(anthropic.categories) == ["AI", "Policy"]
+
+
+def test_entity_before_any_heading_has_no_category() -> None:
+    text = "[[01-Projects/News/entities/Anthropic|Anthropic]]\n## AI\n- more\n"
+    threads = rank_recurring_threads(
+        {date(2026, 5, 11): text, date(2026, 5, 12): text},
+        recurrence_threshold=2,
+    )
+    anthropic = next(t for t in threads if t.name == "Anthropic")
+    assert anthropic.categories == []
