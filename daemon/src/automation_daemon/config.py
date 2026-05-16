@@ -244,7 +244,7 @@ class DaemonConfig:
                 from datetime import time as _time
                 _wh, _wm = news_weekly_fire_time.split(":", 1)
                 _time(int(_wh), int(_wm))
-            except ValueError as exc:
+            except (ValueError, TypeError) as exc:
                 raise ValueError(
                     f"NEWS_WEEKLY_FIRE_TIME must be HH:MM in 24h format, "
                     f"got {news_weekly_fire_time!r}: {exc}",
@@ -428,4 +428,34 @@ class DaemonConfig:
             raise ValueError(
                 f"news_research_max_turns must be >= 1, "
                 f"got {self.news_research_max_turns}"
+            )
+        if self.news_weekly_min_days < 1:
+            raise ValueError(
+                f"news_weekly_min_days must be >= 1, "
+                f"got {self.news_weekly_min_days}"
+            )
+        if self.news_weekly_recurrence_threshold < 1:
+            raise ValueError(
+                f"news_weekly_recurrence_threshold must be >= 1, "
+                f"got {self.news_weekly_recurrence_threshold}"
+            )
+        if self.news_weekly_max_threads < 1:
+            raise ValueError(
+                f"news_weekly_max_threads must be >= 1, "
+                f"got {self.news_weekly_max_threads}"
+            )
+        if self.news_weekly_max_turns < 1:
+            raise ValueError(
+                f"news_weekly_max_turns must be >= 1, "
+                f"got {self.news_weekly_max_turns}"
+            )
+        if self.news_weekly_backfill_weeks < 0:
+            raise ValueError(
+                f"news_weekly_backfill_weeks must be >= 0, "
+                f"got {self.news_weekly_backfill_weeks}"
+            )
+        if not (0 <= self.news_weekly_fire_weekday <= 6):
+            raise ValueError(
+                f"news_weekly_fire_weekday must be 0-6, "
+                f"got {self.news_weekly_fire_weekday}"
             )

@@ -104,10 +104,10 @@ class NewsWeeklyScheduler:
     """
     db: _WeeklyDB
     run_for_week_fn: RunForWeekFn
-    # Injected by the orchestrator and used by the runner for the weekly
-    # success ping; reserved at the scheduler level (the weekly design
-    # intentionally has no scheduler-side older-than-window alert, unlike
-    # NewsDailyScheduler — see design D4, anti-Telegram-noise).
+    # Stored for API symmetry with NewsDailyScheduler but never called by
+    # the scheduler itself — the runner receives its own notify via the
+    # run_for_week_fn closure built in the orchestrator. The weekly design
+    # has no scheduler-side alert (design D4, anti-Telegram-noise).
     notify: NotifyFn
     weekday: int
     fire_time: time
@@ -149,7 +149,13 @@ class NewsWeeklyScheduler:
         `datetime.now(self.tz)`.
         """
         clock = now_fn or (lambda: datetime.now(self.tz))
-        await self.run_backfill(now=clock())
+        try:
+            await self.run_backfill(now=clock())
+        except Exception:
+            log.exception(
+                "Weekly backfill startup failed; scheduler continues "
+                "without backfill",
+            )
         while True:
             secs = seconds_until_next_weekly_fire(
                 clock(), weekday=self.weekday,

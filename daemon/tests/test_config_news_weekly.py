@@ -79,3 +79,22 @@ def test_weekly_out_of_range_fire_time_rejected(
     monkeypatch.setenv("NEWS_WEEKLY_FIRE_TIME", "25:00")
     with pytest.raises(ValueError, match="NEWS_WEEKLY_FIRE_TIME"):
         DaemonConfig.from_env()
+
+
+@pytest.mark.parametrize("var,bad", [
+    ("NEWS_WEEKLY_MIN_DAYS", "0"),
+    ("NEWS_WEEKLY_RECURRENCE_THRESHOLD", "0"),
+    ("NEWS_WEEKLY_MAX_THREADS", "0"),
+    ("NEWS_WEEKLY_MAX_TURNS", "0"),
+    ("NEWS_WEEKLY_FIRE_WEEKDAY", "7"),
+])
+def test_weekly_numeric_validation_rejects_bad(
+    monkeypatch: pytest.MonkeyPatch, var: str, bad: str,
+) -> None:
+    monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "t")
+    monkeypatch.setenv("TELEGRAM_CHAT_ID", "c")
+    monkeypatch.setenv("PKM_VAULT_PATH", "/tmp/vault")
+    monkeypatch.setenv("NEWS_WEEKLY_ENABLED", "true")
+    monkeypatch.setenv(var, bad)
+    with pytest.raises(ValueError):
+        DaemonConfig.from_env()

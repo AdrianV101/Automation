@@ -8,7 +8,9 @@ from datetime import date
 # is mandatory, which excludes source links ([[00-Inbox/news/...|source]])
 # and any other wikilink. <Name> is everything up to the '|'; it may contain
 # spaces but not ']' or '|'. The closing ']]' is required (malformed,
-# unclosed links are ignored).
+# unclosed links are ignored). An alias (the |<Alias> part) is REQUIRED:
+# a plain [[01-Projects/News/entities/Foo]] with no pipe does not match
+# and is excluded (master docs always emit the aliased form).
 _ENTITY_LINK_RE = re.compile(
     r"\[\[01-Projects/News/entities/(?P<name>[^|\]]+)\|[^\]]*\]\]"
 )

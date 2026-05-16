@@ -39,3 +39,19 @@ def test_build_runner_prompt_has_week_and_dates_and_caps() -> None:
     assert "2026-05-11" in prompt and "2026-05-17" in prompt
     assert "8" in prompt
     assert "news-weekly-patterns skill" in prompt
+
+
+def test_render_ratings_block_groups_by_rating() -> None:
+    from automation_daemon.news_weekly_patterns.prompt import (
+        render_ratings_block,
+    )
+    rows = [
+        {"rating": "star", "title": "AI update", "category": "AI"},
+        {"rating": "thumbs_down", "title": "Crypto noise",
+         "category": "Finance"},
+    ]
+    block = render_ratings_block(ratings=rows)
+    assert "AI update" in block
+    assert "Crypto noise" in block
+    assert "⭐" in block
+    assert "👎" in block

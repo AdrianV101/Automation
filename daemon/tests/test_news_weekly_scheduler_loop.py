@@ -95,3 +95,38 @@ async def test_backfill_swallows_per_week_exceptions() -> None:
     # Proves the week WAS attempted and the exception was swallowed
     # (not skipped before the call). target=2026-20, window=1 -> 2026-19.
     assert ran == ["2026-19"]
+
+
+@pytest.mark.asyncio
+async def test_run_forever_backfill_error_is_non_fatal() -> None:
+    import asyncio
+
+    class _BoomDB:
+        async def attempted_weeks(self, candidates: set[str]) -> set[str]:
+            raise RuntimeError("state db down")
+
+    async def run_for_week(wk: str) -> None:
+        pass
+
+    async def notify(_: str) -> None:
+        pass
+
+    sched = NewsWeeklyScheduler(
+        db=_BoomDB(),
+        run_for_week_fn=run_for_week,
+        notify=notify,
+        weekday=6,
+        fire_time=time(18, 0),
+        tz=ZoneInfo("Europe/London"),
+        backfill_window_weeks=2,
+    )
+    now = datetime(2026, 5, 17, 9, 0, tzinfo=ZoneInfo("Europe/London"))
+    task = asyncio.create_task(sched.run_forever(now_fn=lambda: now))
+    await asyncio.sleep(0)
+    task.cancel()
+    try:
+        await task
+    except asyncio.CancelledError:
+        pass
+    # Reaching here without the RuntimeError propagating proves the
+    # backfill error was caught and the loop proceeded to the sleep.

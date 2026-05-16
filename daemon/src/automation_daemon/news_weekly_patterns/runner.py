@@ -103,9 +103,11 @@ _NOTES_HEADING_RE = re.compile(r"^##\s+Notes\s*$", re.MULTILINE)
 def _hash_notes_section(path: Path) -> str | None:
     """SHA256 of the '## Notes'-to-EOF section of `path`, or None.
 
-    Absent file / absent heading / unreadable all map to None — the
-    clobber invariant only engages when there is a stable hash to compare.
-    Mirrors the news_research helper.
+    None is returned ONLY for an absent file or an unreadable file
+    (OSError / UnicodeDecodeError). When the heading is absent the section
+    is '' and this returns sha256('') — a stable non-None hash, so the
+    clobber guard stays active and will reject any run that introduces a
+    ## Notes section. Mirrors the news_research helper.
     """
     if not path.is_file():
         return None
@@ -241,11 +243,23 @@ async def _run_inner(
             continue
 
         if not output.success:
-            last_error = output.error
+            last_error = output.error  # pair invariant: non-None
+            log.warning(
+                "Weekly agent attempt %d/%d returned success=False "
+                "for %s: %s",
+                attempt, len(backoffs), iso_week, output.error,
+            )
             continue
 
         if notes_hash_before is not None:
-            if _hash_notes_section(note_path) != notes_hash_before:
+            notes_hash_after = _hash_notes_section(note_path)
+            if notes_hash_after is None:
+                log.warning(
+                    "Weekly %s: could not re-read note for clobber "
+                    "check (transient I/O?); allowing — inspect manually",
+                    iso_week,
+                )
+            elif notes_hash_after != notes_hash_before:
                 await db.update_run(
                     iso_week, status="failed_notes_clobbered",
                     error="weekly agent modified ## Notes section",

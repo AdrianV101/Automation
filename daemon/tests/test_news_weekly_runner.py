@@ -216,3 +216,145 @@ async def test_ratings_provider_exception_is_non_fatal(
     row = await db.get_run("2026-20")
     assert row["status"] == "completed"  # ratings failure did not abort
     assert len(pinged) == 1
+
+
+@pytest.mark.asyncio
+async def test_retry_succeeds_on_second_attempt(
+    vault: Path, db_path: Path,
+) -> None:
+    for day in range(11, 18):
+        _write_master(vault, date(2026, 5, day), "## AI\n- x\n")
+    db = NewsWeeklyStateDB(db_path)
+    await db.init_db()
+    calls: list[int] = []
+
+    async def run_agent(_: AgentRunInput) -> AgentRunOutput:
+        calls.append(len(calls))
+        if len(calls) == 1:
+            raise RuntimeError("transient")
+        return AgentRunOutput(success=True, threads_written=1)
+
+    pinged: list[str] = []
+
+    async def notify(m: str) -> None:
+        pinged.append(m)
+
+    await run_for_iso_week(
+        "2026-20", db=db,
+        config=RunnerConfig(
+            vault_root=vault, min_days=3,
+            retry_backoff_seconds=(0.0, 0.0),
+        ),
+        run_agent=run_agent, recent_ratings=_no_ratings, notify=notify,
+    )
+    assert len(calls) == 2
+    assert (await db.get_run("2026-20"))["status"] == "completed"
+    assert len(pinged) == 1
+
+
+@pytest.mark.asyncio
+async def test_ping_failure_is_non_fatal(
+    vault: Path, db_path: Path,
+) -> None:
+    for day in range(11, 18):
+        _write_master(vault, date(2026, 5, day), "## AI\n- x\n")
+    db = NewsWeeklyStateDB(db_path)
+    await db.init_db()
+
+    async def run_agent(_: AgentRunInput) -> AgentRunOutput:
+        return AgentRunOutput(success=True, threads_written=1)
+
+    async def bad_notify(_: str) -> None:
+        raise RuntimeError("telegram down")
+
+    await run_for_iso_week(
+        "2026-20", db=db,
+        config=RunnerConfig(vault_root=vault, min_days=3),
+        run_agent=run_agent, recent_ratings=_no_ratings,
+        notify=bad_notify,
+    )
+    assert (await db.get_run("2026-20"))["status"] == "completed"
+
+
+def test_parse_weekly_summary_no_json_block() -> None:
+    from automation_daemon.news_weekly_patterns.runner import (
+        _parse_agent_summary,
+    )
+    out = _parse_agent_summary(["prose only"], turns_used=3, cost_usd=None)
+    assert not out.success
+    assert "no JSON summary block" in out.error
+
+
+def test_parse_weekly_summary_invalid_json() -> None:
+    from automation_daemon.news_weekly_patterns.runner import (
+        _parse_agent_summary,
+    )
+    out = _parse_agent_summary(
+        ["```json\n{bad}\n```"], turns_used=3, cost_usd=0.1,
+    )
+    assert not out.success
+    assert "invalid JSON" in out.error
+
+
+def test_parse_weekly_summary_success_false_no_error_field() -> None:
+    from automation_daemon.news_weekly_patterns.runner import (
+        _parse_agent_summary,
+    )
+    out = _parse_agent_summary(
+        ['```json\n{"success": false}\n```'], turns_used=5, cost_usd=0.0,
+    )
+    assert not out.success
+    assert out.error
+
+
+def test_parse_weekly_summary_picks_last_json_block() -> None:
+    from automation_daemon.news_weekly_patterns.runner import (
+        _parse_agent_summary,
+    )
+    text = (
+        '```json\n{"success": false, "error": "first"}\n```\n'
+        '```json\n{"success": true, "threads_written": 2}\n```'
+    )
+    out = _parse_agent_summary([text], turns_used=10, cost_usd=0.2)
+    assert out.success
+    assert out.threads_written == 2
+
+
+@pytest.mark.asyncio
+async def test_clobber_check_unreadable_after_does_not_false_fail(
+    vault: Path, db_path: Path, monkeypatch: "pytest.MonkeyPatch",
+) -> None:
+    # If the post-run notes-hash read fails (returns None), the run must
+    # NOT be marked failed_notes_clobbered — that would be a permanent
+    # terminal failure from a transient I/O error.
+    import automation_daemon.news_weekly_patterns.runner as _r
+    for day in range(11, 18):
+        _write_master(vault, date(2026, 5, day), "## AI\n- x\n")
+    wk = vault / "01-Projects" / "News" / "weekly"
+    wk.mkdir(parents=True, exist_ok=True)
+    (wk / "2026-20.md").write_text("# b\n\n## Notes\n\norig\n")
+    db = NewsWeeklyStateDB(db_path)
+    await db.init_db()
+
+    calls = {"n": 0}
+    real = _r._hash_notes_section
+
+    def flaky(path):  # first (pre) call real, second (post) call None
+        calls["n"] += 1
+        return real(path) if calls["n"] == 1 else None
+
+    monkeypatch.setattr(_r, "_hash_notes_section", flaky)
+
+    async def run_agent(_: AgentRunInput) -> AgentRunOutput:
+        return AgentRunOutput(success=True, threads_written=1)
+
+    async def notify(_: str) -> None:
+        pass
+
+    await run_for_iso_week(
+        "2026-20", db=db,
+        config=RunnerConfig(vault_root=vault, min_days=3),
+        run_agent=run_agent, recent_ratings=_no_ratings, notify=notify,
+    )
+    row = await db.get_run("2026-20")
+    assert row["status"] == "completed"  # NOT failed_notes_clobbered
