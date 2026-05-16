@@ -43,6 +43,12 @@ async def test_full_week_run_completes_and_preserves_notes(
     await db.init_db()
 
     async def agent(inp: AgentRunInput) -> AgentRunOutput:
+        # The REAL rank_recurring_threads ran over the 7 seeded masters
+        # (Anthropic on all 7 days >= default threshold 3) and its output
+        # must have reached the prompt as the deterministic backbone.
+        assert "Recurring threads (deterministic" in inp.prompt
+        assert "Anthropic" in inp.prompt
+        assert "7 distinct days" in inp.prompt
         body = note.read_text()
         idx = body.index("## Notes")
         note.write_text(
