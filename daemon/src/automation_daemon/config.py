@@ -65,6 +65,22 @@ class DaemonConfig:
     news_research_model: str = "claude-sonnet-4-6"
     news_research_max_items: int = 3
     news_research_max_turns: int = 60
+    # News weekly pattern recognition — independent weekly scheduler (NOT
+    # chained with the daily master). Deterministic recurrence pass + agent
+    # narrative. See ADR-010 and
+    # 01-Projects/Automation/development/designs/2026-05-16-news-weekly-pattern-recognition-design.md
+    news_weekly_enabled: bool = False
+    news_weekly_model: str = "claude-sonnet-4-6"
+    # Python date.weekday() convention: Mon=0 .. Sun=6. Default Sunday.
+    news_weekly_fire_weekday: int = 6
+    news_weekly_fire_time: str = "18:00"
+    news_weekly_backfill_weeks: int = 2
+    # Corpus floor: minimum daily masters that must exist for the ISO week.
+    news_weekly_min_days: int = 3
+    # A thread = an entity appearing in >= this many distinct days.
+    news_weekly_recurrence_threshold: int = 3
+    news_weekly_max_threads: int = 8
+    news_weekly_max_turns: int = 60
     # Hacker News source (daily HTTP poll of Firebase HN API).
     # See 01-Projects/Automation/development/designs/2026-05-01-news-source-hacker-news-design.md.
     hacker_news_enabled: bool = False
@@ -207,6 +223,43 @@ class DaemonConfig:
             "NEWS_RESEARCH_MAX_TURNS", "60", int,
         )
 
+        news_weekly_enabled = (
+            os.environ.get("NEWS_WEEKLY_ENABLED", "false").lower() == "true"
+        )
+        news_weekly_model = os.environ.get(
+            "NEWS_WEEKLY_MODEL", "claude-sonnet-4-6",
+        )
+        news_weekly_fire_weekday = typed_env(
+            "NEWS_WEEKLY_FIRE_WEEKDAY", "6", int,
+        )
+        news_weekly_fire_time = os.environ.get(
+            "NEWS_WEEKLY_FIRE_TIME", "18:00",
+        )
+        if news_weekly_enabled:
+            try:
+                _wh, _wm = news_weekly_fire_time.split(":", 1)
+                int(_wh), int(_wm)
+            except ValueError as exc:
+                raise ValueError(
+                    f"NEWS_WEEKLY_FIRE_TIME must be HH:MM in 24h format, "
+                    f"got {news_weekly_fire_time!r}: {exc}",
+                ) from exc
+        news_weekly_backfill_weeks = typed_env(
+            "NEWS_WEEKLY_BACKFILL_WEEKS", "2", int,
+        )
+        news_weekly_min_days = typed_env(
+            "NEWS_WEEKLY_MIN_DAYS", "3", int,
+        )
+        news_weekly_recurrence_threshold = typed_env(
+            "NEWS_WEEKLY_RECURRENCE_THRESHOLD", "3", int,
+        )
+        news_weekly_max_threads = typed_env(
+            "NEWS_WEEKLY_MAX_THREADS", "8", int,
+        )
+        news_weekly_max_turns = typed_env(
+            "NEWS_WEEKLY_MAX_TURNS", "60", int,
+        )
+
         hacker_news_enabled = (
             os.environ.get("HACKER_NEWS_ENABLED", "false").lower() == "true"
         )
@@ -289,6 +342,15 @@ class DaemonConfig:
             news_research_model=news_research_model,
             news_research_max_items=news_research_max_items,
             news_research_max_turns=news_research_max_turns,
+            news_weekly_enabled=news_weekly_enabled,
+            news_weekly_model=news_weekly_model,
+            news_weekly_fire_weekday=news_weekly_fire_weekday,
+            news_weekly_fire_time=news_weekly_fire_time,
+            news_weekly_backfill_weeks=news_weekly_backfill_weeks,
+            news_weekly_min_days=news_weekly_min_days,
+            news_weekly_recurrence_threshold=news_weekly_recurrence_threshold,
+            news_weekly_max_threads=news_weekly_max_threads,
+            news_weekly_max_turns=news_weekly_max_turns,
             hacker_news_enabled=hacker_news_enabled,
             hacker_news_local_time=hacker_news_local_time,
             hacker_news_min_points=hacker_news_min_points,
