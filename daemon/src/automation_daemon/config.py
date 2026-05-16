@@ -81,6 +81,10 @@ class DaemonConfig:
     news_weekly_recurrence_threshold: int = 3
     news_weekly_max_threads: int = 8
     news_weekly_max_turns: int = 60
+    # Dedicated weekly-patterns Telegram topic. None -> fall back to
+    # news_daily_telegram_topic_id (design D4: dedicated topic, but
+    # non-breaking default).
+    news_weekly_telegram_topic_id: int | None = None
     # Hacker News source (daily HTTP poll of Firebase HN API).
     # See 01-Projects/Automation/development/designs/2026-05-01-news-source-hacker-news-design.md.
     hacker_news_enabled: bool = False
@@ -259,6 +263,12 @@ class DaemonConfig:
         news_weekly_max_turns = typed_env(
             "NEWS_WEEKLY_MAX_TURNS", "60", int,
         )
+        raw_news_weekly_topic = os.environ.get(
+            "NEWS_WEEKLY_TELEGRAM_TOPIC_ID",
+        )
+        news_weekly_telegram_topic_id: int | None = (
+            int(raw_news_weekly_topic) if raw_news_weekly_topic else None
+        )
 
         hacker_news_enabled = (
             os.environ.get("HACKER_NEWS_ENABLED", "false").lower() == "true"
@@ -351,6 +361,7 @@ class DaemonConfig:
             news_weekly_recurrence_threshold=news_weekly_recurrence_threshold,
             news_weekly_max_threads=news_weekly_max_threads,
             news_weekly_max_turns=news_weekly_max_turns,
+            news_weekly_telegram_topic_id=news_weekly_telegram_topic_id,
             hacker_news_enabled=hacker_news_enabled,
             hacker_news_local_time=hacker_news_local_time,
             hacker_news_min_points=hacker_news_min_points,

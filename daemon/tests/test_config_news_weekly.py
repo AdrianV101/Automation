@@ -16,6 +16,7 @@ def test_weekly_defaults_present() -> None:
     assert cfg.news_weekly_recurrence_threshold == 3
     assert cfg.news_weekly_max_threads == 8
     assert cfg.news_weekly_max_turns == 60
+    assert cfg.news_weekly_telegram_topic_id is None
 
 
 def test_weekly_from_env_overrides(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -41,6 +42,17 @@ def test_weekly_from_env_overrides(monkeypatch: pytest.MonkeyPatch) -> None:
     assert cfg.news_weekly_recurrence_threshold == 4
     assert cfg.news_weekly_max_threads == 10
     assert cfg.news_weekly_max_turns == 90
+
+
+def test_weekly_telegram_topic_from_env(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "t")
+    monkeypatch.setenv("TELEGRAM_CHAT_ID", "c")
+    monkeypatch.setenv("PKM_VAULT_PATH", "/tmp/vault")
+    monkeypatch.setenv("NEWS_WEEKLY_TELEGRAM_TOPIC_ID", "4242")
+    cfg = DaemonConfig.from_env()
+    assert cfg.news_weekly_telegram_topic_id == 4242
 
 
 def test_weekly_invalid_fire_time_rejected(

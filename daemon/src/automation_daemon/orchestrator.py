@@ -123,7 +123,8 @@ async def run_daemon(config: DaemonConfig) -> None:
         log.error(
             "No ingestion path enabled. Set EMAIL_INGEST_ENABLED=true and/or "
             "NEWS_INGEST_ENABLED=true and/or NEWS_DAILY_MASTER_ENABLED=true "
-            "and/or HACKER_NEWS_ENABLED=true. Exiting.",
+            "and/or NEWS_WEEKLY_ENABLED=true and/or HACKER_NEWS_ENABLED=true. "
+            "Exiting.",
         )
         return
 
@@ -1089,11 +1090,19 @@ async def _run_news_weekly_patterns_path(config: DaemonConfig) -> None:
         chat_id=config.telegram_chat_id,
     )
 
+    # Design D4: dedicated weekly topic; fall back to the daily topic
+    # when no dedicated topic is configured.
+    weekly_topic_id = (
+        config.news_weekly_telegram_topic_id
+        if config.news_weekly_telegram_topic_id is not None
+        else config.news_daily_telegram_topic_id
+    )
+
     async def notify(text: str) -> None:
         try:
             await send_message(
                 text, bot,
-                thread_id=config.news_daily_telegram_topic_id,
+                thread_id=weekly_topic_id,
             )
         except Exception:
             log.exception("Failed to send news weekly notification")
@@ -1131,6 +1140,7 @@ async def _run_news_weekly_patterns_path(config: DaemonConfig) -> None:
 
     h, m = config.news_weekly_fire_time.split(":", 1)
     fire = _time(int(h), int(m))
+    # Reuse the daily-master TZ — no separate weekly TZ config field.
     tz = _resolve_news_daily_tz(config.news_daily_master_tz)
 
     sched = NewsWeeklyScheduler(

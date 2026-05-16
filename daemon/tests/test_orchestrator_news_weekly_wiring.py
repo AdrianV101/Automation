@@ -13,6 +13,8 @@ def test_run_daemon_enables_on_news_weekly_flag() -> None:
     src = inspect.getsource(orchestrator.run_daemon)
     assert "news_weekly_enabled" in src
     assert "news-weekly-patterns" in src
+    # both the early-exit OR-guard and the task-create reference the flag
+    assert src.count("news_weekly_enabled") >= 2
 
 
 def test_weekly_path_builds_independent_scheduler() -> None:
