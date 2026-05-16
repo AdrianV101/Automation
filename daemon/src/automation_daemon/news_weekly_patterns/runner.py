@@ -38,7 +38,6 @@ class RunnerConfig:
     recurrence_threshold: int = 3
     max_threads: int = 8
     max_turns: int = 60
-    feedback_window_days: int = 7
     # First entry is the wait before attempt 1 (always 0); rest gate retries.
     retry_backoff_seconds: tuple[float, ...] = (0.0, 60.0)
 
@@ -169,6 +168,7 @@ async def _run_inner(
     recent_ratings: RatingsFn,
     notify: NotifyFn,
 ) -> None:
+    """Body of run_for_iso_week, wrapped above for stuck-row defence."""
     week_dates = iso_week_dates(iso_week)
     masters: dict[date, str] = {}
     for d in week_dates:
@@ -195,8 +195,8 @@ async def _run_inner(
     )
     recurrence_block = render_recurrence_block(threads=threads)
 
-    window_end = week_dates[-1]
     window_start = week_dates[0]
+    window_end = week_dates[-1]
     try:
         ratings = await recent_ratings(window_start, window_end)
     except Exception:

@@ -146,3 +146,73 @@ async def test_agent_failure_marks_failed_no_ping(
 
 async def _no_ratings(start: date, end: date) -> list[dict]:
     return []
+
+
+@pytest.mark.asyncio
+async def test_agent_success_false_marks_failed_no_ping(
+    vault: Path, db_path: Path,
+) -> None:
+    for day in range(11, 18):
+        _write_master(vault, date(2026, 5, day), "## AI\n- x\n")
+    db = NewsWeeklyStateDB(db_path)
+    await db.init_db()
+
+    async def run_agent(_: AgentRunInput) -> AgentRunOutput:
+        return AgentRunOutput(success=False, error="agent said no")
+
+    pinged: list[str] = []
+
+    async def notify(msg: str) -> None:
+        pinged.append(msg)
+
+    await run_for_iso_week(
+        "2026-20",
+        db=db,
+        config=RunnerConfig(
+            vault_root=vault, min_days=3,
+            retry_backoff_seconds=(0.0,),
+        ),
+        run_agent=run_agent,
+        recent_ratings=_no_ratings,
+        notify=notify,
+    )
+    row = await db.get_run("2026-20")
+    assert row["status"] == "failed"
+    assert row["error"] == "agent said no"
+    assert pinged == []
+
+
+@pytest.mark.asyncio
+async def test_ratings_provider_exception_is_non_fatal(
+    vault: Path, db_path: Path,
+) -> None:
+    for day in range(11, 18):
+        _write_master(
+            vault, date(2026, 5, day),
+            "## AI\n- [[01-Projects/News/entities/Anthropic|Anthropic]]\n",
+        )
+    db = NewsWeeklyStateDB(db_path)
+    await db.init_db()
+
+    async def bad_ratings(start: date, end: date) -> list[dict]:
+        raise RuntimeError("ratings db down")
+
+    async def run_agent(inp: AgentRunInput) -> AgentRunOutput:
+        return AgentRunOutput(success=True, threads_written=1)
+
+    pinged: list[str] = []
+
+    async def notify(msg: str) -> None:
+        pinged.append(msg)
+
+    await run_for_iso_week(
+        "2026-20",
+        db=db,
+        config=RunnerConfig(vault_root=vault, min_days=3),
+        run_agent=run_agent,
+        recent_ratings=bad_ratings,
+        notify=notify,
+    )
+    row = await db.get_run("2026-20")
+    assert row["status"] == "completed"  # ratings failure did not abort
+    assert len(pinged) == 1
