@@ -67,7 +67,7 @@ class DaemonConfig:
     news_research_max_turns: int = 60
     # News weekly pattern recognition — independent weekly scheduler (NOT
     # chained with the daily master). Deterministic recurrence pass + agent
-    # narrative. See ADR-010 and
+    # narrative. See ADR-012 and
     # 01-Projects/Automation/development/designs/2026-05-16-news-weekly-pattern-recognition-design.md
     news_weekly_enabled: bool = False
     news_weekly_model: str = "claude-sonnet-4-6"

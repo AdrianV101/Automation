@@ -1071,7 +1071,7 @@ async def _run_news_weekly_patterns_path(config: DaemonConfig) -> None:
 
     NOT chained with the daily master/research/digest path — it has its
     own weekly cadence and reads whatever daily masters exist. Mirrors the
-    ADR-005 in-daemon pattern at a weekly cadence (see ADR-010).
+    ADR-005 in-daemon pattern at a weekly cadence (see ADR-012).
     """
     from datetime import time as _time
     from .news_weekly_patterns.runner import (
