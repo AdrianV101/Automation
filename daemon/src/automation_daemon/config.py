@@ -241,8 +241,9 @@ class DaemonConfig:
         )
         if news_weekly_enabled:
             try:
+                from datetime import time as _time
                 _wh, _wm = news_weekly_fire_time.split(":", 1)
-                int(_wh), int(_wm)
+                _time(int(_wh), int(_wm))
             except ValueError as exc:
                 raise ValueError(
                     f"NEWS_WEEKLY_FIRE_TIME must be HH:MM in 24h format, "

@@ -65,3 +65,17 @@ def test_weekly_invalid_fire_time_rejected(
     monkeypatch.setenv("NEWS_WEEKLY_FIRE_TIME", "notatime")
     with pytest.raises(ValueError, match="NEWS_WEEKLY_FIRE_TIME"):
         DaemonConfig.from_env()
+
+
+def test_weekly_out_of_range_fire_time_rejected(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # "25:00" parses as ints but is not a valid wall-clock time — must be
+    # rejected at config-parse time, not crash the daemon at startup.
+    monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "t")
+    monkeypatch.setenv("TELEGRAM_CHAT_ID", "c")
+    monkeypatch.setenv("PKM_VAULT_PATH", "/tmp/vault")
+    monkeypatch.setenv("NEWS_WEEKLY_ENABLED", "true")
+    monkeypatch.setenv("NEWS_WEEKLY_FIRE_TIME", "25:00")
+    with pytest.raises(ValueError, match="NEWS_WEEKLY_FIRE_TIME"):
+        DaemonConfig.from_env()
