@@ -1030,9 +1030,16 @@ async def _run_news_daily_master_path(config: DaemonConfig) -> None:
             notify=notify,
         )
 
+    # Both 'completed' and 'completed_with_skips' mean the master doc was
+    # fully written and is a valid digest substrate — a benign skipped junk
+    # email must not gate research/digest. Only genuine non-success states
+    # (failed, failed_verification on historical rows, failed_notes_clobbered,
+    # skipped_empty, running, missing) block the chain.
+    _MASTER_OK_STATUSES = ("completed", "completed_with_skips")
+
     async def _master_completed(d) -> bool:
         row = await db.get_run(d)
-        if row is None or row.get("status") != "completed":
+        if row is None or row.get("status") not in _MASTER_OK_STATUSES:
             log.info(
                 "Skipping research/digest for %s — master status=%s",
                 d, row.get("status") if row else None,
