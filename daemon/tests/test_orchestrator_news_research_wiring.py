@@ -82,13 +82,18 @@ class _FakeScheduler:
         return None
 
 
-async def _complete_master_row(state_db_path, d: date) -> None:
-    """Write a real `completed` master row so `_master_completed` (which reads
-    the real `NewsDailyMasterStateDB.get_run`) lets the chain proceed."""
+async def _complete_master_row(
+    state_db_path, d: date, status: str = "completed",
+) -> None:
+    """Write a real terminal master row so `_master_completed` (which reads
+    the real `NewsDailyMasterStateDB.get_run`) lets the chain proceed.
+
+    `status` defaults to "completed"; pass "completed_with_skips" to exercise
+    the skip-gate path."""
     mdb = NewsDailyMasterStateDB(state_db_path)
     await mdb.init_db()
     await mdb.insert_run(d)
-    await mdb.update_run(d, "completed")
+    await mdb.update_run(d, status)
 
 
 @pytest.mark.asyncio
@@ -263,3 +268,56 @@ async def test_wiring_research_disabled_is_inert(tmp_path):
     await captured_fn(d)
     assert calls == ["master", "digest"]
     research_mock.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_wiring_completed_with_skips_still_runs_research_and_digest(
+    tmp_path,
+):
+    """A master run that ends in completed_with_skips must NOT gate the
+    chain — research + digest still run (this is the skip-gate bug fix)."""
+    config = _make_config(
+        tmp_path,
+        news_personal_digest_enabled=True,
+        news_research_enabled=True,
+    )
+    calls: list[str] = []
+    d = date(2026, 5, 15)
+
+    async def fake_master(target_date, **kwargs):
+        calls.append("master")
+        await _complete_master_row(
+            config.email_ingest_state_db_path, target_date,
+            "completed_with_skips",
+        )
+
+    async def fake_research(target_date, **kwargs):
+        calls.append("research")
+
+    async def fake_digest(target_date, **kwargs):
+        calls.append("digest")
+
+    with patch(
+        "automation_daemon.news_daily_master.scheduler.NewsDailyScheduler",
+        _FakeScheduler,
+    ), patch(
+        "automation_daemon.news_daily_master.runner.run_for_date",
+        AsyncMock(side_effect=fake_master),
+    ), patch(
+        "automation_daemon.news_research.runner.run_for_date",
+        AsyncMock(side_effect=fake_research),
+    ), patch(
+        "automation_daemon.news_personal_digest.runner.run_for_date",
+        AsyncMock(side_effect=fake_digest),
+    ), patch(
+        "automation_daemon.orchestrator.send_message", AsyncMock(),
+    ):
+        from automation_daemon.orchestrator import _run_news_daily_master_path
+
+        await _run_news_daily_master_path(config)
+
+    captured_fn = _FakeScheduler.captured.get("run_for_date_fn")
+    assert captured_fn is not None, "scheduler was never constructed"
+
+    await captured_fn(d)
+    assert calls == ["master", "research", "digest"]

@@ -53,7 +53,7 @@ async def test_insert_run_duplicate_target_date_overwrites(db_path: Path) -> Non
 
 def test_valid_statuses_constant() -> None:
     assert NEWS_DAILY_MASTER_VALID_STATUSES == frozenset({
-        "running", "completed", "skipped_empty",
+        "running", "completed", "completed_with_skips", "skipped_empty",
         "failed", "failed_verification", "failed_notes_clobbered",
     })
 
@@ -183,3 +183,34 @@ async def test_get_unattempted_in_window_handles_inverted_range(db_path: Path) -
         start=date(2026, 4, 30), end=date(2026, 4, 27),
     )
     assert out == []
+
+
+@pytest.mark.asyncio
+async def test_update_run_accepts_completed_with_skips(db_path: Path) -> None:
+    db = NewsDailyMasterStateDB(db_path)
+    await db.init_db()
+    d = date(2026, 5, 15)
+    await db.insert_run(d)
+    await db.update_run(
+        d, status="completed_with_skips",
+        master_path="01-Projects/News/daily/2026-05-15-master.md",
+        item_count=37,
+        error="agent skipped items: junk-promo: no article content",
+    )
+    row = await db.get_run(d)
+    assert row["status"] == "completed_with_skips"
+    assert row["item_count"] == 37
+    assert "junk-promo" in row["error"]
+    assert row["completed_at"] is not None  # terminal -> completed_at set
+
+
+@pytest.mark.asyncio
+async def test_get_last_completed_counts_completed_with_skips(
+    db_path: Path,
+) -> None:
+    db = NewsDailyMasterStateDB(db_path)
+    await db.init_db()
+    d = date(2026, 5, 15)
+    await db.insert_run(d)
+    await db.update_run(d, status="completed_with_skips", item_count=1)
+    assert await db.get_last_completed() == d

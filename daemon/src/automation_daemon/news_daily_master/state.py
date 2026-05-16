@@ -21,8 +21,11 @@ CREATE TABLE IF NOT EXISTS news_daily_master_runs (
 NEWS_DAILY_MASTER_VALID_STATUSES = frozenset({
     "running",
     "completed",
+    "completed_with_skips",
     "skipped_empty",
     "failed",
+    # Retained so historical rows written before the skip-gate fix stay
+    # readable; nothing writes this status after the fix.
     "failed_verification",
     "failed_notes_clobbered",
 })
@@ -106,13 +109,15 @@ class NewsDailyMasterStateDB:
     async def get_last_completed(self) -> date | None:
         """Most recent target_date with a successful run.
 
-        'completed' and 'skipped_empty' both count — skipped_empty represents
-        a successful 'no items to digest' decision, not a failure.
+        'completed', 'completed_with_skips' and 'skipped_empty' all count:
+        a skip-day is a fully-written master doc (success), and skipped_empty
+        is a successful 'no items to digest' decision — neither is a failure.
         """
         async with aiosqlite.connect(self._path) as db:
             async with db.execute(
                 "SELECT target_date FROM news_daily_master_runs "
-                "WHERE status IN ('completed', 'skipped_empty') "
+                "WHERE status IN "
+                "('completed', 'completed_with_skips', 'skipped_empty') "
                 "ORDER BY target_date DESC LIMIT 1",
             ) as cur:
                 row = await cur.fetchone()

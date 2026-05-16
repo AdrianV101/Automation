@@ -253,7 +253,7 @@ async def test_run_for_date_detects_notes_clobber(
 
 
 @pytest.mark.asyncio
-async def test_run_for_date_verification_failure_when_agent_skipped_items(
+async def test_run_for_date_skipped_items_completes_with_skips(
     db_path: Path, vault_root: Path, runner_cfg: RunnerConfig,
 ) -> None:
     db = NewsDailyMasterStateDB(db_path)
@@ -262,8 +262,8 @@ async def test_run_for_date_verification_failure_when_agent_skipped_items(
     _seed_source_item(vault_root, date(2026, 4, 29), "item-b")
 
     async def partial_agent(inp: AgentRunInput) -> AgentRunOutput:
-        # Agent reports success but skipped one item — represents a
-        # verification-failure mode (item-b was unparseable, etc.).
+        # Agent reports success but skipped one junk item — the master doc
+        # is fully written; the skip must NOT gate the digest.
         master_path = (
             inp.vault_root / "01-Projects" / "News" / "daily"
             / f"{inp.target_date.isoformat()}-master.md"
@@ -275,7 +275,7 @@ async def test_run_for_date_verification_failure_when_agent_skipped_items(
         )
         return AgentRunOutput(
             success=True, item_count=1, categories=["AI"],
-            skipped_items=["item-b: unparseable body"],
+            skipped_items=["item-b: body is entirely a promo with no content"],
         )
 
     notifier = AsyncMock()
@@ -286,9 +286,22 @@ async def test_run_for_date_verification_failure_when_agent_skipped_items(
     )
 
     row = await db.get_run(date(2026, 4, 29))
-    assert row["status"] == "failed_verification"
-    assert "item-b" in (row["error"] or "")
-    notifier.assert_awaited()
+    assert row["status"] == "completed_with_skips"
+    assert row["item_count"] == 1
+    assert row["master_path"].endswith("2026-04-29-master.md")
+    # Skip reasons persisted for observability — the human-readable reason
+    # and the "agent skipped items:" prefix must survive, not just the slug.
+    err = row["error"] or ""
+    assert err.startswith("agent skipped items:")
+    assert "item-b: body is entirely a promo with no content" in err
+    # ...but the Telegram notification is the normal ready message (silent
+    # on skips) — no warning sign, no skip list.
+    assert notifier.await_count == 1
+    msg = notifier.await_args.args[0]
+    assert msg.startswith("📰 News daily master ready")
+    assert "⚠️" not in msg
+    assert "skipped" not in msg.lower()
+    assert "item-b" not in msg
 
 
 # ---------------------------------------------------------------------------

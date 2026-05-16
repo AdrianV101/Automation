@@ -127,13 +127,13 @@ If the source note already has an `entities` field (from a prior partial run), m
 
 ### 8. Verification (mandatory before reporting)
 
-Run this checklist and only report `success: true` if all three pass. If any fails, include the specific issue in the JSON summary's `skipped_items` field.
+Run this checklist. Report `success: true` whenever the procedure completed and the master doc is written — including when you legitimately skipped junk items. List every skipped item in the JSON summary's `skipped_items` field with a reason. Reserve `success: false` for unrecoverable errors only (e.g. a source note you could not read, vault MCP unavailable) — i.e. the master doc could not be produced at all.
 
 - **(a) Coverage.** Every source note in `00-Inbox/news/<target_date>/` is either linked from the master doc OR explicitly listed in `skipped_items` with a reason. List `vault_list("00-Inbox/news/<target_date>/")` and check each filename appears in the master doc as a wikilink.
 - **(b) Entity tagging.** Every source note covered (i.e., linked from the master doc) has an `entities` frontmatter field that's been written or merged. Re-read each one if you're unsure.
 - **(c) Notes section.** Read the master doc one final time and confirm the `## Notes` heading is exactly as it was when you started — same text, same trailing content. The runner will SHA256 this section and reject the run if anything below the `## Notes` line changed.
 
-If you find issues at this stage, fix them before reporting (you have the tools — re-edit, re-update). The verification is the contract; if you flag items in `skipped_items`, the runner records `failed_verification` and surfaces it to the user.
+If you find issues at this stage, fix them before reporting (you have the tools — re-edit, re-update). Skipping a genuinely junk item (promo/paywall with no article content) is normal and expected — it is NOT a failure. The runner records a skip-bearing run as `completed_with_skips` (a terminal-success state: the digest still runs; the skip reasons are persisted for later review). The runner only treats `success: false`, an agent exception, or a clobbered `## Notes` section as a real failure.
 
 ### 9. Emit the structured summary
 
@@ -150,7 +150,7 @@ End your response with a single fenced JSON block matching this schema:
 ```
 
 **Field semantics:**
-- `success`: `true` if you completed the procedure and verification passed; `false` if you encountered an unrecoverable error (e.g., couldn't read a source note, vault MCP unavailable).
+- `success`: `true` if you produced the master doc — including runs where you legitimately skipped junk items into `skipped_items` (the runner records those as `completed_with_skips`, a terminal-success state where the digest still runs). `false` only for an unrecoverable error where the master doc could not be produced at all (e.g., couldn't read a source note, vault MCP unavailable).
 - `item_count`: total items now represented in the master doc (existing + new), not just newly added.
 - `categories`: list of every `## <Category>` heading present in the final master doc.
 - `new_categories`: subset of `categories` you introduced this run (also persisted to `_index.md` in step 6).

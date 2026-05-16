@@ -147,9 +147,10 @@ async def run_for_date(
         )
     except Exception as exc:
         # Catch-all so the row never gets stuck in 'running'. Inner branches
-        # are responsible for the typed-failure transitions (failed,
-        # failed_verification, failed_notes_clobbered); anything that reaches
-        # here is unexpected (DB error, IO error in a helper, programmer bug).
+        # are responsible for the typed transitions (failed,
+        # failed_notes_clobbered, completed, completed_with_skips); anything
+        # that reaches here is unexpected (DB error, IO error in a helper,
+        # programmer bug).
         log.exception("Unexpected error in run_for_date for %s", target_date)
         try:
             await db.update_run(
@@ -225,23 +226,29 @@ async def _run_for_date_inner(
                 )
                 return
 
-        # Verification: agent's own self-check reports any skipped items.
+        # Skips are benign by contract: a skipped item is a junk promo /
+        # paywall email with no article content (see news-daily-master
+        # SKILL.md). The master doc is fully written either way, so a skip
+        # must NOT gate the downstream digest. Record a distinct
+        # terminal-success status so skip days stay queryable, persist the
+        # reasons in `error` for observability, and send the normal ready
+        # notification — skips are silent on Telegram by design. Genuine
+        # failures still come through the success=False / exception /
+        # notes-clobber paths above.
         if output.skipped_items:
-            await db.update_run(
-                target_date, status="failed_verification",
-                error="agent skipped items: " + "; ".join(output.skipped_items),
+            status = "completed_with_skips"
+            skip_detail = (
+                "agent skipped items: " + "; ".join(output.skipped_items)
             )
-            await notify(
-                f"⚠️ News master doc for {target_date.isoformat()} "
-                f"completed with skipped items:\n"
-                + "\n".join(f"- {s}" for s in output.skipped_items),
-            )
-            return
+        else:
+            status = "completed"
+            skip_detail = None
 
         await db.update_run(
-            target_date, status="completed",
+            target_date, status=status,
             master_path=str(master_path.relative_to(config.vault_root)),
             item_count=output.item_count,
+            error=skip_detail,
         )
         await notify(
             f"📰 News daily master ready — {target_date.isoformat()} "
