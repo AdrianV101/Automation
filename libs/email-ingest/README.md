@@ -6,6 +6,7 @@ Source-agnostic primitives for email-driven ingestion pipelines.
 
 - **`bridge`** — low-level async IMAP client (connect, FETCH, IDLE, mark seen)
 - **`listener`** — `ImapIdleListener` high-level orchestrator (reconnect, UIDNEXT resync)
+- **`webhook`** — `WebhookForwarder` POSTs a structured JSON record (`sender`, `subject`, `body`, `received_at`, `message_id`) to an ingest endpoint (e.g. Poke) on each new message; supports self-authenticating URLs or an optional Bearer key; retries with backoff, never raises
 - **`mime`** — `parse_email(raw_bytes) -> ParsedEmail`
 - **`auth`** — `verify_dkim(msg, required_domain)` via `Authentication-Results`
 - **`state`** — aiosqlite-backed `EmailIngestStateDB` + `EmailIngestStatusTracker`

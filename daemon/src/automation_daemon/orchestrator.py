@@ -17,6 +17,8 @@ from email_ingest import (
     EmailIngestStatusTracker,
     ImapIdleListener,
     NewsIngestStateDB,
+    WebhookConfig,
+    WebhookForwarder,
     parse_email,
     verify_dkim,
 )
@@ -525,7 +527,19 @@ async def _run_email_ingest_path(config: DaemonConfig) -> None:
 
     pipeline_thread = await _setup_pipeline_topic_email(email_db, bot)
 
+    # Real-time fan-out: every new inbox email is forwarded as a structured
+    # JSON record to the Poke ingest endpoint (when configured) in addition to
+    # the Plaud ingestion path. forward() never raises, so it cannot disrupt
+    # handle_incoming_email.
+    webhook_forwarder = (
+        WebhookForwarder(WebhookConfig(url=config.poke_ingest_url))
+        if config.poke_ingest_url
+        else None
+    )
+
     async def on_new_email(uid: int, raw: bytes, headers: dict[str, str]) -> None:
+        if webhook_forwarder is not None:
+            await webhook_forwarder.forward(uid, raw, headers)
         await handle_incoming_email(
             uid, raw,
             email_db=email_db, config=config, bot=bot,
