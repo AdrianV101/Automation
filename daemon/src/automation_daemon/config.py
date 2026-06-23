@@ -32,6 +32,10 @@ class DaemonConfig:
     imap_password: str = ""
     email_ingest_state_db_path: Path = Path("./email_ingest_state.db")
     vault_attachments_subdir: str = "99-Attachments/plaud"
+    # Real-time forwarding: POST a structured JSON record of every new inbox
+    # email to a Poke ingest endpoint. The URL is self-authenticating (auth
+    # token embedded), so no separate key is needed. Empty disables forwarding.
+    poke_ingest_url: str = ""
     # News ingestion: separate IMAP IDLE connection to the same Bridge,
     # parallel `news_ingest_events` table, `uidnext:news` settings key.
     news_ingest_enabled: bool = False
@@ -261,6 +265,7 @@ class DaemonConfig:
             vault_attachments_subdir=os.environ.get(
                 "VAULT_ATTACHMENTS_SUBDIR", "99-Attachments/plaud",
             ),
+            poke_ingest_url=os.environ.get("POKE_INGEST_URL", "").strip(),
             imap_use_starttls=os.environ.get("IMAP_USE_STARTTLS", "true").lower() == "true",
             imap_ssl_verify=imap_ssl_verify,
             dkim_trusted_authserv_id=os.environ.get(
