@@ -1,4 +1,3 @@
-import json
 import os
 from pathlib import Path
 from unittest.mock import MagicMock
@@ -37,11 +36,6 @@ def _isolate_dotenv(
     if request.node.get_closest_marker("real_dotenv"):
         return
     monkeypatch.setattr("automation_daemon.config.load_dotenv", lambda *a, **k: False)
-
-
-@pytest.fixture
-def sample_plaud_raw() -> dict:
-    return json.loads((FIXTURES_DIR / "sample_plaud_transcript.json").read_text())
 
 
 # ---------------------------------------------------------------------------

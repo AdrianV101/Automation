@@ -3,10 +3,8 @@ from __future__ import annotations
 import asyncio
 import logging
 from collections.abc import Awaitable, Callable
-from dataclasses import replace
 from datetime import date
 from pathlib import Path
-from typing import Protocol
 from zoneinfo import ZoneInfo
 
 import httpx
@@ -14,13 +12,10 @@ import httpx
 from email_ingest import (
     BridgeConfig,
     EmailIngestStateDB,
-    EmailIngestStatusTracker,
     ImapIdleListener,
     NewsIngestStateDB,
     WebhookConfig,
     WebhookForwarder,
-    parse_email,
-    verify_dkim,
 )
 
 from .config import DaemonConfig
@@ -30,20 +25,9 @@ from .clippings_state import ClippingsStateDB
 from .hacker_news_adapter import run_scheduler_loop
 from .hn_state import HackerNewsStateDB
 from .supervisor import supervise
-from .models import RecordingJob, StatusTracker
-from .notifications import (
-    answer_callback_query, format_file_list, send_speaker_prompt,
-    send_speaker_resolution_complete,
-)
-from .people import load_people
-from .speaker_resolution import (
-    apply_speaker_names, decode_choice, deserialize_job,
-    IGNORE, is_unrecognised, OTHER, serialize_job, unrecognised_speakers,
-)
+from .notifications import format_file_list
 from .news_email_adapter import handle_news_email
-from .pipeline import process_recording
-from .plaud_email_adapter import MalformedPlaudEmailError, recording_job_from_email
-from .speaker_reaper import run_speaker_reaper_forever
+from .plaud_mcp_ingest import run_plaud_mcp_forever
 from agent_infra import SessionManager
 from telegram_interface import (
     BotConfig, TelegramInterface, ThreadStore,
@@ -77,10 +61,9 @@ async def dispatch_callback_query(
     """Route a Telegram callback_query by data prefix.
 
     `nr:` → digest rating handler. Anything else → fallback_handler. In the
-    daemon the fallback is a composed handler: speaker-labelling is always
-    wired, and when clippings is enabled `clip:`-prefixed callbacks are
-    routed to the clippings clarification handler (the composed fallback
-    tries clippings first, then speaker labelling). With no digest_handler,
+    daemon the fallback is a composed handler that routes `clip:`-prefixed
+    callbacks to the clippings clarification handler when clippings is
+    enabled and ignores everything else. With no digest_handler,
     even nr: routes to fallback. With no fallback, unrecognised data is
     dropped silently — the bot is shared across features and no feature
     should claim ownership of unfamiliar callbacks.
@@ -100,17 +83,6 @@ async def dispatch_callback_query(
         )
 
 
-class ProcessRecording(Protocol):
-    async def __call__(
-        self,
-        job: RecordingJob,
-        config: DaemonConfig,
-        *,
-        status: StatusTracker | None = None,
-        speakers_unresolved: bool = False,
-    ) -> None: ...
-
-
 async def run_daemon(config: DaemonConfig) -> None:
     log.info("Daemon started")
 
@@ -120,11 +92,13 @@ async def run_daemon(config: DaemonConfig) -> None:
         or config.news_daily_master_enabled
         or config.hacker_news_enabled
         or config.clippings_enabled
+        or config.plaud_mcp_enabled
     ):
         log.error(
             "No ingestion path enabled. Set EMAIL_INGEST_ENABLED=true and/or "
             "NEWS_INGEST_ENABLED=true and/or NEWS_DAILY_MASTER_ENABLED=true "
-            "and/or HACKER_NEWS_ENABLED=true. Exiting.",
+            "and/or HACKER_NEWS_ENABLED=true and/or "
+            "ENABLE_PLAUD_MCP_INGEST=true. Exiting.",
         )
         return
 
@@ -142,357 +116,40 @@ async def run_daemon(config: DaemonConfig) -> None:
             tg.create_task(_run_hacker_news_path(config), name="hacker-news")
         if config.clippings_enabled:
             tg.create_task(_run_clippings_path(config), name="clippings")
-
-
-async def handle_incoming_email(
-    uid: int,
-    raw: bytes,
-    *,
-    email_db: EmailIngestStateDB,
-    config: DaemonConfig,
-    bot: BotConfig,
-    pipeline_thread: int | None,
-    process_recording_fn: ProcessRecording = process_recording,
-) -> None:
-    parsed = parse_email(raw)
-    message_id = parsed.message_id
-
-    if not message_id:
-        log.warning("Email at UID %d has no Message-ID — skipping", uid)
-        return
-
-    if await email_db.is_processed(message_id):
-        log.debug("Already processed %s — skipping", message_id)
-        return
-
-    # Insert the event row before any processing so unexpected failures
-    # (DKIM edge cases, DB errors, programmer bugs) leave a durable trace
-    # instead of silently losing the UID.
-    await email_db.insert_event(
-        message_id=message_id, uid=uid,
-        subject=parsed.headers.get("Subject"),
-    )
-
-    try:
-        await _process_parsed_email(
-            parsed, message_id,
-            email_db=email_db, config=config, bot=bot,
-            pipeline_thread=pipeline_thread,
-            process_recording_fn=process_recording_fn,
-        )
-    except Exception as exc:
-        # Catch-all so the row never gets stuck in 'received'. Narrow-typed
-        # branches (DKIM fail, MalformedPlaudEmailError) are handled inside
-        # _process_parsed_email; anything that reaches here is unexpected.
-        log.exception("Unexpected error handling email %s", message_id)
-        try:
-            await email_db.update_status(
-                message_id, "failed", error=f"unexpected: {exc}",
+        if config.plaud_mcp_enabled:
+            plaud_bot = BotConfig(
+                bot_token=config.telegram_bot_token,
+                chat_id=config.telegram_chat_id,
             )
-        except Exception:
-            log.exception("Failed to mark %s failed after crash", message_id)
 
+            async def on_plaud_mcp_crashloop(task_name: str, failures: int) -> None:
+                try:
+                    await send_message(
+                        f"⚠️ Plaud MCP ingest crash-looping\n\n"
+                        f"Task: {task_name}\nConsecutive failures: {failures}\n"
+                        f"Will keep restarting with backoff. Check daemon logs.",
+                        plaud_bot,
+                    )
+                except Exception:
+                    log.exception("Failed to send Plaud MCP crash-loop alert")
 
-def _speaker_snippet(job: RecordingJob, label: str) -> str:
-    for seg in job.transcript_data.segments:
-        if seg.speaker == label and seg.text.strip():
-            return seg.text
-    return "(no sample available)"
-
-
-async def gate_or_pass(
-    job: RecordingJob,
-    config: DaemonConfig,
-    email_db: EmailIngestStateDB,
-    bot: BotConfig,
-    *,
-    thread_id: int | None,
-) -> bool:
-    """If the transcript has unrecognised speakers, persist a pending
-    record, send one Telegram prompt per unknown speaker, mark the event
-    `awaiting_speaker_labels`, and return True (caller must NOT route).
-    Otherwise return False (caller routes normally)."""
-    unknown = unrecognised_speakers(job.transcript_data)
-    if not unknown:
-        return False
-    await email_db.insert_pending(
-        job.id, payload=serialize_job(job), unknown_speakers=unknown,
-    )
-    known = [p.name for p in load_people(config.pkm_vault_path)]
-    prompt_ids: list[int | None] = []
-    for idx, label in enumerate(unknown):
-        try:
-            mid = await send_speaker_prompt(
-                speaker_idx=idx, speaker_label=label,
-                recording_name=job.filename,
-                sample_text=_speaker_snippet(job, label),
-                tg=bot, known_names=known, thread_id=thread_id,
+            tg.create_task(
+                supervise(
+                    "plaud-mcp", lambda: run_plaud_mcp_forever(config),
+                    on_persistent_failure=on_plaud_mcp_crashloop,
+                ),
+                name="plaud-mcp",
             )
-        except Exception:
-            log.exception(
-                "Failed to send speaker prompt for %s (speaker %d/%d %r); "
-                "slot preserved as None for positional alignment",
-                job.id, idx + 1, len(unknown), label,
-            )
-            mid = None
-        # Keep prompt_ids positionally aligned with `unknown`: index i is
-        # always speaker i, so a free-text reply can be mapped back by the
-        # replied-to message id's position even with multiple unknowns.
-        prompt_ids.append(mid)
-    await email_db.set_pending_prompt_ids(job.id, prompt_ids)
-    await email_db.update_status(job.id, "awaiting_speaker_labels")
-    if all(mid is None for mid in prompt_ids):
-        # Every prompt failed — operator would have no way to label the
-        # recording. Send an explicit notice so the failure is not silent.
-        try:
-            await send_message(
-                "⚠️ Held a recording with unrecognised speakers but couldn't "
-                "deliver the labelling prompt(s) — will retry/await; check "
-                "Telegram connectivity.",
-                bot, thread_id=thread_id,
-            )
-        except Exception:
-            log.exception("Failed to send prompt-delivery-failure notice for %s", job.id)
-    return True
 
 
-async def _find_pending_by_prompt_id(
-    email_db: EmailIngestStateDB, message_id: int,
-) -> dict | None:
-    # Delegate to the DB method which is poison-resilient and uses a direct
-    # query instead of the old sentinel-date full-table scan.
-    return await email_db.get_pending_by_prompt_id(message_id)
+OnNewEmail = Callable[[int, bytes, dict[str, str]], Awaitable[None]]
 
 
-async def _maybe_resume(
-    msg_id: str, email_db: EmailIngestStateDB, config: DaemonConfig,
-    bot: BotConfig, process_recording_fn,
-) -> None:
-    row = await email_db.get_pending(msg_id)
-    if row is None:
-        return
-    if set(row["name_map"]) != set(row["unknown_speakers"]):
-        return  # still waiting on at least one speaker
-
-    # Guard against a corrupt stored payload — treat as poison: log, mark
-    # failed, drop the pending row, notify operator, and return without routing.
-    try:
-        job = deserialize_job(row["payload"])
-    except Exception:
-        log.exception(
-            "speaker resume: stored payload for %s is unreadable; dropping", msg_id,
-        )
-        try:
-            await email_db.update_status(msg_id, "failed")
-        except Exception:
-            log.exception("speaker resume: failed to mark %s failed after bad payload", msg_id)
-        await email_db.delete_pending(msg_id)
-        try:
-            await send_message(
-                "⚠️ A held recording's stored data was unreadable; dropped — "
-                "re-send if needed.",
-                bot,
-            )
-        except Exception:
-            log.exception("speaker resume: failed to send notice for poisoned payload %s", msg_id)
-        return
-
-    job = replace(
-        job,
-        transcript_data=apply_speaker_names(job.transcript_data, row["name_map"]),
-    )
-    # Any speaker the operator chose IGNORE for keeps its generic label as the
-    # mapped name — flag these for the pipeline so it knows resolution is partial.
-    speakers_unresolved = any(
-        is_unrecognised(k) and v == k
-        for k, v in row["name_map"].items()
-    )
-
-    # Route FIRST; only clean up (delete row + send completion notice) on success.
-    # This preserves the pending row for retry/reaper if routing fails.
-    tracker = EmailIngestStatusTracker(email_db, msg_id)
-    try:
-        await process_recording_fn(
-            job, config, status=tracker, speakers_unresolved=speakers_unresolved,
-        )
-    except Exception:
-        log.exception(
-            "speaker resume: routing failed for %s; pending row left for retry/reaper",
-            msg_id,
-        )
-        raise  # surface to the handler wrapper so the operator is notified
-
-    await send_speaker_resolution_complete(job.filename, row["name_map"], bot)
-    await email_db.delete_pending(msg_id)
-
-
-def make_speaker_callback_handler(
-    *,
-    email_db: EmailIngestStateDB,
-    config: DaemonConfig,
-    bot: BotConfig,
-    process_recording_fn=process_recording,
-):
-    async def handler(*, callback_query_id: str, message_id: int, data: str) -> None:
-        try:
-            decoded = decode_choice(data)
-            if decoded is None:
-                return  # not ours; dispatch_callback_query already filtered, be safe
-            speaker_idx, choice = decoded
-            row = await _find_pending_by_prompt_id(email_db, message_id)
-            if row is None:
-                await answer_callback_query(callback_query_id, "No longer pending", bot)
-                return
-            msg_id = row["message_id"]
-            unknown = row["unknown_speakers"]
-            if speaker_idx >= len(unknown):
-                await answer_callback_query(callback_query_id, "Unknown speaker", bot)
-                return
-            label = unknown[speaker_idx]
-            if choice == OTHER:
-                # Ask for free text; the reply handler completes the mapping.
-                await answer_callback_query(
-                    callback_query_id, f"Reply with the name for {label}", bot,
-                )
-                return
-            name = label if choice == IGNORE else choice
-            await email_db.set_pending_name(msg_id, label, name)
-            await answer_callback_query(callback_query_id, f"{label} → {name}", bot)
-            await _maybe_resume(msg_id, email_db, config, bot, process_recording_fn)
-        except Exception:
-            log.exception("speaker callback handler failed for query %s", callback_query_id)
-            try:
-                await answer_callback_query(
-                    callback_query_id,
-                    "Couldn't record that — try again or check logs",
-                    bot,
-                )
-            except Exception:
-                log.exception(
-                    "Failed to send error toast for callback query %s", callback_query_id,
-                )
-    return handler
-
-
-def make_text_reply_handler(
-    *,
-    email_db: EmailIngestStateDB,
-    config: DaemonConfig,
-    bot: BotConfig,
-    process_recording_fn=process_recording,
-):
-    async def on_text_reply(reply_to_message_id: int, text: str) -> None:
-        row = await _find_pending_by_prompt_id(email_db, reply_to_message_id)
-        if row is None:
-            return  # not a speaker-prompt reply (silent — could be unrelated)
-        prompt_ids = row["prompt_message_ids"]
-        try:
-            idx = prompt_ids.index(reply_to_message_id)
-        except ValueError:
-            # Matched a pending row but the reply id isn't in its prompt list —
-            # stale or misrouted reply; tell the operator.
-            try:
-                await send_message(
-                    "⚠️ Couldn't map that reply to a speaker — the prompt may "
-                    "be stale; re-trigger labelling.",
-                    bot,
-                )
-            except Exception:
-                log.exception("Failed to send unmappable-reply notice")
-            return
-        unknown = row["unknown_speakers"]
-        if idx >= len(unknown):
-            # Positional alignment broken (defensive/legacy row); tell the operator.
-            try:
-                await send_message(
-                    "⚠️ Couldn't map that reply to a speaker — the prompt may "
-                    "be stale; re-trigger labelling.",
-                    bot,
-                )
-            except Exception:
-                log.exception("Failed to send unmappable-reply notice")
-            return
-        label = unknown[idx]
-        await email_db.set_pending_name(row["message_id"], label, text.strip())
-        await _maybe_resume(
-            row["message_id"], email_db, config, bot, process_recording_fn,
-        )
-    return on_text_reply
-
-
-async def _process_parsed_email(
-    parsed,
-    message_id: str,
-    *,
-    email_db: EmailIngestStateDB,
-    config: DaemonConfig,
-    bot: BotConfig,
-    pipeline_thread: int | None,
-    process_recording_fn: ProcessRecording,
-) -> None:
-    dkim = verify_dkim(
-        parsed,
-        required_domain=config.dkim_required_domain,
-        trusted_authserv_id=config.dkim_trusted_authserv_id,
-    )
-    if not dkim.passed:
-        log.warning(
-            "DKIM fail for %s (domain=%s, reason=%s) — rejecting",
-            message_id, dkim.signing_domain, dkim.reason,
-        )
-        await email_db.update_status(
-            message_id, "failed", error=f"dkim_fail: {dkim.reason}",
-        )
-        await _notify_pipeline(
-            bot, pipeline_thread,
-            "⚠️ DKIM verification failed\n\n"
-            f"Subject: {parsed.headers.get('Subject', '')}\n"
-            f"Message-ID: {message_id}\n"
-            f"Signing domain: {dkim.signing_domain}\n"
-            f"Reason: {dkim.reason}",
-            message_id,
-        )
-        return
-
-    try:
-        job = recording_job_from_email(
-            parsed,
-            vault_path=config.pkm_vault_path,
-            attachments_subdir=config.vault_attachments_subdir,
-        )
-    except MalformedPlaudEmailError as exc:
-        log.error("Malformed Plaud email %s: %s", message_id, exc)
-        await email_db.update_status(message_id, "failed", error=str(exc))
-        await _notify_pipeline(
-            bot, pipeline_thread,
-            "⚠️ Plaud email parse failed\n\n"
-            f"Subject: {parsed.headers.get('Subject', '')}\n"
-            f"Message-ID: {message_id}\nError: {exc}",
-            message_id,
-        )
-        return
-
-    if job is None:
-        log.debug("Not-for-us email %s — dropping", message_id)
-        await email_db.update_status(message_id, "dropped", error="not-for-us")
-        return
-
-    if await gate_or_pass(
-        job, config, email_db, bot, thread_id=pipeline_thread,
-    ):
-        return
-
-    tracker = EmailIngestStatusTracker(email_db, message_id)
-    await process_recording_fn(job, config, status=tracker)
-
-
-async def _notify_pipeline(
-    bot: BotConfig, pipeline_thread: int | None, text: str, message_id: str,
-) -> None:
-    try:
-        await send_message(text, bot, thread_id=pipeline_thread)
-    except Exception:
-        log.exception("Failed to send Telegram error for %s", message_id)
+def make_on_new_email(forwarder: WebhookForwarder | None) -> OnNewEmail:
+    async def on_new_email(uid: int, raw: bytes, headers: dict[str, str]) -> None:
+        if forwarder is not None:
+            await forwarder.forward(uid, raw, headers)
+    return on_new_email
 
 
 async def _run_email_ingest_path(config: DaemonConfig) -> None:
@@ -527,24 +184,18 @@ async def _run_email_ingest_path(config: DaemonConfig) -> None:
 
     pipeline_thread = await _setup_pipeline_topic_email(email_db, bot)
 
-    # Real-time fan-out: every new inbox email is forwarded as a structured
-    # JSON record to the Poke ingest endpoint (when configured) in addition to
-    # the Plaud ingestion path. forward() never raises, so it cannot disrupt
-    # handle_incoming_email.
-    webhook_forwarder = (
+    # Every new inbox email is forwarded as a structured JSON record to the
+    # Poke ingest endpoint when configured; otherwise the listener only
+    # tracks UIDs. Plaud recordings arrive via the Plaud MCP path instead.
+    if not config.poke_ingest_url:
+        log.info(
+            "No Poke ingest URL configured; IMAP listener will only track UIDs",
+        )
+    on_new_email = make_on_new_email(
         WebhookForwarder(WebhookConfig(url=config.poke_ingest_url))
         if config.poke_ingest_url
         else None
     )
-
-    async def on_new_email(uid: int, raw: bytes, headers: dict[str, str]) -> None:
-        if webhook_forwarder is not None:
-            await webhook_forwarder.forward(uid, raw, headers)
-        await handle_incoming_email(
-            uid, raw,
-            email_db=email_db, config=config, bot=bot,
-            pipeline_thread=pipeline_thread,
-        )
 
     async def on_persistent_failure() -> None:
         await send_message(
@@ -582,9 +233,8 @@ async def _run_email_ingest_path(config: DaemonConfig) -> None:
     digest_handler = await _build_digest_callback_handler(config, bot)
 
     # Wire clippings clarification callbacks when the clippings feature is enabled.
-    # When disabled, clip_callback and clip_text_reply remain None, so the
-    # composed fallback/text-reply handlers below behave exactly like the
-    # speaker-labelling-only path (no clippings handlers registered).
+    # When disabled, clip_callback and clip_text_reply remain None and the
+    # composed fallback/text-reply handlers below ignore everything.
     clip_callback = None
     clip_text_reply = None
     if config.clippings_enabled:
@@ -624,12 +274,7 @@ async def _run_email_ingest_path(config: DaemonConfig) -> None:
         async def clip_text_reply(  # type: ignore[assignment]
             reply_to_message_id: int, text: str,
         ) -> bool:
-            """Return True if a pending clarification consumed this reply.
-
-            Returning the consumed signal lets the composed text-reply
-            handler fall through to speaker labelling when this reply was
-            not for a clipping clarification.
-            """
+            """Return True if a pending clarification consumed this reply."""
             async def _rerun(*, url_key: str, user_guidance: str) -> None:
                 await _clip_finalize(url_key=url_key, user_guidance=user_guidance)
             return await handle_clip_text_reply(
@@ -637,25 +282,16 @@ async def _run_email_ingest_path(config: DaemonConfig) -> None:
                 state=clip_state, rerun_with_guidance=_rerun,
             )
 
-    speaker_cb = make_speaker_callback_handler(
-        email_db=email_db, config=config, bot=bot,
-    )
-
     async def _composed_fallback(
         *, callback_query_id: str, message_id: int, data: str,
     ) -> None:
-        # Clippings owns `clip:`-prefixed callbacks when enabled; every other
-        # non-digest callback (speaker labelling, etc.) goes to speaker_cb.
         if clip_callback is not None and data.startswith("clip:"):
             await clip_callback(
                 callback_query_id=callback_query_id,
                 message_id=message_id, data=data,
             )
             return
-        await speaker_cb(
-            callback_query_id=callback_query_id,
-            message_id=message_id, data=data,
-        )
+        log.debug("Ignoring unhandled callback data %r", data)
 
     async def on_callback_query(cbq_id: str, msg_id: int, data: str) -> None:
         await dispatch_callback_query(
@@ -664,24 +300,16 @@ async def _run_email_ingest_path(config: DaemonConfig) -> None:
             fallback_handler=_composed_fallback,
         )
 
-    on_text_reply = make_text_reply_handler(
-        email_db=email_db, config=config, bot=bot,
-    )
-
-    async def _composed_text_reply(reply_to_message_id: int, text: str) -> None:
-        # Clippings clarification replies are tried first — clip_text_reply
-        # only consumes a reply that matches a pending clarification (exact
-        # message-id, or the single unambiguous pending one). Anything it
-        # does not consume falls through to speaker-labelling text replies.
+    async def _composed_text_reply(reply_to_message_id: int, text: str) -> bool:
         if clip_text_reply is not None:
-            if await clip_text_reply(reply_to_message_id, text):
-                return
-            log.info(
-                "Clip text reply (reply_to=%s) matched no unambiguous pending "
-                "clarification — falling through to speaker labelling",
-                reply_to_message_id,
-            )
-        await on_text_reply(reply_to_message_id, text)
+            consumed = await clip_text_reply(reply_to_message_id, text)
+            if consumed:
+                return True
+        log.debug(
+            "Text reply to message %s not consumed by clippings",
+            reply_to_message_id,
+        )
+        return False
 
     try:
         async with asyncio.TaskGroup() as tg:
@@ -696,11 +324,6 @@ async def _run_email_ingest_path(config: DaemonConfig) -> None:
                     on_callback_query=on_callback_query,
                     on_labeling_reply=_composed_text_reply,
                 ),
-                on_persistent_failure=on_supervised_task_crashloop,
-            ))
-            tg.create_task(supervise(
-                "speaker-reaper",
-                lambda: run_speaker_reaper_forever(email_db, config, bot),
                 on_persistent_failure=on_supervised_task_crashloop,
             ))
     finally:
