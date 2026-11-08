@@ -32,11 +32,11 @@ A **monorepo of composable libraries** -- four independent packages with clear i
 ```
 Automation/
 ├── libs/
-│   ├── agent-infra/          # Claude Agent SDK runner, sessions, MCP config (66 tests)
-│   ├── telegram-interface/   # Telegram bot, command dispatch, trace streaming (178 tests)
-│   ├── pkm/                  # PKM writing patterns (3 tests)
-│   └── email-ingest/         # IMAP IDLE + DKIM + MIME primitives (37 tests)
-├── daemon/                   # Thin orchestrator wiring libs into a pipeline (95 tests)
+│   ├── agent-infra/          # Claude Agent SDK runner, sessions, MCP config
+│   ├── telegram-interface/   # Telegram bot, command dispatch, trace streaming
+│   ├── pkm/                  # PKM writing patterns
+│   └── email-ingest/         # IMAP IDLE + DKIM + MIME primitives
+├── daemon/                   # Thin orchestrator wiring libs into a pipeline
 └── docs/                     # Design specs and architecture docs
 ```
 
@@ -67,13 +67,14 @@ Automation/
 ### Daemon
 
 **`daemon/`** -- Thin orchestrator that wires libraries into the audio ingestion pipeline
-- `orchestrator.py` -- top-level daemon lifecycle (Plaud MCP poller, IMAP listener forwarding new mail to Poke, Telegram poller)
-- `pipeline.py` -- composes processing steps (raw transcript, extract, route); `notify=False` runs it without Telegram
+- `orchestrator.py` -- top-level daemon lifecycle (Plaud MCP poller, IMAP listener forwarding new mail to Poke, Telegram poller for commands, digests and clippings)
+- `pipeline.py` -- composes processing steps (raw transcript, extract, route); `notify=False` runs it without per-recording Telegram messages (crash-loop alerts still go to Telegram)
 - `extraction.py` -- Claude agent extraction and PKM routing
 - `plaud_mcp_client.py` -- stdio client for the pinned `@plaud-ai/mcp` package
 - `plaud_mcp_trigger.py`, `plaud_mcp_state.py` -- speaker-labelling trigger and SQLite state per recording
 - `plaud_mcp_adapter.py` -- maps MCP recordings (segments, summaries, outline, highlights) to pipeline `RecordingJob`s
-- `plaud_mcp_ingest.py` -- poll cycle, retries, attention note and the manual `plaud-ingest` command
+- `plaud_mcp_ingest.py` -- poll cycle, retries and the manual `plaud-ingest` command
+- `plaud_mcp_attention.py` -- renders `00-Inbox/plaud-ingest-attention.md`
 - `config.py` -- typed `DaemonConfig` from environment variables
 - `notifications.py` -- Telegram notification helpers
 - `prompts.py`, `tools.py`, `command_config.py` -- agent prompts, allowed tools, and Telegram command wiring
@@ -134,11 +135,11 @@ Enable it in `daemon/.env`:
 | `PLAUD_MCP_SWITCHOVER_DATE` | (required when enabled) | `YYYY-MM-DD`; recordings before this date are never picked up automatically |
 | `PLAUD_MCP_PACKAGE` | `@plaud-ai/mcp@0.3.14` | Exact version pin; `@latest`, ranges and tags are rejected |
 | `PLAUD_MCP_POLL_INTERVAL_S` | `300` | Seconds between polls |
-| `PLAUD_MCP_LABEL_QUIET_S` | `600` | Wait after the last speaker-label change |
+| `PLAUD_MCP_LABEL_QUIET_S` | `600` | While some speakers are still generic, ingest this long after the last label change |
 | `PLAUD_MCP_UNLABELLED_FALLBACK_S` | `86400` | Ingest with generic labels after this long untouched |
 | `PLAUD_MCP_WINDOW_DAYS` | `14` | How far back each poll looks |
 
-A recording that fails before routing is retried up to 3 times, then listed in `00-Inbox/plaud-ingest-attention.md` together with the command to re-run it. To ingest one recording by hand, including ones older than the switchover date:
+A recording that fails before routing is attempted up to 3 times; extraction failures and ingests interrupted by a restart are not retried. All of these are listed in `00-Inbox/plaud-ingest-attention.md` together with the command to re-run them. To ingest one recording by hand, including ones older than the switchover date:
 
 ```bash
 daemon/.venv/bin/python -m automation_daemon plaud-ingest <file_id>            # ingest
@@ -148,15 +149,15 @@ daemon/.venv/bin/python -m automation_daemon plaud-ingest <file_id> --force --ex
 
 ## Running tests
 
-Each package has its own test suite and venv. 379 tests total.
+Each package has its own test suite and venv.
 
 ```bash
 # Individual packages
-libs/agent-infra/.venv/bin/python -m pytest libs/agent-infra/tests/ -v               # 66 tests
-libs/telegram-interface/.venv/bin/python -m pytest libs/telegram-interface/tests/ -v # 178 tests
-libs/pkm/.venv/bin/python -m pytest libs/pkm/tests/ -v                               # 3 tests
-libs/email-ingest/.venv/bin/python -m pytest libs/email-ingest/tests/ -v             # 37 tests
-daemon/.venv/bin/python -m pytest daemon/tests/ -v                                   # 95 tests
+libs/agent-infra/.venv/bin/python -m pytest libs/agent-infra/tests/ -v
+libs/telegram-interface/.venv/bin/python -m pytest libs/telegram-interface/tests/ -v
+libs/pkm/.venv/bin/python -m pytest libs/pkm/tests/ -v
+libs/email-ingest/.venv/bin/python -m pytest libs/email-ingest/tests/ -v
+daemon/.venv/bin/python -m pytest daemon/tests/ -v
 ```
 
 ## Telegram commands

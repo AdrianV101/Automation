@@ -186,7 +186,7 @@ async def _run_email_ingest_path(config: DaemonConfig) -> None:
 
     # Every new inbox email is forwarded as a structured JSON record to the
     # Poke ingest endpoint when configured; otherwise the listener only
-    # tracks UIDs. Plaud recordings arrive via the Plaud MCP path instead.
+    # tracks UIDs.
     if not config.poke_ingest_url:
         log.info(
             "No Poke ingest URL configured; IMAP listener will only track UIDs",
