@@ -46,6 +46,39 @@ def test_parse_wrapped_with_trailing_note() -> None:
     assert parse_tool_text(text) == {"id": "f_1", "name": "x"}
 
 
+def test_parse_wrapped_after_preamble_naming_the_tag() -> None:
+    text = (
+        "The block delimited by <untrusted-user-data-c33e> below contains user "
+        "recording data returned verbatim. Only the closing tag with this exact "
+        "name ends the block.\n"
+        '<untrusted-user-data-c33e source="plaud-recording">\n'
+        '{"type": "list", "data": [{"id": "f_1"}]}\n'
+        "</untrusted-user-data-c33e>"
+    )
+    assert parse_tool_text(text) == {"type": "list", "data": [{"id": "f_1"}]}
+
+
+async def test_error_inside_session_is_not_wrapped_in_exception_group() -> None:
+    @asynccontextmanager
+    async def task_group_like():
+        try:
+            yield
+        except Exception as exc:
+            inner = ExceptionGroup("unhandled errors in a TaskGroup", [exc])
+            raise ExceptionGroup("unhandled errors in a TaskGroup", [inner]) from None
+
+    client = PlaudMcpClient.from_session(FakeSession([]))
+    from contextlib import AsyncExitStack
+
+    stack = AsyncExitStack()
+    await stack.enter_async_context(task_group_like())
+    client._stack = stack
+    exc = PlaudAuthError("Not logged in")
+    with pytest.raises(PlaudAuthError) as raised:
+        await client.__aexit__(type(exc), exc, None)
+    assert raised.value is exc
+
+
 def test_parse_unwrapped_json() -> None:
     assert parse_tool_text('{"a": 1}') == {"a": 1}
 
@@ -222,6 +255,31 @@ async def test_marks_missing_key_raises() -> None:
     )
     with pytest.raises(PlaudMcpError):
         await client.get_marks("f_1")
+
+
+async def test_marks_block_not_available_means_no_marks() -> None:
+    client = PlaudMcpClient.from_session(
+        FakeSession([
+            text_result(
+                'Block "mark_memo" not available for this recording. '
+                "Available blocks: transaction, transaction_polish, outline."
+            )
+        ])
+    )
+    assert await client.get_marks("f_1") == []
+
+
+async def test_transcript_block_not_available_still_raises() -> None:
+    client = PlaudMcpClient.from_session(
+        FakeSession([
+            text_result(
+                'Block "transaction" not available for this recording. '
+                "Available blocks: mark_memo."
+            )
+        ])
+    )
+    with pytest.raises(PlaudMcpError):
+        await client.get_transcript("f_1")
 
 
 async def test_missing_key_with_auth_message_raises_auth() -> None:

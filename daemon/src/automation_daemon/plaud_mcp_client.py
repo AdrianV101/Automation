@@ -16,9 +16,13 @@ _AUTH_RE = re.compile(
     r"(?i)\b(auth\w*|log(?:ged)?[ -]?in|unauthori[sz]ed|token|401"
     r"|session expired|invalid_grant|refresh failed)\b"
 )
+# The server prefixes the block with a sentence that names the bare tag, so
+# only an opening tag carrying attributes starts the data block.
 _WRAPPED_RE = re.compile(
-    r"<untrusted-user-data-[^>]*>\s*(.*?)\s*</untrusted-user-data-[^>]*>", re.DOTALL
+    r"<(untrusted-user-data-[\w-]+)\s[^>]*>\s*(.*?)\s*</\1>", re.DOTALL
 )
+# A recording without highlights answers mark_memo with plain text, not JSON.
+_BLOCK_UNAVAILABLE_RE = re.compile(r'\s*Block "[^"]+" not available for this recording')
 _PAGE_SIZE = 100
 _TRANSCRIPT_LIMIT = 500
 _CALL_TIMEOUT_S = 120.0
@@ -35,9 +39,13 @@ class PlaudAuthError(PlaudMcpError):
     """The Plaud MCP server is not authenticated."""
 
 
+class _BlockUnavailable(PlaudMcpError):
+    pass
+
+
 def parse_tool_text(text: str) -> dict:
     match = _WRAPPED_RE.search(text)
-    body = match.group(1) if match else text.strip()
+    body = match.group(2) if match else text.strip()
     try:
         data = json.loads(body)
     except ValueError as exc:
@@ -119,8 +127,20 @@ class PlaudMcpClient:
     async def __aexit__(self, *exc: object) -> None:
         stack, self._stack = self._stack, None
         self._session = None
-        if stack is not None:
+        if stack is None:
+            return
+        exc_value = exc[1] if len(exc) > 1 else None
+        try:
             await stack.__aexit__(*exc)
+        except BaseExceptionGroup as group:
+            # The SDK's nested task groups wrap the caller's own exception on
+            # exit; surface it unwrapped so callers can catch PlaudMcpError.
+            leaf: BaseException = group
+            while isinstance(leaf, BaseExceptionGroup) and len(leaf.exceptions) == 1:
+                leaf = leaf.exceptions[0]
+            if exc_value is not None and leaf is exc_value:
+                raise exc_value from None
+            raise
 
     @classmethod
     def from_session(cls, session: Any) -> "PlaudMcpClient":
@@ -141,6 +161,8 @@ class PlaudMcpClient:
         except Exception as exc:
             raise PlaudMcpError(f"Plaud MCP call {name} failed: {exc}") from exc
         text = _joined_text(result)
+        if _BLOCK_UNAVAILABLE_RE.match(text):
+            raise _BlockUnavailable(text)
         if _attr(result, "is_error", "isError"):
             if _AUTH_RE.search(text):
                 raise PlaudAuthError(text)
@@ -201,4 +223,7 @@ class PlaudMcpClient:
         return await self._paged(file_id, "transaction", "segments")
 
     async def get_marks(self, file_id: str) -> list[dict]:
-        return await self._paged(file_id, "mark_memo", "marks")
+        try:
+            return await self._paged(file_id, "mark_memo", "marks")
+        except _BlockUnavailable:
+            return []
