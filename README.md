@@ -4,17 +4,15 @@ An AI-augmented personal knowledge management (PKM) system that captures voice r
 
 ## What it does
 
-1. **Audio ingestion**: A [Plaud Note Pro](https://www.plaud.ai/) recorder uploads to Plaud cloud, which AutoFlow-emails the transcript + audio + summary to a configured mailbox. The daemon watches that mailbox over IMAP IDLE (locally via [Proton Mail Bridge](https://proton.me/mail/bridge) or any IMAP server) and processes new mail in real time.
-2. **Transcript ingest**: Plaud's hosted transcription is used. (An earlier pre-public version of the project also supported optional local re-transcription via [WhisperX](https://github.com/m-bain/whisperX) with speaker diarization; that path is not included in this repository.)
+1. **Audio ingestion**: A [Plaud Note Pro](https://www.plaud.ai/) recorder uploads to Plaud cloud. Every 5 minutes the daemon polls the official [Plaud MCP server](https://www.npmjs.com/package/@plaud-ai/mcp) for recordings that have a transcript and summary.
+2. **Speaker-labelling trigger**: A recording is ingested once its speakers are labelled in the Plaud app: immediately when no generic `Speaker N` label is left, 10 minutes after the last label change when only some are named, or 24 hours after it first looked ready if nobody touches it. Plaud's summaries, outline and device highlights travel with the transcript.
 3. **AI extraction**: A Claude agent (via [Agent SDK](https://docs.anthropic.com/en/docs/agents-and-tools/claude-code/agent-sdk)) reads the transcript, searches the Obsidian vault for context, and routes extracted information to the right locations.
-4. **Notifications**: Progress updates and results stream to Telegram, with interactive commands for queries and capture.
+4. **Problems surface in the vault**: Failed recordings and persistent Plaud MCP problems (including an expired login) are listed in `00-Inbox/plaud-ingest-attention.md`, which disappears when everything is healthy.
 
 ```
-Plaud Cloud --AutoFlow email--> Mailbox
+Plaud Cloud --Plaud MCP (stdio, polled every 5 min)--> daemon
                                   |
-                            IMAP IDLE (Proton Bridge / any IMAP)
-                                  |
-                            DKIM verify + MIME parse + attachments
+                            Ready? Speakers labelled? (trigger + SQLite state)
                                   |
                             Raw transcript --> PKM archive
                                   |
@@ -69,10 +67,13 @@ Automation/
 ### Daemon
 
 **`daemon/`** -- Thin orchestrator that wires libraries into the audio ingestion pipeline
-- `orchestrator.py` -- top-level daemon lifecycle (IMAP listener + Telegram poller)
-- `pipeline.py` -- composes processing steps (parse email, verify DKIM, save attachments, extract, route)
+- `orchestrator.py` -- top-level daemon lifecycle (Plaud MCP poller, IMAP listener forwarding new mail to Poke, Telegram poller)
+- `pipeline.py` -- composes processing steps (raw transcript, extract, route); `notify=False` runs it without Telegram
 - `extraction.py` -- Claude agent extraction and PKM routing
-- `plaud_email_adapter.py` -- maps Plaud-formatted emails into pipeline `RecordingJob`s and PKM `TranscriptData`
+- `plaud_mcp_client.py` -- stdio client for the pinned `@plaud-ai/mcp` package
+- `plaud_mcp_trigger.py`, `plaud_mcp_state.py` -- speaker-labelling trigger and SQLite state per recording
+- `plaud_mcp_adapter.py` -- maps MCP recordings (segments, summaries, outline, highlights) to pipeline `RecordingJob`s
+- `plaud_mcp_ingest.py` -- poll cycle, retries, attention note and the manual `plaud-ingest` command
 - `config.py` -- typed `DaemonConfig` from environment variables
 - `notifications.py` -- Telegram notification helpers
 - `prompts.py`, `tools.py`, `command_config.py` -- agent prompts, allowed tools, and Telegram command wiring
@@ -81,8 +82,8 @@ Automation/
 
 - Python 3.11+
 - [uv](https://docs.astral.sh/uv/) (package manager)
-- A [Plaud](https://www.plaud.ai/) account with **AutoFlow → Email** configured to push transcripts to a mailbox you control
-- An IMAP-accessible mailbox the daemon can poll. The reference setup uses [Proton Mail Bridge](https://proton.me/mail/bridge) running locally on the daemon host (exposes a Proton mailbox on `127.0.0.1:1143`); any IMAP server will work
+- A [Plaud](https://www.plaud.ai/) account, logged in to the Plaud MCP on the daemon host (run its `login` tool once, e.g. from Claude Code; tokens live in `~/.plaud/`), plus Node.js for `npx`
+- Optional: an IMAP-accessible mailbox whose new mail is forwarded to a Poke ingest webhook. The reference setup uses [Proton Mail Bridge](https://proton.me/mail/bridge) on `127.0.0.1:1143`
 - [Obsidian](https://obsidian.md/) vault + [Obsidian MCP server](https://github.com/AdrianV101/Obsidian-MCP)
 - [Claude Code CLI](https://docs.anthropic.com/en/docs/agents-and-tools/claude-code) (Agent SDK uses your Claude subscription)
 - Telegram bot (via [@BotFather](https://t.me/botfather)) for notifications
@@ -121,6 +122,28 @@ daemon/.venv/bin/python -m automation_daemon
 #          logs to ~/Library/Logs/automation-daemon/{stdout,stderr}.log)
 #   Linux: sudo cp daemon/automation-daemon.service /etc/systemd/system/
 #          sudo systemctl enable --now automation-daemon
+```
+
+## Plaud MCP ingest
+
+Enable it in `daemon/.env`:
+
+| Variable | Default | Meaning |
+|---|---|---|
+| `ENABLE_PLAUD_MCP_INGEST` | `false` | Start the `plaud-mcp` poller |
+| `PLAUD_MCP_SWITCHOVER_DATE` | (required when enabled) | `YYYY-MM-DD`; recordings before this date are never picked up automatically |
+| `PLAUD_MCP_PACKAGE` | `@plaud-ai/mcp@0.3.14` | Exact version pin; `@latest`, ranges and tags are rejected |
+| `PLAUD_MCP_POLL_INTERVAL_S` | `300` | Seconds between polls |
+| `PLAUD_MCP_LABEL_QUIET_S` | `600` | Wait after the last speaker-label change |
+| `PLAUD_MCP_UNLABELLED_FALLBACK_S` | `86400` | Ingest with generic labels after this long untouched |
+| `PLAUD_MCP_WINDOW_DAYS` | `14` | How far back each poll looks |
+
+A recording that fails before routing is retried up to 3 times, then listed in `00-Inbox/plaud-ingest-attention.md` together with the command to re-run it. To ingest one recording by hand, including ones older than the switchover date:
+
+```bash
+daemon/.venv/bin/python -m automation_daemon plaud-ingest <file_id>            # ingest
+daemon/.venv/bin/python -m automation_daemon plaud-ingest <file_id> --force    # rewrite the transcript only
+daemon/.venv/bin/python -m automation_daemon plaud-ingest <file_id> --force --extract  # also re-run extraction (may duplicate notes)
 ```
 
 ## Running tests
