@@ -1,10 +1,14 @@
 from __future__ import annotations
 
 import asyncio
+import dataclasses
 import sqlite3
 from datetime import date, timedelta
+from pathlib import Path
+from unittest.mock import AsyncMock
 
 import pytest
+from agent_infra import AgentInfraConfigError
 from plaud_mcp_fakes import (
     GENERIC,
     NAMED,
@@ -17,6 +21,7 @@ from plaud_mcp_fakes import (
     minutes,
 )
 
+from automation_daemon.extraction import AgentRoutingResult
 from automation_daemon.plaud_mcp_attention import ATTENTION_NOTE_REL
 from automation_daemon.plaud_mcp_client import PlaudAuthError, PlaudMcpError
 from automation_daemon.plaud_mcp_ingest import (
@@ -274,22 +279,45 @@ async def test_forever_recovers_interrupted_and_writes_attention(state, config):
     assert "f_stuck" in note
 
 
-async def test_adapter_value_error_routed_to_retry(state, config, monkeypatch):
-    def broken(*_args):
-        raise ValueError("Plaud highlight marks have no usable time field; keys=['foo']")
-
-    monkeypatch.setattr("automation_daemon.plaud_mcp_ingest.to_recording_job", broken)
+@pytest.mark.parametrize("source", ["get_marks", "adapter"])
+async def test_marks_or_adapter_failure_uses_attempts_then_fails(
+    state, config, monkeypatch, source,
+):
     client = FakePlaudClient()
     client.add("f_a", NAMED)
-    client.add("f_b", NAMED)
+    if source == "get_marks":
+        client.errors[("get_marks", "f_a")] = PlaudMcpError("get_transcript timed out")
+        expected = "PlaudMcpError: get_transcript timed out"
+    else:
+        def broken(*_args):
+            raise ValueError("highlight marks have no usable time field; keys=['foo']")
+
+        monkeypatch.setattr("automation_daemon.plaud_mcp_ingest.to_recording_job", broken)
+        expected = "ValueError: highlight marks have no usable time field; keys=['foo']"
     process = FakeProcess()
-    report = await _cycle(client, state, config, process, T0)
-    assert report.waiting == 2
+
+    seen = []
+    for i in range(3):
+        await _cycle(client, state, config, process, T0 + timedelta(minutes=5 * i))
+        row = await state.get("f_a")
+        seen.append((row.status, row.attempts, row.error))
+    assert seen == [
+        ("waiting_labels", 1, expected),
+        ("waiting_labels", 2, expected),
+        ("failed", 3, expected),
+    ]
+    assert process.calls == []
+
+
+async def test_marks_auth_error_leaves_no_ingesting_row(state, config):
+    client = FakePlaudClient()
+    client.add("f_a", NAMED)
+    client.errors[("get_marks", "f_a")] = PlaudAuthError("Not logged in")
+    process = FakeProcess()
+    with pytest.raises(PlaudAuthError):
+        await _cycle(client, state, config, process, T0)
     row = await state.get("f_a")
-    assert row.status == "waiting_labels"
-    assert row.error == (
-        "ValueError: Plaud highlight marks have no usable time field; keys=['foo']"
-    )
+    assert (row.status, row.attempts) == ("waiting_labels", 0)
     assert process.calls == []
 
 
@@ -393,42 +421,155 @@ async def test_forever_problem_threshold_and_reset(config, exc, prefix, hinted):
     assert [n is not None for n in seen] == [False, False, False, False, False, True]
     assert prefix in seen[-1]
     assert ("Plaud login may have expired" in seen[-1]) is hinted
+    assert ("on the daemon host." in seen[-1]) is hinted
+    assert "Mac mini" not in seen[-1]
     assert sleeps == [config.plaud_mcp_poll_interval_s] * 6
 
 
-async def test_forever_recovers_ingesting_each_iteration(state, config):
+async def test_forever_recovers_interrupted_only_at_startup(state, config):
     seed_track = TrackState(ready_at=T0, speaker_map=NAMED, last_label_change_at=None)
     sleeps: list[float] = []
 
     async def sleep(_seconds: float) -> None:
         sleeps.append(_seconds)
         if len(sleeps) == 1:
-            await state.upsert_waiting("f_stuck", "Stuck meeting", seed_track, T0)
-            await state.mark_ingesting("f_stuck")
+            await state.upsert_waiting("f_live", "Manual run", seed_track, T0)
+            await state.mark_ingesting("f_live")
             return
         raise asyncio.CancelledError
 
     await _run_forever(config, FakePlaudClient, sleep)
 
-    row = await state.get("f_stuck")
-    assert (row.status, row.error) == ("failed", "interrupted")
-    assert "f_stuck" in _note(config)
+    assert len(sleeps) == 2
+    row = await state.get("f_live")
+    assert (row.status, row.error) == ("ingesting", None)
+    assert _note(config) is None
 
 
-async def test_forever_list_failed_error_not_fatal(config, monkeypatch):
-    async def broken(self):
-        raise RuntimeError("database is locked")
+def _scripted_list_failed(monkeypatch, failing_calls: set[int]) -> list[int]:
+    calls: list[int] = []
+    original = PlaudMcpStateDB.list_failed
 
-    monkeypatch.setattr(PlaudMcpStateDB, "list_failed", broken)
+    async def list_failed(self):
+        calls.append(len(calls) + 1)
+        if len(calls) in failing_calls:
+            raise RuntimeError("database is locked")
+        return await original(self)
+
+    monkeypatch.setattr(PlaudMcpStateDB, "list_failed", list_failed)
+    return calls
+
+
+async def test_forever_attention_failures_below_threshold_not_fatal(config, monkeypatch):
+    calls = _scripted_list_failed(monkeypatch, {2, 3, 5, 6})
     sleeps: list[float] = []
 
     async def sleep(seconds: float) -> None:
         sleeps.append(seconds)
-        if len(sleeps) >= 2:
+        if len(sleeps) >= 5:
             raise asyncio.CancelledError
 
     await _run_forever(config, FakePlaudClient, sleep)
-    assert len(sleeps) == 2
+    assert len(sleeps) == 5
+    assert len(calls) == 6
+
+
+async def test_forever_raises_after_three_attention_failures(config, monkeypatch):
+    written: list[str | None] = []
+
+    def broken_write(_vault, content):
+        written.append(content)
+        if len(written) >= 2:
+            raise OSError("vault unavailable")
+
+    monkeypatch.setattr(
+        "automation_daemon.plaud_mcp_ingest.write_attention_note", broken_write,
+    )
+    sleeps: list[float] = []
+
+    async def sleep(seconds: float) -> None:
+        sleeps.append(seconds)
+        if len(sleeps) > 5:
+            raise asyncio.CancelledError
+
+    with pytest.raises(RuntimeError, match="attention note") as raised:
+        await run_plaud_mcp_forever(
+            config,
+            client_factory=FakePlaudClient,
+            process_recording_fn=FakeProcess(),
+            sleep=sleep,
+            clock=lambda: T0,
+        )
+    assert isinstance(raised.value.__cause__, OSError)
+    # One good write, then three consecutive failures; no sleep after the third.
+    assert len(written) == 4
+    assert len(sleeps) == 3
+
+
+async def test_forever_unwritable_vault_raises_before_polling(config, tmp_path):
+    from dataclasses import replace
+
+    missing = replace(config, pkm_vault_path=tmp_path / "not-mounted")
+    factory_calls: list[int] = []
+
+    def factory():
+        factory_calls.append(1)
+        return FakePlaudClient()
+
+    async def sleep(_seconds: float) -> None:
+        raise asyncio.CancelledError
+
+    with pytest.raises(OSError):
+        await run_plaud_mcp_forever(
+            missing,
+            client_factory=factory,
+            process_recording_fn=FakeProcess(),
+            sleep=sleep,
+            clock=lambda: T0,
+        )
+    assert factory_calls == []
+    assert not (tmp_path / "not-mounted").exists()
+
+
+async def test_forever_startup_does_not_rewrite_note(config):
+    note = config.pkm_vault_path / ATTENTION_NOTE_REL
+    note.parent.mkdir(parents=True, exist_ok=True)
+    note.write_text("existing problem text\n")
+    contents: list[str | None] = []
+
+    def factory():
+        contents.append(_note(config))
+        return FakePlaudClient()
+
+    async def sleep(_seconds: float) -> None:
+        raise asyncio.CancelledError
+
+    await _run_forever(config, factory, sleep)
+    assert contents == ["existing problem text\n"]
+
+
+async def test_forever_startup_list_failed_error_raises_before_polling(
+    config, monkeypatch,
+):
+    _scripted_list_failed(monkeypatch, {1})
+    factory_calls: list[int] = []
+
+    def factory():
+        factory_calls.append(1)
+        return FakePlaudClient()
+
+    async def sleep(_seconds: float) -> None:
+        raise asyncio.CancelledError
+
+    with pytest.raises(RuntimeError, match="database is locked"):
+        await run_plaud_mcp_forever(
+            config,
+            client_factory=factory,
+            process_recording_fn=FakeProcess(),
+            sleep=sleep,
+            clock=lambda: T0,
+        )
+    assert factory_calls == []
 
 
 async def test_forever_surfaces_persistent_fetch_errors(config):
@@ -478,3 +619,108 @@ async def test_forever_sleep_subtracts_cycle_time(config):
     interval = config.plaud_mcp_poll_interval_s
     assert interval > 100
     assert sleeps == [interval - 100, 0]
+
+
+async def test_forever_marks_fetch_error_ends_failed_and_listed(config):
+    client = FakePlaudClient()
+    client.add("f_a", NAMED)
+    client.errors[("get_marks", "f_a")] = PlaudMcpError("get_transcript timed out")
+    process = FakeProcess()
+    seen: list[str | None] = []
+
+    async def sleep(_seconds: float) -> None:
+        seen.append(_note(config))
+        if len(seen) >= 3:
+            raise asyncio.CancelledError
+
+    await _run_forever(config, lambda: client, sleep, process=process)
+
+    row = await PlaudMcpStateDB(config.email_ingest_state_db_path).get("f_a")
+    assert (row.status, row.attempts) == ("failed", 3)
+    assert seen[2] is not None
+    assert "`f_a`" in seen[2] and "get_transcript timed out" in seen[2]
+    assert process.calls == []
+
+
+async def test_stale_unready_recordings_reported(state, config):
+    client = FakePlaudClient()
+    client.add("f_old", NAMED, name="Old one", ready=False)
+    client.add("f_empty", NAMED, name="Empty one", segments=[])
+    client.add("f_new", NAMED, name="New one", ready=False)
+    client.details["f_new"]["start_at"] = "2026-11-09T09:00:00"
+    process = FakeProcess()
+
+    report = await _cycle(client, state, config, process, T0)
+    assert report.stale_unready == {}
+
+    report = await _cycle(client, state, config, process, T0 + timedelta(hours=48))
+    assert report.stale_unready == {
+        "f_old": "Recording f_old (Old one) still has no Plaud transcript/summary after 50 h",
+        "f_empty": "Recording f_empty (Empty one) still has no Plaud transcript/summary "
+        "after 50 h",
+    }
+    assert process.calls == []
+    assert await state.get("f_old") is None
+
+
+async def test_forever_writes_stale_unready_line(config):
+    client = FakePlaudClient()
+    client.add("f_old", NAMED, name="Old one", ready=False)
+
+    async def stop(_seconds: float) -> None:
+        raise asyncio.CancelledError
+
+    await _run_forever(config, lambda: client, stop, clock=lambda: T0 + timedelta(hours=49))
+    note = _note(config)
+    assert note is not None
+    assert "Recording f_old (Old one) still has no Plaud transcript/summary after 51 h" in note
+
+
+_ROUTED = AgentRoutingResult(
+    success=True, summary="routed", files_written=["00-Inbox/n.md"],
+    summary_path="00-Inbox/n.md",
+)
+_NOT_ROUTED = AgentRoutingResult(success=False, summary="", error="wrote no files")
+
+
+@pytest.mark.parametrize(
+    "case", ["routed", "routing_error", "write_raises", "capture_config_error"],
+)
+async def test_real_pipeline_outcomes(state, config, monkeypatch, case):
+    written = Path("/vault/04-Archive/t.md")
+
+    def write_raw(*_args, **_kwargs):
+        if case == "write_raises":
+            raise OSError("disk full")
+        return written
+
+    route = AsyncMock(return_value=_NOT_ROUTED if case == "routing_error" else _ROUTED)
+    capture = AsyncMock(side_effect=AgentInfraConfigError("node not on PATH"))
+    monkeypatch.setattr("automation_daemon.pipeline.write_raw_transcript", write_raw)
+    monkeypatch.setattr("automation_daemon.pipeline.agent_extract_and_route", route)
+    monkeypatch.setattr("automation_daemon.pipeline.agent_capture_session", capture)
+    cfg = dataclasses.replace(
+        config, enable_session_capture=case == "capture_config_error",
+    )
+    client = FakePlaudClient()
+    client.add("f_a", NAMED)
+
+    await run_poll_cycle(client, state, cfg, SETTINGS, now=T0)
+    row = await state.get("f_a")
+
+    if case in ("routed", "capture_config_error"):
+        assert (row.status, row.error) == ("completed", None)
+        assert row.transcript_path == str(written)
+        assert capture.await_count == (1 if case == "capture_config_error" else 0)
+    elif case == "routing_error":
+        assert row.status == "failed"
+        assert row.error == (
+            "extraction: Agent routing failed; transcript preserved: wrote no files"
+        )
+    else:
+        assert (row.status, row.attempts, row.error) == ("waiting_labels", 1, "disk full")
+        assert route.await_count == 0
+
+    await run_poll_cycle(client, state, cfg, SETTINGS, now=T0 + minutes(5))
+    expected_routes = 0 if case == "write_raises" else 1
+    assert route.await_count == expected_routes

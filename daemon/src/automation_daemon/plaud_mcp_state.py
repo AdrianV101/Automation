@@ -27,6 +27,16 @@ class PlaudRow:
     ingested_at: datetime | None
 
 
+def notes_may_exist(row: PlaudRow) -> bool:
+    """True when an earlier ingest of this recording may already have routed notes."""
+    if row.status in ("completed", "ingesting"):
+        return True
+    error = row.error or ""
+    return row.status == "failed" and (
+        error.startswith("extraction:") or error == "interrupted"
+    )
+
+
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS plaud_mcp_recordings (
     file_id TEXT PRIMARY KEY,

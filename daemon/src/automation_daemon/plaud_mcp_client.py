@@ -13,16 +13,25 @@ from typing import Any, TypeVar
 log = logging.getLogger(__name__)
 
 _AUTH_RE = re.compile(
-    r"(?i)\b(auth\w*|log(?:ged)?[ -]?in|unauthori[sz]ed|token|401"
-    r"|session expired|invalid_grant|refresh failed)\b"
+    r"(?i)\b(not logged in|log ?in|unauthori[sz]ed|unauthenticated"
+    r"|not authenticated|authentication (?:failed|required)|session expired"
+    r"|invalid_grant|refresh failed|(?:access|refresh)[ _]token"
+    r"|token (?:expired|invalid)|401)\b"
 )
+_AUTH_MESSAGE_KEYS = ("message", "error", "detail")
 # The server prefixes the block with a sentence that names the bare tag, so
 # only an opening tag carrying attributes starts the data block.
 _WRAPPED_RE = re.compile(
     r"<(untrusted-user-data-[\w-]+)\s[^>]*>\s*(.*?)\s*</\1>", re.DOTALL
 )
-# A recording without highlights answers mark_memo with plain text, not JSON.
+# get_transcript answers some block states with plain text instead of JSON:
+# a block missing from the recording, a block present but still empty, and an
+# empty highlights block.
 _BLOCK_UNAVAILABLE_RE = re.compile(r'\s*Block "[^"]+" not available for this recording')
+_BLOCK_EMPTY_RE = re.compile(
+    r'\s*(?:Block "[^"]+" has no content for this recording yet'
+    r"|This recording has a highlights block, but it is empty)"
+)
 _PAGE_SIZE = 100
 _TRANSCRIPT_LIMIT = 500
 _CALL_TIMEOUT_S = 120.0
@@ -43,13 +52,25 @@ class _BlockUnavailable(PlaudMcpError):
     pass
 
 
-def parse_tool_text(text: str) -> dict:
+class _BlockEmpty(PlaudMcpError):
+    pass
+
+
+def _parse_json(text: str) -> Any:
     match = _WRAPPED_RE.search(text)
     body = match.group(2) if match else text.strip()
     try:
-        data = json.loads(body)
+        return json.loads(body)
     except ValueError as exc:
+        # Wrapped text is recording data; only a bare server message can be
+        # a login problem.
+        if not match and _AUTH_RE.search(text):
+            raise PlaudAuthError(text[:500]) from exc
         raise PlaudMcpError("unparseable Plaud MCP tool text") from exc
+
+
+def parse_tool_text(text: str) -> dict:
+    data = _parse_json(text)
     if not isinstance(data, dict):
         raise PlaudMcpError("Plaud MCP tool text is not a JSON object")
     return data
@@ -71,12 +92,23 @@ def _attr(result: Any, snake: str, camel: str) -> Any:
     return value
 
 
+def _auth_messages(data: dict) -> list[str]:
+    found: list[str] = []
+    for key in _AUTH_MESSAGE_KEYS:
+        value = data.get(key)
+        if isinstance(value, str):
+            found.append(value)
+        elif isinstance(value, dict):
+            found.extend(_auth_messages(value))
+    return found
+
+
 def _list_field(data: dict, key: str, tool: str) -> list[dict]:
     items = data.get(key)
     if isinstance(items, list):
         return items
     payload = json.dumps(data, ensure_ascii=True)[:500]
-    if _AUTH_RE.search(payload):
+    if any(_AUTH_RE.search(m) for m in _auth_messages(data)):
         raise PlaudAuthError(payload)
     raise PlaudMcpError(
         f"Plaud MCP {tool} response has no list under {key!r}: {payload}"
@@ -161,16 +193,25 @@ class PlaudMcpClient:
         except Exception as exc:
             raise PlaudMcpError(f"Plaud MCP call {name} failed: {exc}") from exc
         text = _joined_text(result)
-        if _BLOCK_UNAVAILABLE_RE.match(text):
-            raise _BlockUnavailable(text)
         if _attr(result, "is_error", "isError"):
             if _AUTH_RE.search(text):
                 raise PlaudAuthError(text)
             raise PlaudMcpError(text)
+        if _BLOCK_UNAVAILABLE_RE.match(text):
+            raise _BlockUnavailable(text)
+        if _BLOCK_EMPTY_RE.match(text):
+            raise _BlockEmpty(text)
         structured = _attr(result, "structured_content", "structuredContent")
         if isinstance(structured, dict):
             return structured
-        return parse_tool_text(text)
+        data = _parse_json(text)
+        # A recording with no source blocks at all answers get_transcript
+        # with its (empty) source list.
+        if name == "get_transcript" and data == []:
+            raise _BlockEmpty("recording has no source blocks")
+        if not isinstance(data, dict):
+            raise PlaudMcpError("Plaud MCP tool text is not a JSON object")
+        return data
 
     async def list_files(self, date_from: date, date_to: date) -> list[dict]:
         files: list[dict] = []
@@ -186,7 +227,8 @@ class PlaudMcpClient:
             )
             items = _list_field(data, "data", "list_files")
             files.extend(items)
-            if len(items) < _PAGE_SIZE:
+            total = data.get("total")
+            if not items or (isinstance(total, int) and len(files) >= total):
                 return files
         raise PlaudMcpError(f"Plaud MCP list_files exceeded {_MAX_PAGES} pages")
 
@@ -205,7 +247,12 @@ class PlaudMcpClient:
             }
             if cursor:
                 args["cursor"] = cursor
-            data = await self._call("get_transcript", args)
+            try:
+                data = await self._call("get_transcript", args)
+            except _BlockEmpty:
+                if cursor:
+                    raise
+                return []
             out.extend(_list_field(data, key, f"get_transcript({block})"))
             cursor = data.get("next_cursor")
             if not cursor:

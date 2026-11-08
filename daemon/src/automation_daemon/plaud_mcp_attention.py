@@ -6,9 +6,10 @@ import re
 from datetime import datetime, timezone
 from pathlib import Path
 
-from .plaud_mcp_state import PlaudRow
+from .plaud_mcp_state import PlaudRow, notes_may_exist
 
 _CREATED = re.compile(r"^created: .*$", re.MULTILINE)
+_DUPLICATE_CAUTION = "(notes may already exist; re-running may duplicate them)"
 ATTENTION_NOTE_REL = Path("00-Inbox/plaud-ingest-attention.md")
 
 
@@ -35,13 +36,25 @@ def render_attention(failed: list[PlaudRow], mcp_problem: str | None) -> str | N
     if failed:
         lines += ["## Failed recordings", ""]
         for row in failed:
+            caution = f" {_DUPLICATE_CAUTION}" if notes_may_exist(row) else ""
             lines.append(
                 f"- **{_one_line(row.name)}** (`{row.file_id}`): {_one_line(row.error)}. "
                 f"Re-run: `daemon/.venv/bin/python -m automation_daemon "
-                f"plaud-ingest {row.file_id}`"
+                f"plaud-ingest {row.file_id}`{caution}"
             )
         lines.append("")
     return "\n".join(lines)
+
+
+def check_attention_writable(vault_path: Path) -> None:
+    """Raise OSError unless the note's folder in an existing vault is writable."""
+    if not vault_path.is_dir():
+        raise FileNotFoundError(f"vault path {vault_path} is not a directory")
+    folder = (vault_path / ATTENTION_NOTE_REL).parent
+    folder.mkdir(exist_ok=True)
+    probe = folder / ".plaud-ingest-attention.probe"
+    probe.write_bytes(b"")
+    probe.unlink()
 
 
 def write_attention_note(vault_path: Path, content: str | None) -> None:

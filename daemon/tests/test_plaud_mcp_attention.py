@@ -108,3 +108,18 @@ def test_newlines_in_name_and_error_collapsed() -> None:
     assert out is not None
     assert "- **a b** (`f_abc`): x ## injected." in out
     assert "\n## injected" not in out
+
+
+def test_rerun_line_warns_when_notes_may_exist() -> None:
+    caution = "(notes may already exist; re-running may duplicate them)"
+    rerun = "Re-run: `daemon/.venv/bin/python -m automation_daemon plaud-ingest"
+    for error, warned in [
+        ("extraction: agent broke", True),
+        ("interrupted", True),
+        ("pipeline broke", False),
+    ]:
+        out = render_attention([_row(error=error)], None)
+        assert out is not None
+        line = next(ln for ln in out.splitlines() if rerun in ln)
+        assert line.endswith(f"plaud-ingest f_abc` {caution}") is warned
+        assert (caution in out) is warned

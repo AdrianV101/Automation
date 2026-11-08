@@ -13,17 +13,27 @@ from pkm import write_raw_transcript
 from .config import DaemonConfig
 from .pipeline import process_recording
 from .plaud_mcp_adapter import is_ready, speaker_map, to_recording_job
-from .plaud_mcp_attention import render_attention, write_attention_note
+from .plaud_mcp_attention import (
+    check_attention_writable,
+    render_attention,
+    write_attention_note,
+)
 from .plaud_mcp_client import PlaudAuthError, PlaudMcpClient, PlaudMcpError
-from .plaud_mcp_state import PlaudMcpStateDB, PlaudStatus
+from .plaud_mcp_state import PlaudMcpStateDB, PlaudStatus, notes_may_exist
 from .plaud_mcp_trigger import decide, has_generic
 
 log = logging.getLogger(__name__)
 
 _MCP_PROBLEM_THRESHOLD = 3
+_ATTENTION_FAILURE_LIMIT = 3
+_STALE_UNREADY_AFTER = timedelta(hours=48)
 _AUTH_HINT = (
     " The Plaud login may have expired: run the Plaud MCP login"
-    " (e.g. from Claude Code) on the Mac mini."
+    " (e.g. from Claude Code) on the daemon host."
+)
+_DUPLICATE_WARNING = (
+    "Warning: re-running extraction may duplicate notes already routed "
+    "for this recording."
 )
 
 
@@ -50,6 +60,14 @@ class OutcomeTracker:
             self.error = kwargs.get("error") or None
             self.transcript_path = kwargs.get("transcript_path") or self.transcript_path
         elif status == "failed":
+            if self.routed:
+                # A step after routing (e.g. session capture) failed; the notes
+                # are already routed, so the routing outcome stands.
+                log.warning(
+                    "Plaud pipeline reported a failure after routing; keeping the "
+                    "routed outcome: %s", kwargs.get("error"),
+                )
+                return
             self.error = kwargs.get("error") or "pipeline failed"
 
 
@@ -59,6 +77,35 @@ class CycleReport:
     waiting: int
     failed: list[str]
     fetch_errors: dict[str, str] = field(default_factory=dict)
+    stale_unready: dict[str, str] = field(default_factory=dict)
+
+
+def _one_line(text: str) -> str:
+    return " ".join(str(text).split())
+
+
+def _stale_unready_line(
+    file_id: str, detail: dict, item: dict, now: datetime,
+) -> str | None:
+    start_at = detail.get("start_at") or item.get("start_at")
+    if not isinstance(start_at, str):
+        return None
+    try:
+        started = datetime.fromisoformat(start_at)
+    except ValueError:
+        log.warning("Plaud recording %s has an unparseable start_at", file_id)
+        return None
+    if started.tzinfo is None:
+        started = started.replace(tzinfo=UTC)
+    age = now - started
+    if age <= _STALE_UNREADY_AFTER:
+        return None
+    name = _one_line(detail.get("name") or item.get("name") or "")
+    hours = int(age.total_seconds() // 3600)
+    return (
+        f"Recording {file_id} ({name}) still has no Plaud transcript/summary "
+        f"after {hours} h"
+    )
 
 
 async def run_poll_cycle(
@@ -85,10 +132,11 @@ async def run_poll_cycle(
             if row is not None and row.status in ("completed", "failed", "ingesting"):
                 continue
             detail = await client.get_file(file_id)
-            if not is_ready(detail):
-                continue
-            segments = await client.get_transcript(file_id)
+            segments = await client.get_transcript(file_id) if is_ready(detail) else []
             if not segments:
+                stale = _stale_unready_line(file_id, detail, item, now)
+                if stale is not None:
+                    report.stale_unready[file_id] = stale
                 continue
             ingest_now, track = decide(
                 row.track if row is not None else None,
@@ -141,22 +189,33 @@ async def ingest_recording(
     process_recording_fn=process_recording,
 ) -> PlaudStatus:
     file_id = file_detail["id"]
-    attempts = await state.mark_ingesting(file_id)
+    # Fetch and convert before marking the row `ingesting`, so a login problem
+    # propagates without leaving a stuck row. Other read or conversion
+    # failures still use an attempt, so a permanent one ends in `failed`.
     tracker = OutcomeTracker()
     raised: BaseException | None = None
     try:
         marks = await client.get_marks(file_id)
         job = to_recording_job(file_detail, segments, marks)
-        await process_recording_fn(
-            job,
-            config,
-            status=tracker,
-            speakers_unresolved=has_generic(speaker_map(segments)),
-            notify=False,
-        )
-    except Exception as e:
-        log.exception("Ingest of Plaud recording %s raised", file_id)
+    except PlaudAuthError:
+        raise
+    except (PlaudMcpError, ValueError) as e:
+        log.error("Could not prepare Plaud recording %s: %s", file_id, e)
         raised = e
+        attempts = await state.mark_ingesting(file_id)
+    else:
+        attempts = await state.mark_ingesting(file_id)
+        try:
+            await process_recording_fn(
+                job,
+                config,
+                status=tracker,
+                speakers_unresolved=has_generic(speaker_map(segments)),
+                notify=False,
+            )
+        except Exception as e:
+            log.exception("Ingest of Plaud recording %s raised", file_id)
+            raised = e
 
     if raised is None and tracker.routed:
         if tracker.error is None:
@@ -185,9 +244,6 @@ async def ingest_recording(
             "Ingest of Plaud recording %s failed after %d attempts", file_id, attempts,
         )
         result = "failed"
-
-    if isinstance(raised, PlaudAuthError):
-        raise raised
     return result
 
 
@@ -215,8 +271,20 @@ async def run_plaud_mcp_forever(
 
     state = PlaudMcpStateDB(config.email_ingest_state_db_path)
     await state.init_db()
+    recovered = await state.recover_interrupted()
+    if recovered:
+        log.error(
+            "Marked %d interrupted Plaud ingests as failed: %s",
+            len(recovered), recovered,
+        )
+    # Check the alert channel before polling without rewriting the note: a
+    # failure here raises at once, so a restart that keeps failing is a fast
+    # crash loop the supervisor alerts on.
+    check_attention_writable(config.pkm_vault_path)
+    await state.list_failed()
 
     consecutive_failures = 0
+    attention_failures = 0
     fetch_failures: dict[str, int] = {}
     interval = config.plaud_mcp_poll_interval_s
     while True:
@@ -224,12 +292,6 @@ async def run_plaud_mcp_forever(
         mcp_problem: str | None = None
         problem_lines: list[str] = []
         try:
-            recovered = await state.recover_interrupted()
-            if recovered:
-                log.error(
-                    "Marked %d interrupted Plaud ingests as failed: %s",
-                    len(recovered), recovered,
-                )
             async with factory() as client:
                 report = await run_poll_cycle(
                     client, state, config, settings,
@@ -251,6 +313,7 @@ async def run_plaud_mcp_forever(
                         f"Recording {file_id} could not be read from Plaud "
                         f"for {count} polls: {error}"
                     )
+            problem_lines.extend(report.stale_unready.values())
         except PlaudMcpError as e:
             consecutive_failures += 1
             log.error(
@@ -281,8 +344,18 @@ async def run_plaud_mcp_forever(
                 config.pkm_vault_path,
                 render_attention(await state.list_failed(), mcp_problem),
             )
-        except Exception:
-            log.exception("Failed to write Plaud ingest attention note")
+            attention_failures = 0
+        except Exception as e:
+            attention_failures += 1
+            log.exception(
+                "Failed to write Plaud ingest attention note (%d consecutive)",
+                attention_failures,
+            )
+            if attention_failures >= _ATTENTION_FAILURE_LIMIT:
+                raise RuntimeError(
+                    f"Plaud ingest attention note failed {attention_failures} "
+                    "consecutive times"
+                ) from e
         elapsed = (clock() - started).total_seconds()
         await sleep(max(0.0, interval - elapsed))
 
@@ -310,8 +383,12 @@ async def run_manual_ingest(
             return 1
 
         row = await state.get(file_id)
-        if row is not None and row.status == "ingesting":
-            out(f"Recording {file_id} is being ingested right now; try again later.")
+        if row is not None and row.status == "ingesting" and not force:
+            out(
+                f"Recording {file_id} is marked as being ingested right now. "
+                "If no ingest is running (e.g. a previous run was killed), "
+                "re-run with --force."
+            )
             return 1
         current_map = speaker_map(segments)
         if row is not None and row.status == "completed":
@@ -332,11 +409,8 @@ async def run_manual_ingest(
                 out(str(path))
                 return 0
 
-        if row is not None and row.status == "completed":
-            out(
-                "Warning: re-running extraction may duplicate notes already routed "
-                "for this recording."
-            )
+        if row is not None and notes_may_exist(row):
+            out(_DUPLICATE_WARNING)
 
         _, track = decide(
             row.track if row is not None else None,
@@ -346,11 +420,15 @@ async def run_manual_ingest(
             fallback_s=config.plaud_mcp_unlabelled_fallback_s,
         )
         await state.upsert_waiting(file_id, detail.get("name") or "", track, now)
-        status = await ingest_recording(
-            client, state, config, detail, segments,
-            now=now, max_attempts=1,
-            process_recording_fn=process_recording_fn,
-        )
+        try:
+            status = await ingest_recording(
+                client, state, config, detail, segments,
+                now=now, max_attempts=1,
+                process_recording_fn=process_recording_fn,
+            )
+        except PlaudAuthError as e:
+            out(f"Could not read recording {file_id} from Plaud: {e}.{_AUTH_HINT}")
+            return 1
 
     if status == "completed":
         updated = await state.get(file_id)
