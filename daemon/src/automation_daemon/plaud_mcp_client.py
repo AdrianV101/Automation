@@ -1,0 +1,276 @@
+"""Thin async client over the Plaud MCP server (stdio transport)."""
+from __future__ import annotations
+
+import asyncio
+import json
+import logging
+import re
+from collections.abc import Awaitable
+from contextlib import AsyncExitStack
+from datetime import date
+from typing import Any, TypeVar
+
+log = logging.getLogger(__name__)
+
+_AUTH_RE = re.compile(
+    r"(?i)\b(not logged in|log ?in|unauthori[sz]ed|unauthenticated"
+    r"|not authenticated|authentication (?:failed|required)|session expired"
+    r"|invalid_grant|refresh failed|(?:access|refresh)[ _]token"
+    r"|token (?:expired|invalid)|401)\b"
+)
+_AUTH_MESSAGE_KEYS = ("message", "error", "detail")
+# The server prefixes the block with a sentence that names the bare tag, so
+# only an opening tag carrying attributes starts the data block.
+_WRAPPED_RE = re.compile(
+    r"<(untrusted-user-data-[\w-]+)\s[^>]*>\s*(.*?)\s*</\1>", re.DOTALL
+)
+# get_transcript answers some block states with plain text instead of JSON:
+# a block missing from the recording, a block present but still empty, and an
+# empty highlights block.
+_BLOCK_UNAVAILABLE_RE = re.compile(r'\s*Block "[^"]+" not available for this recording')
+_BLOCK_EMPTY_RE = re.compile(
+    r'\s*(?:Block "[^"]+" has no content for this recording yet'
+    r"|This recording has a highlights block, but it is empty)"
+)
+_PAGE_SIZE = 100
+_TRANSCRIPT_LIMIT = 500
+_CALL_TIMEOUT_S = 120.0
+_MAX_PAGES = 1000
+
+_T = TypeVar("_T")
+
+
+class PlaudMcpError(Exception):
+    """A Plaud MCP call failed."""
+
+
+class PlaudAuthError(PlaudMcpError):
+    """The Plaud MCP server is not authenticated."""
+
+
+class _BlockUnavailable(PlaudMcpError):
+    pass
+
+
+class _BlockEmpty(PlaudMcpError):
+    pass
+
+
+def _parse_json(text: str) -> Any:
+    match = _WRAPPED_RE.search(text)
+    body = match.group(2) if match else text.strip()
+    try:
+        return json.loads(body)
+    except ValueError as exc:
+        # Wrapped text is recording data; only a bare server message can be
+        # a login problem.
+        if not match and _AUTH_RE.search(text):
+            raise PlaudAuthError(text[:500]) from exc
+        raise PlaudMcpError("unparseable Plaud MCP tool text") from exc
+
+
+def parse_tool_text(text: str) -> dict:
+    data = _parse_json(text)
+    if not isinstance(data, dict):
+        raise PlaudMcpError("Plaud MCP tool text is not a JSON object")
+    return data
+
+
+def _joined_text(result: Any) -> str:
+    parts = [
+        item.text
+        for item in (getattr(result, "content", None) or [])
+        if isinstance(getattr(item, "text", None), str)
+    ]
+    return "\n".join(parts)
+
+
+def _attr(result: Any, snake: str, camel: str) -> Any:
+    value = getattr(result, snake, None)
+    if value is None:
+        value = getattr(result, camel, None)
+    return value
+
+
+def _auth_messages(data: dict) -> list[str]:
+    found: list[str] = []
+    for key in _AUTH_MESSAGE_KEYS:
+        value = data.get(key)
+        if isinstance(value, str):
+            found.append(value)
+        elif isinstance(value, dict):
+            found.extend(_auth_messages(value))
+    return found
+
+
+def _list_field(data: dict, key: str, tool: str) -> list[dict]:
+    items = data.get(key)
+    if isinstance(items, list):
+        return items
+    payload = json.dumps(data, ensure_ascii=True)[:500]
+    if any(_AUTH_RE.search(m) for m in _auth_messages(data)):
+        raise PlaudAuthError(payload)
+    raise PlaudMcpError(
+        f"Plaud MCP {tool} response has no list under {key!r}: {payload}"
+    )
+
+
+async def _timed(name: str, awaitable: Awaitable[_T]) -> _T:
+    try:
+        async with asyncio.timeout(_CALL_TIMEOUT_S):
+            return await awaitable
+    except TimeoutError as exc:
+        raise PlaudMcpError(
+            f"Plaud MCP {name} timed out after {_CALL_TIMEOUT_S:g}s"
+        ) from exc
+
+
+class PlaudMcpClient:
+    def __init__(self, package: str, command: str = "npx") -> None:
+        self._package = package
+        self._command = command
+        self._stack: AsyncExitStack | None = None
+        self._session: Any = None
+
+    async def __aenter__(self) -> "PlaudMcpClient":
+        from mcp import ClientSession, StdioServerParameters
+        from mcp.client.stdio import stdio_client
+
+        params = StdioServerParameters(command=self._command, args=["-y", self._package])
+        stack = AsyncExitStack()
+        try:
+            read, write = await stack.enter_async_context(stdio_client(params))
+            session = await stack.enter_async_context(ClientSession(read, write))
+            await _timed("initialize", session.initialize())
+        except BaseException as exc:
+            try:
+                await stack.aclose()
+            except Exception:
+                log.warning(
+                    "Plaud MCP cleanup after failed start raised", exc_info=True
+                )
+            if isinstance(exc, PlaudMcpError) or not isinstance(exc, Exception):
+                raise
+            raise PlaudMcpError(f"failed to start Plaud MCP server: {exc}") from exc
+        self._stack = stack
+        self._session = session
+        return self
+
+    async def __aexit__(self, *exc: object) -> None:
+        stack, self._stack = self._stack, None
+        self._session = None
+        if stack is None:
+            return
+        exc_value = exc[1] if len(exc) > 1 else None
+        try:
+            await stack.__aexit__(*exc)
+        except BaseExceptionGroup as group:
+            # The SDK's nested task groups wrap the caller's own exception on
+            # exit; surface it unwrapped so callers can catch PlaudMcpError.
+            leaf: BaseException = group
+            while isinstance(leaf, BaseExceptionGroup) and len(leaf.exceptions) == 1:
+                leaf = leaf.exceptions[0]
+            if exc_value is not None and leaf is exc_value:
+                raise exc_value from None
+            raise
+
+    @classmethod
+    def from_session(cls, session: Any) -> "PlaudMcpClient":
+        client = cls.__new__(cls)
+        client._package = ""
+        client._command = ""
+        client._stack = None
+        client._session = session
+        return client
+
+    async def _call(self, name: str, arguments: dict[str, Any]) -> dict:
+        if self._session is None:
+            raise PlaudMcpError("Plaud MCP client is not started")
+        try:
+            result = await _timed(name, self._session.call_tool(name, arguments))
+        except PlaudMcpError:
+            raise
+        except Exception as exc:
+            raise PlaudMcpError(f"Plaud MCP call {name} failed: {exc}") from exc
+        text = _joined_text(result)
+        if _attr(result, "is_error", "isError"):
+            if _AUTH_RE.search(text):
+                raise PlaudAuthError(text)
+            raise PlaudMcpError(text)
+        if _BLOCK_UNAVAILABLE_RE.match(text):
+            raise _BlockUnavailable(text)
+        if _BLOCK_EMPTY_RE.match(text):
+            raise _BlockEmpty(text)
+        structured = _attr(result, "structured_content", "structuredContent")
+        if isinstance(structured, dict):
+            return structured
+        data = _parse_json(text)
+        # A recording with no source blocks at all answers get_transcript
+        # with its (empty) source list.
+        if name == "get_transcript" and data == []:
+            raise _BlockEmpty("recording has no source blocks")
+        if not isinstance(data, dict):
+            raise PlaudMcpError("Plaud MCP tool text is not a JSON object")
+        return data
+
+    async def list_files(self, date_from: date, date_to: date) -> list[dict]:
+        files: list[dict] = []
+        for page in range(1, _MAX_PAGES + 1):
+            data = await self._call(
+                "list_files",
+                {
+                    "date_from": date_from.isoformat(),
+                    "date_to": date_to.isoformat(),
+                    "page": page,
+                    "page_size": _PAGE_SIZE,
+                },
+            )
+            items = _list_field(data, "data", "list_files")
+            files.extend(items)
+            total = data.get("total")
+            if not items or (isinstance(total, int) and len(files) >= total):
+                return files
+        raise PlaudMcpError(f"Plaud MCP list_files exceeded {_MAX_PAGES} pages")
+
+    async def get_file(self, file_id: str) -> dict:
+        return await self._call("get_file", {"file_id": file_id})
+
+    async def _paged(self, file_id: str, block: str, key: str) -> list[dict]:
+        out: list[dict] = []
+        cursor: str | None = None
+        seen: set[str] = set()
+        for _ in range(_MAX_PAGES):
+            args: dict[str, Any] = {
+                "file_id": file_id,
+                "block": block,
+                "limit": _TRANSCRIPT_LIMIT,
+            }
+            if cursor:
+                args["cursor"] = cursor
+            try:
+                data = await self._call("get_transcript", args)
+            except _BlockEmpty:
+                if cursor:
+                    raise
+                return []
+            out.extend(_list_field(data, key, f"get_transcript({block})"))
+            cursor = data.get("next_cursor")
+            if not cursor:
+                return out
+            if cursor in seen:
+                raise PlaudMcpError(
+                    f"Plaud MCP get_transcript({block}) repeated cursor {cursor!r}"
+                )
+            seen.add(cursor)
+        raise PlaudMcpError(
+            f"Plaud MCP get_transcript({block}) exceeded {_MAX_PAGES} pages"
+        )
+
+    async def get_transcript(self, file_id: str) -> list[dict]:
+        return await self._paged(file_id, "transaction", "segments")
+
+    async def get_marks(self, file_id: str) -> list[dict]:
+        try:
+            return await self._paged(file_id, "mark_memo", "marks")
+        except _BlockUnavailable:
+            return []

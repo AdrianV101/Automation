@@ -14,7 +14,7 @@ class RecordingJob:
     source: str
     transcript_data: TranscriptData
     duration_ms: int | None = None
-    # Source-specific extras (e.g. plaud_summaries, infographic_path). Keeps
+    # Source-specific extras (e.g. plaud_summaries, plaud_highlights). Keeps
     # RecordingJob source-agnostic; only the source's extraction code knows
     # how to interpret the values.
     source_metadata: Mapping[str, Any] = field(default_factory=dict)

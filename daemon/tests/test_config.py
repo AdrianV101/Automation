@@ -101,7 +101,6 @@ def test_email_ingest_defaults(monkeypatch: pytest.MonkeyPatch) -> None:
     assert cfg.email_ingest_enabled is False
     assert cfg.imap_host == "127.0.0.1"
     assert cfg.imap_port == 1143
-    assert cfg.vault_attachments_subdir == "99-Attachments/plaud"
 
 
 def test_email_ingest_enabled_from_env(monkeypatch: pytest.MonkeyPatch) -> None:

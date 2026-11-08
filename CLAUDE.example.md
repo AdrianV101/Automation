@@ -15,7 +15,7 @@ Building an AI-augmented PKM that centralizes all information and acts on it aut
 - Projects live under `01-Projects/{ProjectName}/` with subfolders for dev, research, etc.
 
 ### Target System Capabilities
-1. **Audio ingestion pipeline**: Plaud Note Pro -> Plaud cloud -> AutoFlow email -> Proton Mail Bridge (local IMAP) -> daemon (IMAP IDLE) -> Plaud-hosted transcript (or optional local WhisperX re-transcription) -> information extraction -> auto-sort into PKM
+1. **Audio ingestion pipeline**: Plaud Note Pro -> Plaud cloud -> daemon polls the Plaud MCP (`@plaud-ai/mcp`, stdio) -> ingest once speakers are labelled in the Plaud app (or after a 24 h fallback) -> Plaud-hosted transcript + summaries + highlights -> information extraction -> auto-sort into PKM
 2. **Calendar integration**: Google Calendar (multiple accounts) - meeting context, follow-ups, time-blocking
 3. **Inbound message triage**: auto-triage all messages (email, LinkedIn, etc.), draft replies based on known context
 4. **Autonomous task execution**: AI does research/development/admin work, asks user only for decisions it can't resolve from existing knowledge
@@ -113,10 +113,14 @@ The daemon (`automation_daemon`) is a thin orchestrator wiring the libraries tog
 | `__main__.py` | CLI entry point |
 | `cli.py` | Subcommand registration |
 | `config.py` | Flat `DaemonConfig` from env, constructs library-specific configs |
-| `orchestrator.py` | Wires libraries, runs concurrent tasks (IMAP listener, Telegram poller) |
-| `pipeline.py` | Composes library calls into the email -> transcript -> extract -> route flow |
+| `orchestrator.py` | Wires libraries, runs concurrent tasks (Plaud MCP poller, IMAP listener, Telegram poller) |
+| `pipeline.py` | Composes library calls into the transcript -> extract -> route flow (`notify=False` skips Telegram) |
 | `extraction.py` | Audio-specific extraction agent (uses agent-infra streaming + TII trace sender) |
-| `plaud_email_adapter.py` | Parses Plaud-formatted emails into `RecordingJob` + PKM `TranscriptData`; handles attachments, infographics, summary link rewriting |
+| `plaud_mcp_client.py` | Stdio client for the pinned Plaud MCP package; result parsing, pagination, timeouts |
+| `plaud_mcp_trigger.py` / `plaud_mcp_state.py` | Speaker-labelling trigger and SQLite state per recording |
+| `plaud_mcp_attention.py` | Renders the `00-Inbox/plaud-ingest-attention.md` note |
+| `plaud_mcp_adapter.py` | Maps MCP recordings (segments, summaries, outline, highlights) into `RecordingJob` + PKM `TranscriptData` |
+| `plaud_mcp_ingest.py` | Poll cycle, retries, attention note, manual `plaud-ingest` |
 | `models.py` | `RecordingJob`, `StatusTracker` -- daemon-owned pipeline types |
 | `notifications.py` | Telegram notification helpers |
 | `prompts.py` | System prompts for the extraction agent |
@@ -127,7 +131,6 @@ The daemon (`automation_daemon`) is a thin orchestrator wiring the libraries tog
 ### Tech Stack (Current/Referenced)
 - Obsidian + Obsidian Sync, Claude Code + Opus 4.6, Claude Agent SDK, MCP, Plaud Note Pro, Proton Mail Bridge (local IMAP), Google Calendar
 - Host: Mac mini (Apple Silicon), launchd `com.adrian.automation-daemon` LaunchAgent
-- *Optional path:* WhisperX local re-transcription on a CUDA GPU (off by default)
 
 ### Cautionary Reference
 - **Clawdbot** (C-L-A-W-D-B-O-T) - autonomous AI assistant that bought a $3k scam course + $1k domain without user consent. Example of what happens without proper guardrails and human-in-the-loop.
@@ -142,9 +145,8 @@ The daemon (`automation_daemon`) is a thin orchestrator wiring the libraries tog
 - **Email bridge**: Proton Mail Bridge installed as a per-user LaunchAgent on the same host; exposes the Proton mailbox at `127.0.0.1:1143` (STARTTLS, self-signed cert -- `IMAP_SSL_VERIFY=false`)
 - **Config**: `daemon/.env` (secrets, not committed) -- created from `daemon/.env.example`
 - **Telegram notifications**: bot token + chat ID configured via env vars
-- **Data flow**: Plaud cloud -> AutoFlow email to configured mailbox -> Proton Mail Bridge -> daemon IMAP IDLE -> DKIM verify + MIME parse -> save attachments to vault `99-Attachments/plaud/` -> raw transcript to PKM -> Agent SDK extraction + routing (Opus 4.6 + Obsidian MCP) -> Telegram. Concurrent Telegram long-poller runs alongside the IMAP listener.
-- **State**: `daemon/email_ingest_state.db` (last UID, processed message-IDs, UIDVALIDITY) + `daemon/plaud_state.db` (Telegram thread store, pipeline status). Both SQLite, separate files post-cutover.
-- **Optional WhisperX path**: gated by `WHISPERX_ENABLED=false` by default. When enabled (CUDA GPU host), the daemon re-transcribes the audio attachment locally with speaker diarization/clustering instead of using Plaud's hosted transcript.
+- **Data flow**: Plaud cloud -> daemon polls the Plaud MCP every 5 min (24 h fallback if speakers stay unlabelled) -> trigger on speaker labelling -> raw transcript to PKM -> Agent SDK extraction + routing (Opus + Obsidian MCP), no per-recording Telegram messages (crash-loop alerts still go to Telegram). Problems surface in `00-Inbox/plaud-ingest-attention.md`. The IMAP listener only forwards new mail to Poke; the Telegram long-poller serves commands, digests and clippings.
+- **State**: single SQLite file `daemon/email_ingest_state.db` (IMAP UID/UIDVALIDITY, Telegram thread store, `plaud_mcp_recordings`, news/clippings/HN state).
 
 ## Development Notes
 
@@ -174,15 +176,14 @@ System python lacks packages -- always use `.venv/bin/python`.
 ### Gotchas
 - IMAP bridge: Proton Mail Bridge presents a self-signed cert on `127.0.0.1:1143` -- `IMAP_USE_STARTTLS=true` + `IMAP_SSL_VERIFY=false` are required. The Bridge runs as a per-user LaunchAgent and may briefly drop on login/logout cycles; `ImapBridge` retries with backoff
 - IMAP exception logging: `ImapBridge` formats connect-failure exceptions with `%s`; some asyncio exceptions (e.g. `TimeoutError`) have empty `__str__`, so log lines may show "IMAP connect attempt N failed: " with a blank repr. Use `%r` to surface the type. Cosmetic, deferred
-- DKIM: configured via `DKIM_TRUSTED_AUTHSERV_ID` (default `mail.protonmail.ch`) + `DKIM_REQUIRED_DOMAIN` (default `plaud.ai`). The daemon trusts an upstream `Authentication-Results: ...; dkim=pass` from the configured authserv-id rather than re-verifying signatures
+- Plaud MCP login: tokens live in `~/.plaud/tokens-mcp.json` and auto-refresh. If the attention note says the login may have expired, run the Plaud MCP `login` tool once on the daemon host
 - After code changes to the daemon, restart with `launchctl kickstart -k gui/$(id -u)/com.adrian.automation-daemon` (or `bootout` then re-run `daemon/scripts/install-launchagent.sh`)
 - PKM vault path: set via `PKM_VAULT_PATH` env var
-- Email-attachment routing: Plaud emails carry the audio file + cover infographic. `plaud_email_adapter.save_plaud_attachments` writes them to `<vault>/99-Attachments/plaud/<sanitized-message-id>/...` (subdir set by `VAULT_ATTACHMENTS_SUBDIR`)
 - Extraction uses Claude Agent SDK (Opus 4.6) with Obsidian MCP -- agent autonomously routes to appropriate PKM locations
 - Extraction agent: `daemon/src/automation_daemon/extraction.py` -- spawns Claude agent with `bypassPermissions`, max 15 turns, all `mcp__obsidian-pkm__vault_*` tools
 - On agent failure, raw transcript is preserved but no extraction/routing occurs
 - PKM output: raw transcript -> `04-Archive/transcripts/`, agent routes summaries/tasks/notes to appropriate locations
-- State: `email_ingest_state.db` and `plaud_state.db` are separate SQLite files in `daemon/`. The daemon's pipeline thread (`pipeline_thread_id`), Telegram `ThreadStore`, and last IMAP UID/UIDVALIDITY persist across restarts
+- State: everything lives in the single SQLite file `daemon/email_ingest_state.db`. The daemon's pipeline thread (`pipeline_thread_id`), Telegram `ThreadStore`, last IMAP UID/UIDVALIDITY and `plaud_mcp_recordings` persist across restarts
 - Config is a flat `DaemonConfig` dataclass -- libraries receive only the fields they need via constructor args
 - `user_context.py` is gitignored -- copy `user_context.example.py` and fill in your details
-- Local WhisperX re-transcription with speaker diarization (CUDA GPU, off by default) was implemented in an earlier pre-public version of this project but is **not included in this repository** -- the current pipeline relies on Plaud's hosted transcription via email ingest. `daemon/scripts/install-whisperx.sh` remains for that historical path; there is no local-transcription worker module in this tree.
+- Local WhisperX re-transcription with speaker diarization (CUDA GPU, off by default) was implemented in an earlier pre-public version of this project but is **not included in this repository** -- the current pipeline relies on Plaud's hosted transcription via the Plaud MCP. `daemon/scripts/install-whisperx.sh` remains for that historical path; there is no local-transcription worker module in this tree.

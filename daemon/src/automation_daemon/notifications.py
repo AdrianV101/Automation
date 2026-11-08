@@ -10,8 +10,6 @@ import httpx
 
 from telegram_interface import BotConfig, TELEGRAM_API, send_message, send_message_return_id
 
-from .speaker_resolution import encode_choice, OTHER, IGNORE
-
 if TYPE_CHECKING:
     from .extraction import AgentRoutingResult
 
@@ -117,91 +115,6 @@ async def send_transcription_error(
         "Audio file preserved for retry."
     )
     await send_message(text, tg, thread_id=thread_id)
-
-
-# Telegram callback_data hard limit is 64 bytes; reserve room for the
-# "sr|<idx>|" prefix and only send a name short enough to fit.
-_MAX_CALLBACK_BYTES = 64
-
-
-def build_speaker_keyboard(
-    *, speaker_idx: int, known_names: list[str] | None,
-) -> dict:
-    """InlineKeyboardMarkup for one unknown speaker. callback_data is an
-    `sr|<idx>|<choice>` token (see speaker_resolution.encode_choice)."""
-    rows: list[list[dict]] = []
-    if known_names:
-        for i in range(0, len(known_names), 2):
-            row = []
-            for name in known_names[i:i + 2]:
-                token = encode_choice(speaker_idx, name)
-                while len(token.encode()) > _MAX_CALLBACK_BYTES and name:
-                    name = name[:-1]
-                    token = encode_choice(speaker_idx, name)
-                row.append({"text": name or "(name)", "callback_data": token})
-            rows.append(row)
-    rows.append([
-        {"text": "Other...", "callback_data": encode_choice(speaker_idx, OTHER)},
-        {"text": "Not sure", "callback_data": encode_choice(speaker_idx, IGNORE)},
-    ])
-    return {"inline_keyboard": rows}
-
-
-async def send_speaker_prompt(
-    *,
-    speaker_idx: int,
-    speaker_label: str,
-    recording_name: str,
-    sample_text: str,
-    tg: BotConfig,
-    known_names: list[str] | None = None,
-    thread_id: int | None = None,
-) -> int | None:
-    """Prompt to identify one unrecognised Plaud speaker. Returns the
-    Telegram message_id of the prompt (tracked so the callback handler can
-    map a tap back to the held transcript)."""
-    snippet = sample_text.strip().replace("\n", " ")
-    if len(snippet) > 280:
-        snippet = snippet[:280] + "…"
-    text = (
-        "\U0001f50a Unrecognised speaker in a new Plaud recording\n\n"
-        f"Recording: {recording_name}\n"
-        f"Plaud label: {speaker_label}\n\n"
-        f"What they said:\n\u201c{snippet}\u201d\n\n"
-        "Tap who this is (or \u201cOther\u2026\u201d to type a name). "
-        "Also label them in the Plaud app so future recordings "
-        "recognise them automatically."
-    )
-    keyboard = build_speaker_keyboard(
-        speaker_idx=speaker_idx, known_names=known_names,
-    )
-    url = f"{TELEGRAM_API}/bot{tg.bot_token}/sendMessage"
-    payload: dict = {"chat_id": tg.chat_id, "text": text, "reply_markup": keyboard}
-    if thread_id is not None:
-        payload["message_thread_id"] = thread_id
-    async with httpx.AsyncClient(timeout=15.0) as client:
-        resp = await client.post(url, json=payload)
-        resp.raise_for_status()
-        return resp.json().get("result", {}).get("message_id")
-
-
-async def send_speaker_resolution_complete(
-    recording_name: str, name_map: dict[str, str], tg: BotConfig,
-    *, thread_id: int | None = None,
-) -> None:
-    """Confirm all speakers resolved; the transcript will now route."""
-    mapped = ", ".join(f"{k} \u2192 {v}" for k, v in name_map.items()) or "(none)"
-    text = (
-        f"\u2705 Speakers resolved for \u201c{recording_name}\u201d: {mapped}\n"
-        "Routing to PKM now."
-    )
-    url = f"{TELEGRAM_API}/bot{tg.bot_token}/sendMessage"
-    payload: dict = {"chat_id": tg.chat_id, "text": text}
-    if thread_id is not None:
-        payload["message_thread_id"] = thread_id
-    async with httpx.AsyncClient(timeout=10.0) as client:
-        resp = await client.post(url, json=payload)
-        resp.raise_for_status()
 
 
 async def answer_callback_query(

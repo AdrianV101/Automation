@@ -33,19 +33,23 @@ async def process_recording(
     config: DaemonConfig,
     status: "StatusTracker | None" = None,
     speakers_unresolved: bool = False,
+    *,
+    notify: bool = True,
 ) -> None:
     """Run the pipeline for a single recording. Logs errors rather than raising."""
     log.info("Processing recording %s (%s)", job.filename, job.id)
 
-    bot = BotConfig(bot_token=config.telegram_bot_token, chat_id=config.telegram_chat_id)
-
-    try:
-        recorded_dt = datetime.fromisoformat(job.recorded_at)
-        rec_topic = f"Rec: {recorded_dt.strftime('%m/%d')} {job.filename[:20]}"
-    except (ValueError, AttributeError):
-        log.warning("Could not parse recorded_at %r, using filename", job.recorded_at)
-        rec_topic = f"Rec: {job.filename[:30]}"
-    rec_thread_id = await create_forum_topic(rec_topic, bot)
+    bot: BotConfig | None = None
+    rec_thread_id: int | None = None
+    if notify:
+        bot = BotConfig(bot_token=config.telegram_bot_token, chat_id=config.telegram_chat_id)
+        try:
+            recorded_dt = datetime.fromisoformat(job.recorded_at)
+            rec_topic = f"Rec: {recorded_dt.strftime('%m/%d')} {job.filename[:20]}"
+        except (ValueError, AttributeError):
+            log.warning("Could not parse recorded_at %r, using filename", job.recorded_at)
+            rec_topic = f"Rec: {job.filename[:30]}"
+        rec_thread_id = await create_forum_topic(rec_topic, bot)
 
     try:
         transcript = job.transcript_data
@@ -86,10 +90,11 @@ async def process_recording(
                 error=f"Agent routing failed; transcript preserved: {error_msg}",
             )
 
-        try:
-            await send_routing_summary(routing_result, bot, thread_id=rec_thread_id)
-        except Exception:
-            log.exception("Failed to send Telegram summary for %s", job.id)
+        if bot is not None:
+            try:
+                await send_routing_summary(routing_result, bot, thread_id=rec_thread_id)
+            except Exception:
+                log.exception("Failed to send Telegram summary for %s", job.id)
 
         if (
             config.enable_session_capture
@@ -118,17 +123,18 @@ async def process_recording(
                         job.id, capture_result.error, capture_result.turns_used,
                         capture_result.files_appended, routing_result.summary_path,
                     )
-                    try:
-                        await send_message(
-                            f"⚠️ Devlog capture pass failed: "
-                            f"{capture_result.error or 'unknown'}. "
-                            "Extraction succeeded; transcript and notes preserved.",
-                            bot, thread_id=rec_thread_id,
-                        )
-                    except Exception:
-                        log.exception(
-                            "Failed to notify capture failure for %s", job.id,
-                        )
+                    if bot is not None:
+                        try:
+                            await send_message(
+                                f"⚠️ Devlog capture pass failed: "
+                                f"{capture_result.error or 'unknown'}. "
+                                "Extraction succeeded; transcript and notes preserved.",
+                                bot, thread_id=rec_thread_id,
+                            )
+                        except Exception:
+                            log.exception(
+                                "Failed to notify capture failure for %s", job.id,
+                            )
             except AgentInfraConfigError:
                 # Daemon-wide misconfiguration (env var missing, node not on
                 # PATH). Don't swallow as a per-job capture failure -- this
@@ -140,16 +146,17 @@ async def process_recording(
                 log.exception(
                     "Session capture failed for %s, extraction unaffected", job.id,
                 )
-                try:
-                    await send_message(
-                        "⚠️ Devlog capture pass crashed. "
-                        "Extraction succeeded; transcript and notes preserved.",
-                        bot, thread_id=rec_thread_id,
-                    )
-                except Exception:
-                    log.exception(
-                        "Failed to notify capture crash for %s", job.id,
-                    )
+                if bot is not None:
+                    try:
+                        await send_message(
+                            "⚠️ Devlog capture pass crashed. "
+                            "Extraction succeeded; transcript and notes preserved.",
+                            bot, thread_id=rec_thread_id,
+                        )
+                    except Exception:
+                        log.exception(
+                            "Failed to notify capture crash for %s", job.id,
+                        )
 
         log.info("Completed processing %s", job.filename)
 
@@ -160,7 +167,8 @@ async def process_recording(
             await _notify_status(status, "failed", error=error_msg)
         except Exception:
             log.exception("Failed to update status for %s", job.id)
-        try:
-            await send_transcription_error(job.filename, error_msg, bot, thread_id=rec_thread_id)
-        except Exception:
-            log.exception("Failed to send error notification for %s", job.id)
+        if bot is not None:
+            try:
+                await send_transcription_error(job.filename, error_msg, bot, thread_id=rec_thread_id)
+            except Exception:
+                log.exception("Failed to send error notification for %s", job.id)

@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import logging
 import os
+import re
 from dataclasses import dataclass
+from datetime import date
 from pathlib import Path
 
 from dotenv import load_dotenv
@@ -13,6 +15,8 @@ log = logging.getLogger(__name__)
 # Backward-compat alias: notifications.py / extraction.py used TelegramConfig,
 # which had the same fields (bot_token, chat_id) as BotConfig.
 TelegramConfig = BotConfig
+
+_PLAUD_MCP_VERSION_RE = re.compile(r"\d+\.\d+\.\d+([-+][0-9A-Za-z.-]+)?")
 
 _LOOPBACK_HOSTS = frozenset({"127.0.0.1", "::1", "localhost"})
 
@@ -31,7 +35,10 @@ class DaemonConfig:
     imap_user: str = ""
     imap_password: str = ""
     email_ingest_state_db_path: Path = Path("./email_ingest_state.db")
-    vault_attachments_subdir: str = "99-Attachments/plaud"
+    # Real-time forwarding: POST a structured JSON record of every new inbox
+    # email to a Poke ingest endpoint. The URL is self-authenticating (auth
+    # token embedded), so no separate key is needed. Empty disables forwarding.
+    poke_ingest_url: str = ""
     # News ingestion: separate IMAP IDLE connection to the same Bridge,
     # parallel `news_ingest_events` table, `uidnext:news` settings key.
     news_ingest_enabled: bool = False
@@ -80,14 +87,18 @@ class DaemonConfig:
     clippings_reconcile_interval_seconds: int = 3600
     clippings_max_failed_retries: int = 3
     clippings_model: str = "claude-opus-4-7"
+    # Plaud MCP ingest (poll the Plaud MCP server for ready recordings).
+    plaud_mcp_enabled: bool = False
+    plaud_mcp_switchover_date: date | None = None
+    plaud_mcp_package: str = "@plaud-ai/mcp@0.3.14"
+    plaud_mcp_poll_interval_s: int = 300
+    plaud_mcp_label_quiet_s: int = 600
+    plaud_mcp_unlabelled_fallback_s: int = 86400
+    plaud_mcp_window_days: int = 14
     # Proton Mail Bridge on localhost requires STARTTLS upgrade and uses a
     # self-signed cert; defaults match that canonical deployment.
     imap_use_starttls: bool = True
     imap_ssl_verify: bool = False
-    # DKIM verification trusts Authentication-Results headers written by this
-    # authserv-id (the MTA's identifier). Matches Proton Mail Bridge's default.
-    dkim_trusted_authserv_id: str = "mail.protonmail.ch"
-    dkim_required_domain: str = "plaud.ai"
     # Session capture: append a devlog entry after each successful extraction.
     # OFF by default. Adds a second SDK pass per recording -- collect dogfood
     # cost data before keeping this on long-term.
@@ -246,6 +257,49 @@ class DaemonConfig:
         )
         clippings_model = os.environ.get("CLIPPINGS_MODEL", "claude-opus-4-7")
 
+        plaud_mcp_enabled = (
+            os.environ.get("ENABLE_PLAUD_MCP_INGEST", "false").lower() == "true"
+        )
+        raw_switchover = os.environ.get("PLAUD_MCP_SWITCHOVER_DATE", "").strip()
+        plaud_mcp_switchover_date: date | None = None
+        if raw_switchover:
+            try:
+                plaud_mcp_switchover_date = date.fromisoformat(raw_switchover)
+            except ValueError as exc:
+                raise ValueError(
+                    f"PLAUD_MCP_SWITCHOVER_DATE must be YYYY-MM-DD, "
+                    f"got {raw_switchover!r}: {exc}",
+                ) from exc
+        if plaud_mcp_enabled and plaud_mcp_switchover_date is None:
+            raise ValueError(
+                "PLAUD_MCP_SWITCHOVER_DATE is required when "
+                "ENABLE_PLAUD_MCP_INGEST=true",
+            )
+        plaud_mcp_package = os.environ.get(
+            "PLAUD_MCP_PACKAGE", "@plaud-ai/mcp@0.3.14",
+        ).strip()
+        version_at = plaud_mcp_package.rfind("@")
+        plaud_mcp_version = plaud_mcp_package[version_at + 1:] if version_at > 0 else ""
+        if not _PLAUD_MCP_VERSION_RE.fullmatch(plaud_mcp_version):
+            raise ValueError(
+                f"PLAUD_MCP_PACKAGE must pin an exact semantic version "
+                f"(e.g. @plaud-ai/mcp@0.3.14), got {plaud_mcp_package!r}",
+            )
+        plaud_mcp_poll_interval_s = typed_env("PLAUD_MCP_POLL_INTERVAL_S", "300", int)
+        plaud_mcp_label_quiet_s = typed_env("PLAUD_MCP_LABEL_QUIET_S", "600", int)
+        plaud_mcp_unlabelled_fallback_s = typed_env(
+            "PLAUD_MCP_UNLABELLED_FALLBACK_S", "86400", int,
+        )
+        plaud_mcp_window_days = typed_env("PLAUD_MCP_WINDOW_DAYS", "14", int)
+        for env_name, value, minimum in (
+            ("PLAUD_MCP_POLL_INTERVAL_S", plaud_mcp_poll_interval_s, 1),
+            ("PLAUD_MCP_WINDOW_DAYS", plaud_mcp_window_days, 1),
+            ("PLAUD_MCP_LABEL_QUIET_S", plaud_mcp_label_quiet_s, 0),
+            ("PLAUD_MCP_UNLABELLED_FALLBACK_S", plaud_mcp_unlabelled_fallback_s, 0),
+        ):
+            if value < minimum:
+                raise ValueError(f"{env_name} must be >= {minimum}, got {value}")
+
         return cls(
             telegram_bot_token=require("TELEGRAM_BOT_TOKEN"),
             telegram_chat_id=require("TELEGRAM_CHAT_ID"),
@@ -258,15 +312,9 @@ class DaemonConfig:
             email_ingest_state_db_path=Path(
                 os.environ.get("EMAIL_INGEST_STATE_DB_PATH", "./email_ingest_state.db"),
             ),
-            vault_attachments_subdir=os.environ.get(
-                "VAULT_ATTACHMENTS_SUBDIR", "99-Attachments/plaud",
-            ),
+            poke_ingest_url=os.environ.get("POKE_INGEST_URL", "").strip(),
             imap_use_starttls=os.environ.get("IMAP_USE_STARTTLS", "true").lower() == "true",
             imap_ssl_verify=imap_ssl_verify,
-            dkim_trusted_authserv_id=os.environ.get(
-                "DKIM_TRUSTED_AUTHSERV_ID", "mail.protonmail.ch",
-            ),
-            dkim_required_domain=os.environ.get("DKIM_REQUIRED_DOMAIN", "plaud.ai"),
             enable_session_capture=enable_session_capture,
             agent_inactivity_timeout_s=agent_inactivity_timeout_s,
             max_concurrent_dispatch=max_concurrent_dispatch,
@@ -300,6 +348,13 @@ class DaemonConfig:
             clippings_reconcile_interval_seconds=clippings_reconcile_interval_seconds,
             clippings_max_failed_retries=clippings_max_failed_retries,
             clippings_model=clippings_model,
+            plaud_mcp_enabled=plaud_mcp_enabled,
+            plaud_mcp_switchover_date=plaud_mcp_switchover_date,
+            plaud_mcp_package=plaud_mcp_package,
+            plaud_mcp_poll_interval_s=plaud_mcp_poll_interval_s,
+            plaud_mcp_label_quiet_s=plaud_mcp_label_quiet_s,
+            plaud_mcp_unlabelled_fallback_s=plaud_mcp_unlabelled_fallback_s,
+            plaud_mcp_window_days=plaud_mcp_window_days,
         )
 
     def __post_init__(self) -> None:

@@ -1,3 +1,4 @@
+import dataclasses
 from pathlib import Path
 from unittest.mock import AsyncMock, patch
 
@@ -268,3 +269,36 @@ async def test_process_recording_passes_unresolved_flag(tmp_path) -> None:
         wrt.return_value = tmp_path / "t.md"
         await process_recording(_job_e1(), cfg, speakers_unresolved=True)
     assert wrt.call_args.kwargs["speakers_unresolved"] is True
+
+
+@pytest.mark.asyncio
+async def test_notify_false_never_touches_telegram(tmp_path):
+    config = dataclasses.replace(_make_config(tmp_path), enable_session_capture=True)
+    routing_result = _make_routing_result(success=True)
+
+    for failing in (False, True):
+        job = _make_job()
+        with (
+            patch("automation_daemon.pipeline.create_forum_topic", new_callable=AsyncMock) as m_topic,
+            patch("automation_daemon.pipeline.send_routing_summary", new_callable=AsyncMock) as m_summary,
+            patch("automation_daemon.pipeline.send_transcription_error", new_callable=AsyncMock) as m_error,
+            patch("automation_daemon.pipeline.send_message", new_callable=AsyncMock) as m_msg,
+            patch(
+                "automation_daemon.pipeline.write_raw_transcript",
+                side_effect=RuntimeError("disk full") if failing else None,
+                return_value=Path("/tmp/transcript.md"),
+            ),
+            patch("automation_daemon.pipeline.agent_extract_and_route", new_callable=AsyncMock, return_value=routing_result) as m_route,
+            patch("automation_daemon.pipeline.agent_capture_session", new_callable=AsyncMock) as m_capture,
+        ):
+            await process_recording(job, config, notify=False)
+
+        for m in (m_topic, m_summary, m_error, m_msg):
+            m.assert_not_awaited()
+        if not failing:
+            assert m_route.call_args.kwargs["tg"] is None
+            assert m_route.call_args.kwargs["thread_id"] is None
+            assert m_capture.call_args.kwargs["tg"] is None
+            assert m_capture.call_args.kwargs["thread_id"] is None
+        else:
+            m_route.assert_not_awaited()

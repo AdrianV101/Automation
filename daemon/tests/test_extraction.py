@@ -377,15 +377,6 @@ def test_prompt_includes_plaud_summaries_when_provided() -> None:
     assert "do thing" in prompt
 
 
-def test_prompt_mentions_infographic_when_provided() -> None:
-    prompt = _build_user_prompt(
-        _transcript(),
-        Path("/vault/t.md"),
-        source_metadata={"infographic_path": Path("99-Attachments/plaud/abc.jpg")},
-    )
-    assert "99-Attachments/plaud/abc.jpg" in prompt
-
-
 def test_prompt_omits_plaud_block_when_no_summaries() -> None:
     prompt = _build_user_prompt(
         _transcript(),
