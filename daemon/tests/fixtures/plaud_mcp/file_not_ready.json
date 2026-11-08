@@ -1,0 +1,11 @@
+{
+  "id": "f_synthetic02",
+  "name": "Synthetic pending",
+  "start_at": "2026-10-29T17:40:29",
+  "duration": 60000,
+  "presigned_url": "https://example.invalid/audio2.mp3",
+  "source_list": [
+    {"data_type": "mark_memo", "data_content": "[]"}
+  ],
+  "note_list": []
+}

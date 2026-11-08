@@ -1,0 +1,25 @@
+{
+  "id": "f_synthetic01",
+  "name": "Synthetic planning sync",
+  "start_at": "2026-11-06T15:32:42.020000",
+  "duration": 125000,
+  "presigned_url": "https://example.invalid/audio.mp3",
+  "source_list": [
+    {"data_type": "transaction", "data_content": "[]"},
+    {"data_type": "outline", "data_content": "1. Intro\n2. Budget review"}
+  ],
+  "note_list": [
+    {
+      "data_type": "auto_sum_note",
+      "data_title": "Summary",
+      "data_tab_name": "Meeting Summary",
+      "data_content": "![](plaud://image?type=summaryCard&id=c_1)\n## Overview\n\n[](plaud://highlight-card?title=X)\nThe team reviewed the **budget**."
+    },
+    {
+      "data_type": "other_note",
+      "data_title": "Empty",
+      "data_tab_name": "",
+      "data_content": "   "
+    }
+  ]
+}
