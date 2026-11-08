@@ -33,6 +33,13 @@ def decide(
     quiet_s: int,
     fallback_s: int,
 ) -> tuple[bool, TrackState]:
+    """Return (ingest_now, new_state) for one poll of a recording's speaker map.
+
+    First sight ingests only when no label is generic; names present at first
+    sight are the baseline. ready_at is when the daemon first saw the recording
+    ready. With no label change since, the fallback counts from ready_at;
+    otherwise the quiet period counts from the last label change.
+    """
     if prev is None:
         return (not has_generic(current_map)), TrackState(now, current_map, None)
 

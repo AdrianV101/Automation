@@ -64,3 +64,20 @@ def test_new_key_counts_as_change() -> None:
     now = T0 + timedelta(minutes=1)
     _, state = decide(prev, G | {"Speaker 3": "Speaker 3"}, now, **KW)
     assert state.last_label_change_at == now
+
+
+def test_second_change_restarts_quiet_timer() -> None:
+    prev = TrackState(T0, P, T0 + timedelta(minutes=5))
+    p2 = {"Speaker 1": "Joel Low (Scope)", "Speaker 2": "Speaker 3"}
+    now = T0 + timedelta(minutes=12)
+    ingest, state = decide(prev, p2, now, **KW)
+    assert ingest is False
+    assert state.last_label_change_at == now
+    assert decide(state, p2, T0 + timedelta(minutes=21, seconds=59), **KW)[0] is False
+    assert decide(state, p2, T0 + timedelta(minutes=22), **KW)[0] is True
+
+
+def test_first_sight_partial_waits_for_fallback() -> None:
+    _, state = decide(None, P, T0, **KW)
+    assert decide(state, P, T0 + timedelta(minutes=15), **KW)[0] is False
+    assert decide(state, P, T0 + timedelta(hours=24), **KW)[0] is True
